@@ -1,0 +1,44 @@
+# ─── Git ────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ─── Node modules (reinstalled inside Docker) ──────────────────
+node_modules
+**/node_modules
+
+# ─── Build outputs (rebuilt inside Docker) ─────────────────────
+**/dist
+**/*.tsbuildinfo
+
+# ─── Environment / Secrets ─────────────────────────────────────
+.env
+.env.*
+SECRETS_TEMPLATE.env
+
+# ─── Database files ────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ─── Logs ──────────────────────────────────────────────────────
+*.log
+
+# ─── OS files ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── IDE / Editor ──────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+
+# ─── Backup files ──────────────────────────────────────────────
+*.bak
+*.bak2
+*.orig
+
+# ─── Docs (not needed in container) ───────────────────────────
+replit.md
+SETUP_GUIDE.md
+RAILWAY_SETUP.md
+README.md

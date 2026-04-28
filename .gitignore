@@ -1,0 +1,63 @@
+# ─── Dependencies ──────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+
+# ─── Build outputs ─────────────────────────────────────────────
+artifacts/*/dist/
+lib/*/dist/
+scripts/dist/
+dist/
+*.tsbuildinfo
+
+# ─── Environment / Secrets ─────────────────────────────────────
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+.env.*.local
+
+# ─── Database files ────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+hayo-ai.db
+
+# ─── Temporary / Runtime files ─────────────────────────────────
+tmp/
+temp/
+uploads/
+/uploads/
+*.tmp
+
+# ─── Logs ──────────────────────────────────────────────────────
+*.log
+pino-*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# ─── OS files ──────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ─── IDE / Editor ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# ─── Backup files ──────────────────────────────────────────────
+*.bak
+*.bak2
+*.orig
