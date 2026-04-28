@@ -17,7 +17,12 @@ export let pool: any = null;
 if (databaseUrl && databaseUrl.startsWith("postgres")) {
   // استخدام PostgreSQL إذا كان الرابط متاحاً
   console.log("🗄️ Using PostgreSQL Database");
-  pool = new Pool({ connectionString: databaseUrl });
+  // Enable SSL for Railway/cloud PostgreSQL (rejectUnauthorized:false allows self-signed certs)
+  const isLocalDb = databaseUrl.includes("localhost") || databaseUrl.includes("127.0.0.1");
+  pool = new Pool({
+    connectionString: databaseUrl,
+    ssl: isLocalDb ? false : { rejectUnauthorized: false },
+  });
   db = drizzlePg(pool, { schema });
 } else {
   // استخدام SQLite كخيار احتياطي لضمان عمل المشروع دائماً

@@ -428,8 +428,8 @@ export default function ReverseEngineer(){
   const[cFile,setCFile]=useState<File|null>(null);
   const[cloning,setCloning]=useState(false);
   const[cloneLive,setCloneLive]=useState<{sseUrl:string}|null>(null);
-  const[cOpts,setCOpts]=useState({removeAds:true,unlockPremium:true,removeTracking:false,removeLicenseCheck:true,changeAppName:"",changePackageName:"",customInstructions:""});
-  const[cResult,setCResult]=useState<{modifications:string[];patchedFiles?:number;signed?:boolean;downloadUrl?:string;installCommand?:string;success?:boolean}|null>(null);
+  const[cOpts,setCOpts]=useState({removeAds:true,unlockPremium:true,removeTracking:false,removeLicenseCheck:true,extractSecrets:true,changeAppName:"",changePackageName:"",customInstructions:""});
+  const[cResult,setCResult]=useState<{modifications:string[];patchedFiles?:number;signed?:boolean;downloadUrl?:string;installCommand?:string;success?:boolean;secrets?:any[];secretsFound?:number}|null>(null);
 
   // ══ TAB 3: EDIT ══
   const[eFile,setEFile]=useState<File|null>(null);
@@ -619,7 +619,7 @@ export default function ReverseEngineer(){
           const blob=await dlR.blob();const dlUrl=URL.createObjectURL(blob);const a=document.createElement("a");a.href=dlUrl;
           const ext=cFile.name.split(".").pop()?.toLowerCase();
           const bn=cFile.name.replace(/\.[^.]+$/,"");a.download=ext==="apk"?`cloned-${bn}.apk`:`cloned-${bn}.zip`;a.click();
-          setCResult({modifications:cloneResult.modifications||[],patchedFiles:cloneResult.patchedFiles||0,signed:cloneResult.signed||false,downloadUrl:dlUrl,installCommand:ext==="apk"?"adb install -r cloned-"+cFile.name:undefined,success:true});
+          setCResult({modifications:cloneResult.modifications||[],patchedFiles:cloneResult.patchedFiles||0,signed:cloneResult.signed||false,downloadUrl:dlUrl,installCommand:ext==="apk"?"adb install -r cloned-"+cFile.name:undefined,success:true,secrets:cloneResult.secrets||[],secretsFound:cloneResult.secretsFound||0});
           toast.success(cloneResult.signed?"🎉 استنساخ + توقيع — جاهز!":"✅ تم الاستنساخ");
         }else{setCResult({modifications:cloneResult.modifications||[],success:false});toast.error("فشل تحميل الملف المستنسخ");}
       }else{
@@ -967,7 +967,7 @@ export default function ReverseEngineer(){
           :<div className="space-y-2"><Upload className="w-8 h-8 mx-auto text-muted-foreground"/><p className="text-sm">اسحب أو انقر</p><p className="text-xs text-muted-foreground">{ALL_FORMATS.map(f=>f.toUpperCase()).join(" · ")}</p></div>}
         </div>
         <div className="grid grid-cols-2 gap-3">
-          {([["removeAds","إزالة الإعلانات","🚫","AdMob, Facebook, Unity"],["unlockPremium","فتح المدفوع","🔓","isPremium, isSubscribed"],["removeTracking","إزالة التتبع","📡","Firebase, Analytics"],["removeLicenseCheck","تجاوز الرخصة","🔑","checkLicense, verifySignature"]] as const).map(([k,l,ic,d])=><button key={k} onClick={()=>setCOpts(p=>({...p,[k]:!p[k as keyof typeof p]}))} className={`p-3 rounded-xl border text-right transition-all ${cOpts[k as keyof typeof cOpts]?"bg-violet-500/10 border-violet-500/40 text-violet-300":"bg-card/70 backdrop-blur-sm border-border text-muted-foreground hover:border-violet-500/30"}`}><div className="flex items-center gap-2"><span className="text-lg">{ic}</span><span className="font-medium text-sm">{l}</span><span className="mr-auto">{cOpts[k as keyof typeof cOpts]?<ToggleRight className="w-5 h-5 text-violet-400"/>:<ToggleLeft className="w-5 h-5"/>}</span></div><p className="text-[10px] mt-1 opacity-60">{d}</p></button>)}
+          {([["removeAds","إزالة الإعلانات","🚫","AdMob, Facebook, Unity"],["unlockPremium","فتح المدفوع","🔓","isPremium, isSubscribed + Coins MAX"],["removeTracking","إزالة التتبع","📡","Firebase, Analytics"],["removeLicenseCheck","تجاوز الرخصة","🔑","checkLicense, verifySignature"],["extractSecrets","استخراج الأسرار","🗝️","Firebase, AWS, JWT, API Keys"]] as [string,string,string,string][]).map(([k,l,ic,d])=><button key={k} onClick={()=>setCOpts(p=>({...p,[k]:!(p as any)[k]}))} className={`p-3 rounded-xl border text-right transition-all ${(cOpts as any)[k]?"bg-violet-500/10 border-violet-500/40 text-violet-300":"bg-card/70 backdrop-blur-sm border-border text-muted-foreground hover:border-violet-500/30"}`}><div className="flex items-center gap-2"><span className="text-lg">{ic}</span><span className="font-medium text-sm">{l}</span><span className="mr-auto">{(cOpts as any)[k]?<ToggleRight className="w-5 h-5 text-violet-400"/>:<ToggleLeft className="w-5 h-5"/>}</span></div><p className="text-[10px] mt-1 opacity-60">{d}</p></button>)}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <input value={cOpts.changeAppName} onChange={e=>setCOpts(p=>({...p,changeAppName:e.target.value}))} placeholder="اسم جديد (اختياري)" className="bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-violet-500/50"/>
@@ -981,15 +981,17 @@ export default function ReverseEngineer(){
           {cResult.modifications.length>0&&<div className="max-h-40 overflow-y-auto space-y-1">{cResult.modifications.map((m:string,i:number)=><div key={i} className="text-xs bg-muted/20 rounded px-2 py-1 text-muted-foreground">{m}</div>)}</div>}
         </div>}
         {cResult&&cResult.success&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/20 rounded-xl p-4 space-y-3">
-          <div className="flex items-center gap-2"><CheckCircle2 className="w-5 h-5 text-emerald-400"/><span className="text-sm font-bold text-emerald-300">استنساخ ناجح</span></div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="flex items-center gap-2"><CheckCircle2 className="w-5 h-5 text-emerald-400"/><span className="text-sm font-bold text-emerald-300">✅ استنساخ ناجح</span></div>
+          <div className="grid grid-cols-4 gap-2">
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-2 text-center"><div className="text-lg font-bold text-emerald-300">{cResult.modifications.length}</div><div className="text-[10px] text-muted-foreground">تعديل</div></div>
-            <div className="bg-violet-500/10 border border-violet-500/30 rounded-lg p-2 text-center"><div className="text-lg font-bold text-violet-300">{cResult.patchedFiles||0}</div><div className="text-[10px] text-muted-foreground">ملف معدّل</div></div>
-            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-2 text-center"><div className="text-lg font-bold text-blue-300">{cResult.signed?"موقّع":"غير موقّع"}</div><div className="text-[10px] text-muted-foreground">التوقيع</div></div>
+            <div className="bg-violet-500/10 border border-violet-500/30 rounded-lg p-2 text-center"><div className="text-lg font-bold text-violet-300">{cResult.patchedFiles||0}</div><div className="text-[10px] text-muted-foreground">ملف</div></div>
+            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-2 text-center"><div className="text-base font-bold text-blue-300">{cResult.signed?"موقّع✓":"بدون"}</div><div className="text-[10px] text-muted-foreground">apksigner</div></div>
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2 text-center"><div className="text-lg font-bold text-amber-300">{cResult.secretsFound||0}</div><div className="text-[10px] text-muted-foreground">سر مكتشف</div></div>
           </div>
           <div className="text-xs font-semibold text-muted-foreground">سجل التعديلات:</div>
-          <div className="max-h-56 overflow-y-auto space-y-1.5">{cResult.modifications.map((m:string,i:number)=><div key={i} className="text-xs bg-muted/20 rounded-lg px-3 py-2 flex items-start gap-2 border border-border/50"><span className="text-emerald-400 shrink-0 mt-0.5">{m.includes("إزالة")?"🗑️":m.includes("تغيير")?"✏️":m.includes("تعطيل")?"⛔":m.includes("توقيع")?"🔏":"✅"}</span><span className="text-muted-foreground">{m}</span></div>)}</div>
-          {cResult.downloadUrl&&<a href={cResult.downloadUrl} download className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-semibold text-sm transition-all"><Download className="w-4 h-4"/>تحميل الملف المعدّل</a>}
+          <div className="max-h-48 overflow-y-auto space-y-1.5">{cResult.modifications.map((m:string,i:number)=><div key={i} className="text-xs bg-muted/20 rounded-lg px-3 py-2 flex items-start gap-2 border border-border/50"><span className="text-emerald-400 shrink-0 mt-0.5">{m.includes("🚫")?"🚫":m.includes("🔓")?"🔓":m.includes("💰")?"💰":m.includes("🔑")?"🔑":m.includes("توقيع")?"🔏":"✅"}</span><span className="text-muted-foreground">{m}</span></div>)}</div>
+          {cResult.secrets&&cResult.secrets.length>0&&<details className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3"><summary className="text-xs font-bold text-amber-300 cursor-pointer">🗝️ الأسرار المستخرجة ({cResult.secrets.length})</summary><div className="mt-2 max-h-48 overflow-y-auto space-y-1.5">{cResult.secrets.map((s:any,i:number)=><div key={i} className="text-[10px] bg-muted/20 rounded px-2 py-1.5 border border-amber-500/10"><span className="text-amber-400 font-mono">[{s.type}]</span><span className="text-muted-foreground ml-2 font-mono break-all">{s.value}</span><span className="text-muted-foreground/50 ml-1">← {s.file}</span></div>)}</div></details>}
+          {cResult.downloadUrl&&<a href={cResult.downloadUrl} download className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-semibold text-sm transition-all"><Download className="w-4 h-4"/>⬇️ تحميل APK المعدّل</a>}
           {cResult.installCommand&&<div className="bg-muted/30 border border-border rounded-lg p-2 font-mono text-xs text-muted-foreground"><span className="text-emerald-400">$</span> {cResult.installCommand}</div>}
         </div>}
       </div>}

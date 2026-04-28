@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     make \
     g++ \
+    zipalign \
+    apksigner \
     && rm -rf /var/lib/apt/lists/*
 
 # Create directory structure for reverse-engineering tools
