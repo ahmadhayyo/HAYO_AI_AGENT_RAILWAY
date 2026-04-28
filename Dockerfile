@@ -58,7 +58,8 @@ ENV PORT=8080
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 # ── Copy workspace config first (maximizes Docker layer cache) ────
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.json tsconfig.base.json ./
+# .npmrc MUST be copied before pnpm install so shamefully-hoist=true is applied
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.json tsconfig.base.json .npmrc ./
 COPY lib/ ./lib/
 
 # ── Copy ALL package.json files for every workspace package ───────
