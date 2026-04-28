@@ -74,6 +74,8 @@ onlyBuiltDependencies:
   - unrs-resolver
 
 overrides:
+  # Fix: @types/better-sqlite3 has no v11 — latest types are v7.x
+  "@types/better-sqlite3": "7.6.13"
   # replit uses linux-x64 only, we can exclude all other platforms
   "esbuild>@esbuild/darwin-arm64": "-"
   "esbuild>@esbuild/darwin-x64": "-"
