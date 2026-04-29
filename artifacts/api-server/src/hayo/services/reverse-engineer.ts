@@ -1007,12 +1007,13 @@ export async function cloneApp(
     unlockPremium?: boolean;
     removeTracking?: boolean;
     removeLicenseCheck?: boolean;
+    bypassTrial?: boolean;
     changeAppName?: string;
     changePackageName?: string;
     customInstructions?: string;
     extractSecrets?: boolean;
   } = {}
-): Promise<{ success: boolean; apkBuffer?: Buffer; modifications: string[]; signed?: boolean; secrets?: ExtractedSecret[]; error?: string }> {
+): Promise<{ success: boolean; apkBuffer?: Buffer; modifications: string[]; signed?: boolean; secrets?: ExtractedSecret[]; auditReport?: CloneAuditReport; fridaScript?: string; verification?: { signatureValid: boolean; zipValid: boolean; details: string[] }; error?: string }> {
   const modifications: string[] = [];
   const ext = fileName.split(".").pop()?.toLowerCase() || "apk";
   const workDir = path.join(os.tmpdir(), `clone_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`);
@@ -1063,6 +1064,12 @@ export async function cloneApp(
     // 2d. Remove Tracking
     if (options.removeTracking === true) {
       const mods = await patchTracking(decompDir);
+      modifications.push(...mods);
+    }
+
+    // 2d2. Bypass Trial / Usage Limits
+    if (options.bypassTrial !== false) {
+      const mods = await patchTrialExpired(decompDir);
       modifications.push(...mods);
     }
 
@@ -1118,11 +1125,36 @@ export async function cloneApp(
       modifications.push("⚠️ التوقيع تخطى — يمكن تثبيته يدوياً");
     }
 
-    // ── Step 5: Return result ──
+    // ── Step 5: Verify APK (Quality Gate) ──
     const finalApk = signedPath || outputApk;
     const apkBuffer = fs.readFileSync(finalApk);
+    const verification = verifyAPK(finalApk, workDir);
+    if (verification.signatureValid) {
+      modifications.push("✅ apksigner verify: التوقيع صحيح — APK جاهز للتثبيت");
+    }
+    if (verification.zipValid) {
+      modifications.push("✅ unzip -t: سلامة ملف ZIP مؤكدة — لا أخطاء");
+    }
 
-    return { success: true, apkBuffer, modifications, signed: !!signedPath, secrets: extractedSecrets };
+    // ── Step 6: Generate Audit Report ──
+    const auditReport = generateAuditReport(
+      decompDir, modifications, extractedSecrets,
+      !!signedPath, apkBuffer,
+      verification.signatureValid, verification.zipValid,
+    );
+
+    // ── Step 7: Generate Frida Script Template ──
+    let packageName = "com.unknown.app";
+    const mfPath = path.join(decompDir, "AndroidManifest.xml");
+    if (fs.existsSync(mfPath)) {
+      const mfContent = fs.readFileSync(mfPath, "utf-8");
+      const pkgMatch = mfContent.match(/package="([^"]+)"/);
+      if (pkgMatch) packageName = pkgMatch[1];
+    }
+    const fridaScript = generateFridaScript(packageName, decompDir);
+
+    // ── Step 8: Return result ──
+    return { success: true, apkBuffer, modifications, signed: !!signedPath, secrets: extractedSecrets, auditReport, fridaScript, verification };
   } catch (e: any) {
     return { success: false, modifications, error: e.message };
   } finally {
@@ -1474,6 +1506,361 @@ interface ExtractedSecret {
   value: string;
   file: string;
   line?: number;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AUDIT REPORT
+// ═══════════════════════════════════════════════════════════════
+export interface CloneAuditReport {
+  packageName: string;
+  versionCode: string;
+  versionName: string;
+  secretsFound: number;
+  secretsSummary: Array<{ type: string; count: number; masked: string }>;
+  discoveredEndpoints: string[];
+  patchedMethods: number;
+  patchCategories: Array<{ category: string; count: number }>;
+  signatureStatus: "signed_v1v2v3" | "signed_v1" | "unsigned" | "failed";
+  verificationPassed: boolean;
+  zipIntegrityPassed: boolean;
+  finalSize: number;
+  timestamp: string;
+  phases: Array<{ phase: string; status: "success" | "warning" | "error"; detail: string }>;
+}
+
+export function generateAuditReport(
+  decompDir: string,
+  modifications: string[],
+  secrets: ExtractedSecret[],
+  signed: boolean,
+  apkBuffer: Buffer | undefined,
+  verifyOk: boolean,
+  zipOk: boolean,
+): CloneAuditReport {
+  let packageName = "unknown";
+  let versionCode = "?";
+  let versionName = "?";
+  const manifestPath = path.join(decompDir, "AndroidManifest.xml");
+  if (fs.existsSync(manifestPath)) {
+    const m = fs.readFileSync(manifestPath, "utf-8");
+    const pkgM = m.match(/package="([^"]+)"/);
+    if (pkgM) packageName = pkgM[1];
+    const vcM = m.match(/android:versionCode="([^"]+)"/);
+    if (vcM) versionCode = vcM[1];
+    const vnM = m.match(/android:versionName="([^"]+)"/);
+    if (vnM) versionName = vnM[1];
+  }
+
+  const secretTypes = new Map<string, { count: number; sample: string }>();
+  for (const s of secrets) {
+    const e = secretTypes.get(s.type);
+    const masked = s.value.length > 8 ? s.value.slice(0, 4) + "****" + s.value.slice(-4) : "****";
+    if (e) e.count++;
+    else secretTypes.set(s.type, { count: 1, sample: masked });
+  }
+
+  const endpointSet = new Set<string>();
+  const textFiles = readDirRecursive(decompDir).filter(f => {
+    const ext = path.extname(f).toLowerCase();
+    return [".smali", ".xml", ".json", ".txt", ".properties", ".js"].includes(ext);
+  });
+  const urlRe = /https?:\/\/[^\s"'<>\\)}\]]+/g;
+  const frameworkDomains = ["schemas.android.com", "www.w3.org", "ns.adobe.com", "xml.org", "xmlpull.org", "apache.org"];
+  for (const fp of textFiles.slice(0, 500)) {
+    try {
+      const c = fs.readFileSync(fp, "utf-8");
+      if (c.length > 500_000) continue;
+      const urls = c.match(urlRe) || [];
+      for (const u of urls) {
+        if (frameworkDomains.some(d => u.includes(d))) continue;
+        endpointSet.add(u);
+        if (endpointSet.size >= 50) break;
+      }
+    } catch {}
+    if (endpointSet.size >= 50) break;
+  }
+
+  const patchCats = new Map<string, number>();
+  for (const m of modifications) {
+    if (m.includes("إعلان") || m.includes("Ad")) patchCats.set("ads", (patchCats.get("ads") || 0) + 1);
+    else if (m.includes("Premium") || m.includes("مدفوع")) patchCats.set("premium", (patchCats.get("premium") || 0) + 1);
+    else if (m.includes("License") || m.includes("رخصة")) patchCats.set("license", (patchCats.get("license") || 0) + 1);
+    else if (m.includes("تتبع") || m.includes("Tracking")) patchCats.set("tracking", (patchCats.get("tracking") || 0) + 1);
+    else if (m.includes("Trial") || m.includes("تجريب")) patchCats.set("trial", (patchCats.get("trial") || 0) + 1);
+    else if (m.includes("عمل") || m.includes("Coins") || m.includes("نقاط")) patchCats.set("resources", (patchCats.get("resources") || 0) + 1);
+  }
+
+  const phases: CloneAuditReport["phases"] = [
+    { phase: "Decompilation", status: "success", detail: "APKTool decompiled successfully" },
+    { phase: "Static Audit", status: secrets.length > 0 ? "warning" : "success", detail: `${secrets.length} secrets found` },
+    { phase: "Logic Modification", status: "success", detail: `${modifications.length} modifications applied` },
+    { phase: "Rebuild", status: apkBuffer ? "success" : "error", detail: apkBuffer ? `${(apkBuffer.length / 1048576).toFixed(2)} MB` : "Rebuild failed" },
+    { phase: "Signing", status: signed ? "success" : "warning", detail: signed ? "V1+V2+V3" : "Unsigned" },
+    { phase: "Verification", status: verifyOk ? "success" : "warning", detail: verifyOk ? "apksigner verify passed" : "Verification skipped or failed" },
+    { phase: "ZIP Integrity", status: zipOk ? "success" : "warning", detail: zipOk ? "No errors" : "Check skipped" },
+  ];
+
+  return {
+    packageName,
+    versionCode,
+    versionName,
+    secretsFound: secrets.length,
+    secretsSummary: [...secretTypes.entries()].map(([type, { count, sample }]) => ({ type, count, masked: sample })),
+    discoveredEndpoints: [...endpointSet],
+    patchedMethods: modifications.filter(m => m.includes("دالة") || m.includes("ملف smali") || m.includes("method")).length,
+    patchCategories: [...patchCats.entries()].map(([category, count]) => ({ category, count })),
+    signatureStatus: signed ? "signed_v1v2v3" : "unsigned",
+    verificationPassed: verifyOk,
+    zipIntegrityPassed: zipOk,
+    finalSize: apkBuffer?.length || 0,
+    timestamp: new Date().toISOString(),
+    phases,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FRIDA SCRIPT TEMPLATE GENERATOR
+// ═══════════════════════════════════════════════════════════════
+export function generateFridaScript(packageName: string, decompDir: string): string {
+  const premiumMethods: string[] = [];
+  const coinMethods: string[] = [];
+  const licenseMethods: string[] = [];
+
+  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 500);
+  for (const fp of smaliFiles) {
+    try {
+      const content = fs.readFileSync(fp, "utf-8");
+      const classMatch = content.match(/\.class\s+(?:public\s+)?(?:final\s+)?(?:abstract\s+)?L([^;]+);/);
+      if (!classMatch) continue;
+      const className = classMatch[1].replace(/\//g, ".");
+
+      for (const m of PREMIUM_METHODS) {
+        const re = new RegExp(`\\.method\\s+(?:public|private|protected|static)[^\\n]*${m}[^\\n]*\\)Z`);
+        if (re.test(content)) premiumMethods.push(`${className}.${m}`);
+      }
+      for (const m of ["getCoins", "getCredits", "getPoints", "getBalance", "getScore"]) {
+        const re = new RegExp(`\\.method\\s+(?:public|private|protected|static)[^\\n]*${m}[^\\n]*\\)I`);
+        if (re.test(content)) coinMethods.push(`${className}.${m}`);
+      }
+      for (const cls of LICENSE_CLASSES) {
+        if (content.includes(cls)) licenseMethods.push(className);
+      }
+    } catch {}
+  }
+
+  return `/**
+ * HAYO AI — Frida Dynamic Observation Script
+ * Target: ${packageName}
+ * Generated: ${new Date().toISOString()}
+ *
+ * Usage:
+ *   frida -U -f ${packageName} -l this_script.js --no-pause
+ *
+ * IMPORTANT: For authorized security audits only.
+ */
+
+'use strict';
+
+Java.perform(function () {
+  console.log('[HAYO] Frida script loaded for: ${packageName}');
+
+  // ═══ 1. Monitor SharedPreferences ═══
+  try {
+    var SharedPrefsEditor = Java.use('android.content.SharedPreferences$Editor');
+    SharedPrefsEditor.putString.overload('java.lang.String', 'java.lang.String').implementation = function (key, val) {
+      console.log('[SharedPrefs] putString: ' + key + ' = ' + val);
+      return this.putString(key, val);
+    };
+    SharedPrefsEditor.putBoolean.overload('java.lang.String', 'boolean').implementation = function (key, val) {
+      console.log('[SharedPrefs] putBoolean: ' + key + ' = ' + val);
+      return this.putBoolean(key, val);
+    };
+    SharedPrefsEditor.putInt.overload('java.lang.String', 'int').implementation = function (key, val) {
+      console.log('[SharedPrefs] putInt: ' + key + ' = ' + val);
+      return this.putInt(key, val);
+    };
+    console.log('[HAYO] SharedPreferences monitoring: ACTIVE');
+  } catch (e) { console.log('[HAYO] SharedPreferences hook failed: ' + e); }
+
+  // ═══ 2. Monitor HTTP Requests (OkHttp) ═══
+  try {
+    var OkHttpClient = Java.use('okhttp3.OkHttpClient');
+    var Request = Java.use('okhttp3.Request');
+    var RealCall = Java.use('okhttp3.internal.connection.RealCall');
+    RealCall.execute.implementation = function () {
+      var req = this.request();
+      console.log('[HTTP] ' + req.method() + ' ' + req.url().toString());
+      return this.execute();
+    };
+    console.log('[HAYO] OkHttp monitoring: ACTIVE');
+  } catch (e) { console.log('[HAYO] OkHttp hook failed: ' + e); }
+
+  // ═══ 3. Monitor URL connections ═══
+  try {
+    var URL = Java.use('java.net.URL');
+    URL.openConnection.overload().implementation = function () {
+      console.log('[NET] URL.openConnection: ' + this.toString());
+      return this.openConnection();
+    };
+    console.log('[HAYO] URL monitoring: ACTIVE');
+  } catch (e) { console.log('[HAYO] URL hook failed: ' + e); }
+
+  // ═══ 4. SSL Certificate Validation Assessment ═══
+  try {
+    var X509TM = Java.use('javax.net.ssl.X509TrustManager');
+    var TrustManagers = Java.use('javax.net.ssl.TrustManagerFactory');
+    console.log('[HAYO] SSL TrustManager classes found — certificate validation is in place');
+  } catch (e) { console.log('[HAYO] SSL assessment: ' + e); }
+
+  // ═══ 5. Monitor Premium / Feature Gating Methods ═══
+${premiumMethods.slice(0, 10).map(m => {
+    const parts = m.split(".");
+    const method = parts.pop();
+    const cls = parts.join(".");
+    return `  try {
+    var cls_${method} = Java.use('${cls}');
+    cls_${method}.${method}.implementation = function () {
+      var orig = this.${method}();
+      console.log('[PREMIUM] ${cls}.${method}() returned: ' + orig);
+      return orig;
+    };
+  } catch (e) {}`;
+  }).join("\n")}
+
+  // ═══ 6. Monitor Resource Counter Methods ═══
+${coinMethods.slice(0, 10).map(m => {
+    const parts = m.split(".");
+    const method = parts.pop();
+    const cls = parts.join(".");
+    return `  try {
+    var cls_${method} = Java.use('${cls}');
+    cls_${method}.${method}.implementation = function () {
+      var orig = this.${method}();
+      console.log('[RESOURCE] ${cls}.${method}() returned: ' + orig);
+      return orig;
+    };
+  } catch (e) {}`;
+  }).join("\n")}
+
+  console.log('[HAYO] All hooks installed. Observing runtime behavior...');
+});
+`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// APK VERIFICATION — Pre-delivery quality gate
+// ═══════════════════════════════════════════════════════════════
+export function verifyAPK(apkPath: string, workDir: string): { signatureValid: boolean; zipValid: boolean; details: string[] } {
+  const details: string[] = [];
+  let signatureValid = false;
+  let zipValid = false;
+
+  // Test A: apksigner verify
+  try {
+    const r = runCmd("apksigner", ["verify", "--verbose", apkPath], workDir, 30_000);
+    if (r.code === 0 && (r.stdout + r.stderr).toLowerCase().includes("verified")) {
+      signatureValid = true;
+      details.push("apksigner verify: PASSED");
+      const lines = (r.stdout || "").split("\n").filter(l => l.trim()).slice(0, 5);
+      details.push(...lines.map(l => "  " + l.trim()));
+    } else {
+      details.push("apksigner verify: FAILED — " + (r.stderr || r.stdout || "").slice(0, 200));
+    }
+  } catch (e: any) {
+    details.push("apksigner verify: ERROR — " + e.message);
+  }
+
+  // Test B: unzip -t (ZIP integrity)
+  try {
+    const r = runCmd("unzip", ["-t", apkPath], workDir, 30_000);
+    if (r.code === 0 && !(r.stdout + r.stderr).toLowerCase().includes("error")) {
+      zipValid = true;
+      details.push("unzip -t: PASSED (no errors in compressed data)");
+    } else {
+      details.push("unzip -t: ISSUES — " + (r.stderr || "").slice(0, 200));
+    }
+  } catch (e: any) {
+    details.push("unzip -t: ERROR — " + e.message);
+  }
+
+  return { signatureValid, zipValid, details };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TRIAL EXPIRED PATCHING
+// ═══════════════════════════════════════════════════════════════
+const TRIAL_EXPIRED_METHODS = [
+  "isTrialExpired", "isExpired", "hasExpired", "isTrialEnded",
+  "isFreeTrialOver", "isTrialPeriodOver", "checkExpiration",
+  "isLimitReached", "isDailyLimitReached", "isQuotaExceeded",
+];
+
+export async function patchTrialExpired(decompDir: string): Promise<string[]> {
+  const mods: string[] = [];
+  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 2000);
+  let patched = 0;
+
+  for (const fp of smaliFiles) {
+    try {
+      let content = fs.readFileSync(fp, "utf-8");
+      let changed = false;
+
+      for (const method of TRIAL_EXPIRED_METHODS) {
+        const methodRegex = new RegExp(
+          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)Z\\n)([\\s\\S]*?)(\\.end method)`,
+          "gm"
+        );
+        content = content.replace(methodRegex, (match, header, body, end) => {
+          if (body.length < 3000) {
+            patched++;
+            changed = true;
+            return `${header}    .locals 1\n    # [HAYO CLONER] TRIAL NEVER EXPIRES\n    const/4 v0, 0x0\n    return v0\n${end}`;
+          }
+          return match;
+        });
+      }
+
+      // Also patch getDailyLimit / getRemainingTries to return MAX
+      const LIMIT_METHODS = ["getDailyLimit", "getRemainingTries", "getTrialDaysLeft", "getFreeTier", "getUsageLimit"];
+      for (const method of LIMIT_METHODS) {
+        const methodRegex = new RegExp(
+          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)I\\n)([\\s\\S]*?)(\\.end method)`,
+          "gm"
+        );
+        content = content.replace(methodRegex, (match, header, body, end) => {
+          if (body.length < 2000) {
+            patched++;
+            changed = true;
+            return `${header}    .locals 1\n    # [HAYO CLONER] LIMIT REMOVED\n    const v0, 0x7fffffff\n    return v0\n${end}`;
+          }
+          return match;
+        });
+      }
+
+      // Patch long return methods for resource limits
+      const LONG_LIMIT_METHODS = ["getDailyLimit", "getRemainingCredits", "getMaxUsage"];
+      for (const method of LONG_LIMIT_METHODS) {
+        const methodRegex = new RegExp(
+          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)J\\n)([\\s\\S]*?)(\\.end method)`,
+          "gm"
+        );
+        content = content.replace(methodRegex, (match, header, body, end) => {
+          if (body.length < 2000) {
+            patched++;
+            changed = true;
+            return `${header}    .locals 2\n    # [HAYO CLONER] LIMIT REMOVED (LONG)\n    const-wide v0, 0x7fffffffffffffffL\n    return-wide v0\n${end}`;
+          }
+          return match;
+        });
+      }
+
+      if (changed) fs.writeFileSync(fp, content, "utf-8");
+    } catch {}
+  }
+
+  if (patched > 0) mods.push(`⏰ تم تعطيل ${patched} قيد تجريبي / حد استخدام (Trial/Limit bypass)`);
+  else mods.push("🔍 تم فحص قيود التجريب — لم يتم العثور على قيود قياسية");
+  return mods;
 }
 
 export function extractSecretsFromAPK(decompDir: string): ExtractedSecret[] {

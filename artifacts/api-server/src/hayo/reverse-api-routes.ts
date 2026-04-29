@@ -94,6 +94,7 @@ router.post("/clone", upload.single("file"), async (req: Request, res: Response)
       unlockPremium:       req.body.unlockPremium       === "true",
       removeTracking:      req.body.removeTracking      === "true",
       removeLicenseCheck:  req.body.removeLicenseCheck  === "true",
+      bypassTrial:         req.body.bypassTrial         === "true",
       changeAppName:       req.body.changeAppName        || undefined,
       changePackageName:   req.body.changePackageName   || undefined,
       customInstructions:  req.body.customInstructions  || undefined,

@@ -47,6 +47,11 @@ import {
   methodSignatureSearch,
   generateForensicReport,
   extractSecretsFromAPK,
+  generateAuditReport,
+  generateFridaScript,
+  verifyAPK,
+  patchTrialExpired,
+  type CloneAuditReport,
 } from "../hayo/services/reverse-engineer.js";
 import { callPowerAI } from "../hayo/providers.js";
 import path from "path";
@@ -289,6 +294,7 @@ router.post("/clone", upload.single("file"), async (req: Request, res: Response)
     unlockPremium:      body.unlockPremium !== "false",
     removeTracking:     body.removeTracking === "true",
     removeLicenseCheck: body.removeLicenseCheck !== "false",
+    bypassTrial:        body.bypassTrial !== "false",
     extractSecrets:     body.extractSecrets !== "false",
     changeAppName:      body.changeAppName || undefined,
     changePackageName:  body.changePackageName || undefined,
@@ -882,7 +888,7 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
   try {
     if (ext === "apk") {
       // ── Phase 1: Decompile ───────────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 1/5: تفكيك APK ════`);
+      sseSend(res, `[STEP] ════ المرحلة 1/7: تفكيك APK ════`);
       const code1 = await spawnStream(res, "apktool", ["d", "-f", "-o", path.join(workDir, "decoded"), filePath], workDir, "apktool d");
       if (code1 !== 0) {
         sseSend(res, "[ERROR] فشل APKTool — تأكد أن الملف APK سليم");
@@ -892,13 +898,14 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       sseSend(res, "[✅] تم تفكيك APK بنجاح");
 
       // ── Phase 2: Apply Patches ───────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 2/5: تطبيق التعديلات ════`);
+      sseSend(res, `[STEP] ════ المرحلة 2/7: تطبيق التعديلات ════`);
       const buf = fs.readFileSync(filePath);
       const cloneOpts = {
         removeAds:          opts.removeAds !== false,
         unlockPremium:      opts.unlockPremium !== false,
         removeTracking:     opts.removeTracking === true,
         removeLicenseCheck: opts.removeLicenseCheck !== false,
+        bypassTrial:        opts.bypassTrial !== false,
         extractSecrets:     opts.extractSecrets !== false,
         changeAppName:      opts.changeAppName || undefined,
         changePackageName:  opts.changePackageName || undefined,
@@ -913,49 +920,78 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       }
 
       // ── Phase 3: Rebuild ─────────────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 3/5: إعادة البناء ════`);
+      sseSend(res, `[STEP] ════ المرحلة 3/7: إعادة البناء ════`);
       sseSend(res, "[✅] تم إعادة بناء APK بنجاح");
 
       // ── Phase 4: zipalign + apksigner ───────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 4/5: المحاذاة والتوقيع ════`);
+      sseSend(res, `[STEP] ════ المرحلة 4/7: المحاذاة والتوقيع ════`);
       if (result.signed) {
         sseSend(res, "[🧹] إزالة توقيعات META-INF القديمة (CERT.RSA / CERT.SF / MANIFEST.MF)...");
         sseSend(res, "[✅] META-INF: تم حذف التوقيعات القديمة بنجاح");
         sseSend(res, "[✅] zipalign: تم محاذاة الذاكرة (4-byte alignment)");
         sseSend(res, "[✅] apksigner: تم التوقيع بـ V1 + V2 + V3 (متوافق مع Android 7+ / 9+ / 13+)");
-        sseSend(res, "[✅] apksigner verify: التوقيع صحيح — APK جاهز للتثبيت على هواتف حديثة ✓");
       } else {
         sseSend(res, "[⚠️] التوقيع فشل — يمكن تثبيت APK بدون توقيع على أجهزة Development");
       }
 
-      // ── Phase 5: Save & Report ───────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 5/5: الملف جاهز ════`);
-      const outPath = path.join(workDir, `cloned-${fileName}`);
-      fs.writeFileSync(outPath, result.apkBuffer);
-      sseSend(res, `[✅] الحجم النهائي: ${(result.apkBuffer.length / 1048576).toFixed(2)} MB`);
+      // ── Phase 5: Verification (Quality Gate) ─────────────────────
+      sseSend(res, `[STEP] ════ المرحلة 5/7: التحقق من الجودة ════`);
+      if (result.verification) {
+        for (const d of result.verification.details) sseSend(res, `[INFO] ${d}`);
+        if (result.verification.signatureValid) sseSend(res, "[✅] apksigner verify: التوقيع صحيح ✓");
+        if (result.verification.zipValid) sseSend(res, "[✅] unzip -t: سلامة ZIP مؤكدة ✓");
+      }
 
-      // Report extracted secrets
+      // ── Phase 6: Extract Secrets & Endpoints ─────────────────────
+      sseSend(res, `[STEP] ════ المرحلة 6/7: استخراج الأسرار والنقاط النهائية ════`);
       if (result.secrets?.length) {
         sseSend(res, `[🔑] استُخرج ${result.secrets.length} سر مضمّن من التطبيق:`);
         for (const s of result.secrets.slice(0, 15)) {
-          // Show full value — committee needs to see actual secrets to understand the vulnerability
           sseSend(res, `   → [${s.type}] ${s.value} (${s.file}:${s.line ?? "?"})`);
         }
         if (result.secrets.length > 15) {
           sseSend(res, `   ... و${result.secrets.length - 15} سر إضافي (مرئي في نتائج الاستنساخ)`);
         }
       }
+      if (result.auditReport?.discoveredEndpoints.length) {
+        sseSend(res, `[🌐] ${result.auditReport.discoveredEndpoints.length} نقطة نهائية مكتشفة:`);
+        for (const ep of result.auditReport.discoveredEndpoints.slice(0, 10)) {
+          sseSend(res, `   → ${ep}`);
+        }
+      }
+
+      // ── Phase 7: Save & Report ───────────────────────────────────
+      sseSend(res, `[STEP] ════ المرحلة 7/7: الملف جاهز ════`);
+      const outPath = path.join(workDir, `cloned-${fileName}`);
+      fs.writeFileSync(outPath, result.apkBuffer);
+      sseSend(res, `[✅] الحجم النهائي: ${(result.apkBuffer.length / 1048576).toFixed(2)} MB`);
 
       const dlId = `dl_${Date.now()}`;
+      const reportId = `rpt_${Date.now()}`;
       uploadStore.set(dlId, { filePath: outPath, fileName: `cloned-${fileName}`, uploadedAt: Date.now() });
+      if (result.auditReport) {
+        const reportPath = path.join(workDir, `audit-report.json`);
+        fs.writeFileSync(reportPath, JSON.stringify(result.auditReport, null, 2));
+        uploadStore.set(reportId, { filePath: reportPath, fileName: `audit-report-${fileName}.json`, uploadedAt: Date.now() });
+      }
+      if (result.fridaScript) {
+        const fridaId = `frida_${Date.now()}`;
+        const fridaPath = path.join(workDir, `frida-script.js`);
+        fs.writeFileSync(fridaPath, result.fridaScript);
+        uploadStore.set(fridaId, { filePath: fridaPath, fileName: `frida-${fileName}.js`, uploadedAt: Date.now() });
+      }
       sseJSON(res, "result", {
         success: true,
         modifications: result.modifications,
         signed: result.signed,
         patchedFiles: result.modifications.length,
         downloadId: dlId,
+        reportId,
         secretsFound: result.secrets?.length || 0,
-        secrets: result.secrets || [],   // All secrets — no truncation for committee review
+        secrets: result.secrets || [],
+        auditReport: result.auditReport || null,
+        fridaScript: result.fridaScript || null,
+        verification: result.verification || null,
       });
       sseSend(res, `[DONE] ════ اكتمل استنساخ ${fileName} ════`);
 
@@ -968,6 +1004,7 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
         unlockPremium:      opts.unlockPremium !== false,
         removeTracking:     opts.removeTracking === true,
         removeLicenseCheck: opts.removeLicenseCheck !== false,
+        bypassTrial:        opts.bypassTrial !== false,
         extractSecrets:     opts.extractSecrets !== false,
         changeAppName:      opts.changeAppName,
         changePackageName:  opts.changePackageName,
