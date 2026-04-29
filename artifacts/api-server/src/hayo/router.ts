@@ -4363,4 +4363,21 @@ ${newsContext}
         const { getModelInstruction } = await import("./system-prompts.js");
         return { modelId: input.modelId, instruction: getModelInstruction(input.modelId) };
       }),
-  
+    set: adminProcedure
+      .input(z.object({ modelId: z.string(), instruction: z.string() }))
+      .mutation(async ({ input }) => {
+        const { setModelInstruction } = await import("./system-prompts.js");
+        setModelInstruction(input.modelId as any, input.instruction);
+        return { success: true };
+      }),
+    reset: adminProcedure
+      .input(z.object({ modelId: z.string() }))
+      .mutation(async ({ input }) => {
+        const { resetModelInstruction } = await import("./system-prompts.js");
+        resetModelInstruction(input.modelId as any);
+        return { success: true };
+      }),
+  }),
+});
+
+export type AppRouter = typeof appRouter;
