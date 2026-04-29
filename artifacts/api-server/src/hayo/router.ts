@@ -40,6 +40,10 @@ async function fetchTwelveData(url: string): Promise<any> {
   throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "نفد رصيد جميع مفاتيح TwelveData اليوم — يتجدد غداً" });
 }
 
+// ─── Quick Scan result cache (5 minutes per timeframe) ─────────────────────
+const quickScanCache = new Map<string, { result: any; ts: number }>();
+const QUICK_SCAN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 import {
   createUser, loginUser, getUserById, getAllUsers, getAdminStats,
   createConversation, getUserConversations, getConversation,
@@ -3194,6 +3198,14 @@ const root = document.getElementById('root');`;
         timeframe: z.enum(["1min", "5min", "15min", "30min", "1h"]).default("15min"),
       }))
       .mutation(async ({ input }) => {
+        // Return cached result if fresh (avoids burning API quota on rapid re-scans / auto-refresh)
+        const cacheKey = `quickscan:${input.timeframe}`;
+        const cached = quickScanCache.get(cacheKey);
+        if (cached && Date.now() - cached.ts < QUICK_SCAN_CACHE_TTL) {
+          console.log(`[QuickScan] Cache hit for ${input.timeframe} (${Math.round((Date.now()-cached.ts)/1000)}s old)`);
+          return cached.result;
+        }
+
         const symbolMap: Record<string, string> = {
           EURUSD: "EUR/USD", USDJPY: "USD/JPY", GBPUSD: "GBP/USD",
           GBPJPY: "GBP/JPY", USDCHF: "USD/CHF", AUDUSD: "AUD/USD",
@@ -3343,13 +3355,16 @@ ${scanSummary}
             .map(r => r.value);
         }
 
-        return {
+        const scanResult = {
           signals,
           scannedAt: new Date().toISOString(),
           timeframe: input.timeframe,
           highQuality,
           aiSummary,
         };
+        // Cache result to avoid re-fetching 18 pairs on rapid re-scans
+        quickScanCache.set(cacheKey, { result: scanResult, ts: Date.now() });
+        return scanResult;
       }),
 
     // ── Convergence (التطابق) ────────────────────────────────────────
@@ -4348,25 +4363,4 @@ ${newsContext}
         const { getModelInstruction } = await import("./system-prompts.js");
         return { modelId: input.modelId, instruction: getModelInstruction(input.modelId) };
       }),
-    update: adminProcedure
-      .input(z.object({ modelId: z.string(), instruction: z.string().max(5000) }))
-      .mutation(async ({ input }) => {
-        const { setModelInstruction } = await import("./system-prompts.js");
-        setModelInstruction(input.modelId, input.instruction);
-        return { success: true, modelId: input.modelId };
-      }),
-    reset: adminProcedure
-      .input(z.object({ modelId: z.string() }))
-      .mutation(async ({ input }) => {
-        const { resetModelInstruction, getModelInstruction } = await import("./system-prompts.js");
-        resetModelInstruction(input.modelId);
-        return { success: true, instruction: getModelInstruction(input.modelId) };
-      }),
-  }),
-
-// ==================== Reverse Engineer ====================
-  reverseEngineer: reverseEngineerRouter,
-  aiAgent: aiAgentRouter,
-});
-
-export type AppRouter = typeof appRouter;
+  

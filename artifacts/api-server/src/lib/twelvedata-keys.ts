@@ -5,18 +5,27 @@ let lastResetDay = new Date().getUTCDate();
 
 function loadKeys() {
   if (allKeys.length > 0) return;
+
+  // TWELVE_DATA_API_KEYS (plural) — primary: comma-separated list of keys
   const multi = process.env.TWELVE_DATA_API_KEYS;
   if (multi) {
     allKeys.push(...multi.split(",").map(k => k.trim()).filter(Boolean));
   }
+
+  // TWELVE_DATA_API_KEY (singular) — also supports comma-separated values
+  // e.g. TWELVE_DATA_API_KEY=key1,key2,key3 works correctly
   const single = process.env.TWELVE_DATA_API_KEY;
-  if (single && !allKeys.includes(single.trim())) {
-    allKeys.push(single.trim());
+  if (single) {
+    const singleKeys = single.split(",").map(k => k.trim()).filter(Boolean);
+    for (const k of singleKeys) {
+      if (!allKeys.includes(k)) allKeys.push(k);
+    }
   }
+
   if (allKeys.length === 0) {
-    console.error("[TwelveData] No API keys found!");
+    console.error("[TwelveData] No API keys found! Set TWELVE_DATA_API_KEYS (comma-separated) or TWELVE_DATA_API_KEY");
   } else {
-    console.log(`[TwelveData] Loaded ${allKeys.length} API keys for rotation`);
+    console.log(`[TwelveData] Loaded ${allKeys.length} API key(s) for rotation`);
   }
 }
 
@@ -85,19 +94,4 @@ export function isRateLimitError(responseOrMsg: any): boolean {
   return false;
 }
 
-export function getKeyStats() {
-  loadKeys();
-  checkDailyReset();
-  return {
-    total: allKeys.length,
-    exhausted: exhaustedKeys.size,
-    remaining: allKeys.length - exhaustedKeys.size,
-  };
-}
-
-export function forceResetKeys() {
-  exhaustedKeys.clear();
-  currentIndex = 0;
-  lastResetDay = new Date().getUTCDate();
-  console.log("[TwelveData] Force reset — all keys available again");
-}
+export functi
