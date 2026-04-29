@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     zipalign \
     apksigner \
+    file \
     && rm -rf /var/lib/apt/lists/*
 
 # Create directory structure for reverse-engineering tools

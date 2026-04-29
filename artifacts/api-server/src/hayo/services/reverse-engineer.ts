@@ -80,28 +80,45 @@ export function findJADX(): string {
 }
 
 export function getToolStatus(): Record<string, { available: boolean; version?: string; path?: string }> {
+  // Generic check: runs cmd with versionFlag, returns available=true if exit code 0 OR stderr/stdout has content
   const check = (cmd: string, versionFlag = "--version"): { available: boolean; version?: string } => {
     try {
-      const out = execSync(`${cmd} ${versionFlag} 2>&1`, { stdio: "pipe", timeout: 8000 }).toString().trim();
-      const ver = out.split("\n")[0].slice(0, 60);
+      // Some tools (java, keytool) write version to stderr — 2>&1 captures both
+      const out = execSync(`${cmd} ${versionFlag} 2>&1`, { stdio: "pipe", timeout: 10_000 }).toString().trim();
+      const ver = out.split("\n")[0].slice(0, 80);
       return { available: true, version: ver };
-    } catch {
+    } catch (e: any) {
+      // Even if exit code ≠ 0, if there IS output the tool exists (e.g. keytool prints usage then exits 1)
+      const stderr = (e.stderr || e.stdout || "").toString().trim();
+      if (stderr.length > 0) {
+        const ver = stderr.split("\n")[0].slice(0, 80);
+        return { available: true, version: ver };
+      }
       return { available: false };
     }
   };
 
+  // xxd doesn't support --version; pipe empty string to it as a smoke-test
+  const checkXxd = (): { available: boolean; version?: string } => {
+    try {
+      execSync("echo '' | xxd 2>&1", { stdio: "pipe", timeout: 5_000 });
+      return { available: true, version: "xxd (installed)" };
+    } catch { return { available: false }; }
+  };
+
   const jadxPath = findJADX();
-  const apkPath = findApkTool();
+  const apkPath  = findApkTool();
 
   return {
     java:      { ...check("java", "-version"), path: "JDK 17" },
     jadx:      { ...check(jadxPath), path: jadxPath },
     apktool:   { ...check(apkPath), path: apkPath },
-    keytool:   check("keytool"),
-    jarsigner: check("jarsigner"),
+    // keytool / jarsigner use single-dash flags on older JDK; JDK 17 accepts both
+    keytool:   check("keytool", "-version"),
+    jarsigner: check("jarsigner", "-version"),
     zipalign:  check("zipalign"),
     apksigner: check("apksigner", "--version"),
-    xxd:       check("xxd", "--version"),
+    xxd:       checkXxd(),
     strings:   check("strings", "--version"),
     objdump:   check("objdump", "--version"),
     readelf:   check("readelf", "--version"),
@@ -666,7 +683,7 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
     const session: EditSession = {
       sessionId, structure,
       fileCount: allFiles.length,
-      apkToolAvailable,
+      apkToolAvailable: apktoolAvailable,
       usedApkTool: apktoolAvailable && ext === "apk",
       fileType: ext,
       decompDir,
@@ -686,7 +703,7 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
     return {
       sessionId, structure: [], fileCount: 0,
-      apkToolAvailable, usedApkTool: false,
+      apkToolAvailable: apktoolAvailable, usedApkTool: false,
       decompDir: "", origFile: "", fileBackups: new Map(),
       success: false, error: e.message,
     };
