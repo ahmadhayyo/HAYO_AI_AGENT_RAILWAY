@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { execSync } from "child_process";
 import { createAnthropicClient } from "../llm";
 
 const PROJECT_ROOT = path.resolve(process.cwd(), "../..");
@@ -240,7 +241,7 @@ ${relevantContext ? `## سياق إضافي:\n${relevantContext}` : ""}
   ];
 
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-6",
     max_tokens: 16384,
     system: systemPrompt,
     messages,
@@ -287,4 +288,280 @@ ${relevantContext ? `## سياق إضافي:\n${relevantContext}` : ""}
     operations: ops,
     executedOps: [...readResults, ...writeResults],
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bash execution (used by the agentic streaming endpoint)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DENIED_BASH_PATTERNS = [
+  "rm -rf /", "rm -rf ~", "mkfs", ":(){:|:&};:", "shutdown", "reboot",
+  "halt", "passwd", "sudo rm", "sudo dd",
+];
+
+export function executeBashInProject(
+  command: string,
+  timeoutMs: number = 60_000,
+): { stdout: string; stderr: string; exitCode: number } {
+  const cmdLower = command.toLowerCase().trim();
+  if (DENIED_BASH_PATTERNS.some(p => cmdLower.includes(p))) {
+    return { stdout: "", stderr: `[BLOCKED] Command denied by safety policy: ${command}`, exitCode: 1 };
+  }
+  try {
+    const stdout = execSync(command, {
+      cwd: PROJECT_ROOT,
+      timeout: timeoutMs,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as unknown as string;
+    return { stdout: String(stdout).slice(0, 8000), stderr: "", exitCode: 0 };
+  } catch (e: any) {
+    return {
+      stdout: String(e.stdout || "").slice(0, 4000),
+      stderr: String(e.stderr || e.message || "").slice(0, 4000),
+      exitCode: e.status ?? 1,
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Streaming agent — multi-turn with self-healing loop
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentStreamEvent {
+  type: "plan" | "thinking" | "tool_call" | "tool_result" | "terminal" | "error" | "done";
+  node: "planner" | "coder" | "executor" | "reviewer" | "system";
+  content: string;
+  step?: number;
+  totalSteps?: number;
+}
+
+const STREAMING_SYSTEM = `You are an autonomous AI software engineering agent inside the HAYO platform.
+You work on a TypeScript monorepo project (React + Vite frontend, Express + tRPC backend).
+
+## Working rules
+1. Read files before editing them — always produce COMPLETE file content when writing.
+2. Use execute_bash to run build/lint/test commands and verify your work.
+3. After completing all tasks respond with a JSON object:
+   {"status":"done","summary":"<what was accomplished>"}
+   OR if an error cannot be fixed:
+   {"status":"error","reason":"<description>"}
+
+## Available actions (respond ONLY with JSON tool calls or final status):
+
+To read a file:
+{"action":"read","path":"<relative path>"}
+
+To write a file:
+{"action":"write","path":"<relative path>","content":"<full file content>"}
+
+To run a bash command:
+{"action":"bash","command":"<shell command>","timeout":30000}
+
+To list a directory:
+{"action":"list","path":"<relative path>"}
+
+To search in files:
+{"action":"search","pattern":"<text>","glob":"*.ts,*.tsx"}
+
+## Project layout
+- Frontend: artifacts/hayo-ai/src/
+- Backend:  artifacts/api-server/src/hayo/
+- Shared:   shared/
+`;
+
+export async function* executeAgentCommandStreaming(
+  command: string,
+  conversationHistory: { role: "user" | "assistant"; content: string }[],
+): AsyncGenerator<AgentStreamEvent> {
+  const anthropic = createAnthropicClient();
+  const frontendTree = getProjectTree(HAYO_FRONTEND, "", 0, 3);
+  const backendTree  = getProjectTree(HAYO_BACKEND,  "", 0, 3);
+
+  const system = STREAMING_SYSTEM +
+    `\n\n## Project tree (frontend):\n${frontendTree}` +
+    `\n\n## Project tree (backend):\n${backendTree}`;
+
+  const messages: { role: "user" | "assistant"; content: string }[] = [
+    ...conversationHistory.slice(-8),
+    { role: "user", content: command },
+  ];
+
+  // ── Phase 1: planning ──────────────────────────────────────────────────────
+  yield { type: "thinking", node: "planner", content: "جاري تحليل الطلب وبناء الخطة..." };
+
+  const planMsg = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 2048,
+    system: `You are a planner. Analyse the user task and output ONLY a JSON array of step strings (max 8 steps). No other text.\nExample: ["Read App.tsx","Create NewPage.tsx","Add route"]`,
+    messages: [{ role: "user", content: command }],
+  });
+
+  let plan: string[] = [`تنفيذ: ${command}`];
+  try {
+    const raw = ((planMsg.content[0] as any).text || "").trim()
+      .replace(/^```json/, "").replace(/^```/, "").replace(/```$/, "").trim();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) plan = parsed;
+  } catch {}
+
+  yield { type: "plan", node: "planner", content: JSON.stringify(plan), totalSteps: plan.length };
+
+  // ── Phase 2: agentic execution with self-healing ───────────────────────────
+  const MAX_ROUNDS = 20;
+  const MAX_ERRORS = 5;
+  let errorCount = 0;
+  let lastError = "";
+
+  const agentMessages = [...messages];
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    // Build context injection with last error if any
+    const userContent = round === 0
+      ? command
+      : (lastError
+          ? `Previous error (attempt ${errorCount}/${MAX_ERRORS}):\n${lastError}\n\nAnalyse and fix it.`
+          : "Continue with the next step.");
+
+    if (round > 0) {
+      agentMessages.push({ role: "user", content: userContent });
+    }
+
+    yield { type: "thinking", node: "coder", content: `جولة التنفيذ ${round + 1}...` };
+
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      system,
+      messages: agentMessages,
+    });
+
+    const rawText = ((response.content[0] as any).text || "").trim();
+    agentMessages.push({ role: "assistant", content: rawText });
+
+    // ── Check for final status ───────────────────────────────────────────────
+    const finalMatch = rawText.match(/\{[\s\S]*?"status"\s*:\s*"(done|error)"[\s\S]*?\}/);
+    if (finalMatch) {
+      try {
+        const final = JSON.parse(finalMatch[0]);
+        if (final.status === "done") {
+          yield { type: "done", node: "reviewer", content: final.summary || "اكتملت المهمة بنجاح." };
+          return;
+        }
+        if (final.status === "error") {
+          yield { type: "error", node: "reviewer", content: final.reason || "فشلت المهمة." };
+          return;
+        }
+      } catch {}
+    }
+
+    // ── Parse and execute tool calls ─────────────────────────────────────────
+    const actionMatches = [...rawText.matchAll(/\{[\s\S]*?"action"\s*:\s*"[^"]+?"[\s\S]*?\}/g)];
+
+    if (actionMatches.length === 0) {
+      // Model produced plain text — treat as thinking/commentary
+      if (rawText.length > 0) {
+        yield { type: "thinking", node: "coder", content: rawText.slice(0, 400) };
+      }
+      continue;
+    }
+
+    let roundHadError = false;
+
+    for (const match of actionMatches) {
+      let action: any;
+      try { action = JSON.parse(match[0]); } catch { continue; }
+
+      switch (action.action) {
+        case "read": {
+          yield { type: "tool_call", node: "coder", content: `📖 قراءة: ${action.path}` };
+          const content = readFilesSafe([action.path]);
+          yield { type: "tool_result", node: "coder", content: content.slice(0, 3000) };
+          agentMessages.push({ role: "user", content: `[read result]\n${content.slice(0, 6000)}` });
+          break;
+        }
+        case "write": {
+          yield { type: "tool_call", node: "coder", content: `✍️ كتابة: ${action.path}` };
+          const abs = resolvePath(action.path);
+          if (!abs) {
+            const err = `[ERROR] مسار خارج المشروع: ${action.path}`;
+            yield { type: "error", node: "coder", content: err };
+            agentMessages.push({ role: "user", content: err });
+            roundHadError = true;
+          } else {
+            try {
+              const dir = path.dirname(abs);
+              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+              fs.writeFileSync(abs, action.content || "", "utf-8");
+              const ok = `[OK] كُتب الملف: ${action.path} (${(action.content?.length || 0).toLocaleString()} حرف)`;
+              yield { type: "tool_result", node: "coder", content: ok };
+              agentMessages.push({ role: "user", content: ok });
+            } catch (e: any) {
+              const err = `[ERROR] فشل الكتابة: ${e.message}`;
+              yield { type: "error", node: "coder", content: err };
+              agentMessages.push({ role: "user", content: err });
+              roundHadError = true;
+            }
+          }
+          break;
+        }
+        case "bash": {
+          const cmd = action.command || "";
+          yield { type: "tool_call", node: "executor", content: `⚡ bash: ${cmd}` };
+          const result = executeBashInProject(cmd, action.timeout || 60_000);
+          const output = [
+            `EXIT CODE: ${result.exitCode}`,
+            result.stdout ? `STDOUT:\n${result.stdout}` : "",
+            result.stderr ? `STDERR:\n${result.stderr}` : "",
+          ].filter(Boolean).join("\n");
+          yield { type: "terminal", node: "executor", content: output };
+          agentMessages.push({ role: "user", content: `[bash result]\n${output}` });
+          if (result.exitCode !== 0) {
+            roundHadError = true;
+            lastError = output;
+            errorCount++;
+          }
+          break;
+        }
+        case "list": {
+          yield { type: "tool_call", node: "coder", content: `📁 قائمة: ${action.path}` };
+          const tree = getProjectTree(
+            path.join(PROJECT_ROOT, action.path || "."), "", 0, 3,
+          );
+          yield { type: "tool_result", node: "coder", content: tree.slice(0, 2000) };
+          agentMessages.push({ role: "user", content: `[list result]\n${tree.slice(0, 3000)}` });
+          break;
+        }
+        case "search": {
+          yield { type: "tool_call", node: "coder", content: `🔍 بحث: "${action.pattern}"` };
+          // Simple grep across project
+          try {
+            const grepResult = execSync(
+              `grep -r --include="*.ts" --include="*.tsx" --include="*.js" -n "${action.pattern}" artifacts/ 2>/dev/null | head -40`,
+              { cwd: PROJECT_ROOT, encoding: "utf-8", timeout: 10_000 },
+            ) as unknown as string;
+            yield { type: "tool_result", node: "coder", content: String(grepResult).slice(0, 2000) };
+            agentMessages.push({ role: "user", content: `[search result]\n${String(grepResult).slice(0, 3000)}` });
+          } catch (e: any) {
+            const r = String(e.stdout || "لا نتائج").slice(0, 500);
+            yield { type: "tool_result", node: "coder", content: r };
+            agentMessages.push({ role: "user", content: `[search result]\n${r}` });
+          }
+          break;
+        }
+      }
+    }
+
+    // ── Self-healing gate ────────────────────────────────────────────────────
+    if (roundHadError && errorCount >= MAX_ERRORS) {
+      yield {
+        type: "error",
+        node: "reviewer",
+        content: `تجاوز الحد الأقصى للمحاولات (${MAX_ERRORS}). آخر خطأ:\n${lastError}`,
+      };
+      return;
+    }
+  }
+
+  yield { type: "done", node: "reviewer", content: "اكتملت جميع جولات التنفيذ." };
 }

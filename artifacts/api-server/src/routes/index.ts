@@ -7,6 +7,7 @@ import promptFactoryRouter from "./prompt-factory";
 import reverseRouter from "./reverse";
 import telegramRouter from "./telegram";
 import extractArchiveRouter from "./extract-archive";
+import agentRouter from "./agent";
 
 const router: IRouter = Router();
 router.use(healthRouter);
@@ -17,4 +18,5 @@ router.use(promptFactoryRouter);
 router.use("/reverse", reverseRouter);
 router.use(telegramRouter);
 router.use(extractArchiveRouter);
+router.use(agentRouter);
 export default router;
