@@ -428,8 +428,10 @@ export default function ReverseEngineer(){
   const[cFile,setCFile]=useState<File|null>(null);
   const[cloning,setCloning]=useState(false);
   const[cloneLive,setCloneLive]=useState<{sseUrl:string}|null>(null);
-  const[cOpts,setCOpts]=useState({removeAds:true,unlockPremium:true,removeTracking:false,removeLicenseCheck:true,extractSecrets:true,changeAppName:"",changePackageName:"",customInstructions:""});
-  const[cResult,setCResult]=useState<{modifications:string[];patchedFiles?:number;signed?:boolean;downloadUrl?:string;installCommand?:string;success?:boolean;secrets?:any[];secretsFound?:number}|null>(null);
+  const[cOpts,setCOpts]=useState({removeAds:true,unlockPremium:true,removeTracking:false,removeLicenseCheck:true,bypassTrial:true,extractSecrets:true,changeAppName:"",changePackageName:"",customInstructions:""});
+  const[cResult,setCResult]=useState<{modifications:string[];patchedFiles?:number;signed?:boolean;downloadUrl?:string;installCommand?:string;success?:boolean;secrets?:any[];secretsFound?:number;auditReport?:any;fridaScript?:string;verification?:any}|null>(null);
+  const[showAuditReport,setShowAuditReport]=useState(false);
+  const[showFridaPanel,setShowFridaPanel]=useState(false);
 
   // ══ TAB 3: EDIT ══
   const[eFile,setEFile]=useState<File|null>(null);
@@ -619,7 +621,7 @@ export default function ReverseEngineer(){
           const blob=await dlR.blob();const dlUrl=URL.createObjectURL(blob);const a=document.createElement("a");a.href=dlUrl;
           const ext=cFile.name.split(".").pop()?.toLowerCase();
           const bn=cFile.name.replace(/\.[^.]+$/,"");a.download=ext==="apk"?`cloned-${bn}.apk`:`cloned-${bn}.zip`;a.click();
-          setCResult({modifications:cloneResult.modifications||[],patchedFiles:cloneResult.patchedFiles||0,signed:cloneResult.signed||false,downloadUrl:dlUrl,installCommand:ext==="apk"?"adb install -r cloned-"+cFile.name:undefined,success:true,secrets:cloneResult.secrets||[],secretsFound:cloneResult.secretsFound||0});
+          setCResult({modifications:cloneResult.modifications||[],patchedFiles:cloneResult.patchedFiles||0,signed:cloneResult.signed||false,downloadUrl:dlUrl,installCommand:ext==="apk"?"adb install -r cloned-"+cFile.name:undefined,success:true,secrets:cloneResult.secrets||[],secretsFound:cloneResult.secretsFound||0,auditReport:cloneResult.auditReport||null,fridaScript:cloneResult.fridaScript||null,verification:cloneResult.verification||null});
           toast.success(cloneResult.signed?"🎉 استنساخ + توقيع — جاهز!":"✅ تم الاستنساخ");
         }else{setCResult({modifications:cloneResult.modifications||[],success:false});toast.error("فشل تحميل الملف المستنسخ");}
       }else{
@@ -967,7 +969,7 @@ export default function ReverseEngineer(){
           :<div className="space-y-2"><Upload className="w-8 h-8 mx-auto text-muted-foreground"/><p className="text-sm">اسحب أو انقر</p><p className="text-xs text-muted-foreground">{ALL_FORMATS.map(f=>f.toUpperCase()).join(" · ")}</p></div>}
         </div>
         <div className="grid grid-cols-2 gap-3">
-          {([["removeAds","إزالة الإعلانات","🚫","AdMob, Facebook, Unity"],["unlockPremium","فتح المدفوع","🔓","isPremium, isSubscribed + Coins MAX"],["removeTracking","إزالة التتبع","📡","Firebase, Analytics"],["removeLicenseCheck","تجاوز الرخصة","🔑","checkLicense, verifySignature"],["extractSecrets","استخراج الأسرار","🗝️","Firebase, AWS, JWT, API Keys"]] as [string,string,string,string][]).map(([k,l,ic,d])=><button key={k} onClick={()=>setCOpts(p=>({...p,[k]:!(p as any)[k]}))} className={`p-3 rounded-xl border text-right transition-all ${(cOpts as any)[k]?"bg-violet-500/10 border-violet-500/40 text-violet-300":"bg-card/70 backdrop-blur-sm border-border text-muted-foreground hover:border-violet-500/30"}`}><div className="flex items-center gap-2"><span className="text-lg">{ic}</span><span className="font-medium text-sm">{l}</span><span className="mr-auto">{(cOpts as any)[k]?<ToggleRight className="w-5 h-5 text-violet-400"/>:<ToggleLeft className="w-5 h-5"/>}</span></div><p className="text-[10px] mt-1 opacity-60">{d}</p></button>)}
+          {([["removeAds","إزالة الإعلانات","🚫","AdMob, Facebook, Unity"],["unlockPremium","فتح المدفوع","🔓","isPremium, isSubscribed + Coins MAX"],["removeTracking","إزالة التتبع","📡","Firebase, Analytics"],["removeLicenseCheck","تجاوز الرخصة","🔑","checkLicense, verifySignature"],["bypassTrial","تجاوز التجريب","⏰","isTrialExpired, getDailyLimit → MAX"],["extractSecrets","استخراج الأسرار","🗝️","Firebase, AWS, JWT, API Keys"]] as [string,string,string,string][]).map(([k,l,ic,d])=><button key={k} onClick={()=>setCOpts(p=>({...p,[k]:!(p as any)[k]}))} className={`p-3 rounded-xl border text-right transition-all ${(cOpts as any)[k]?"bg-violet-500/10 border-violet-500/40 text-violet-300":"bg-card/70 backdrop-blur-sm border-border text-muted-foreground hover:border-violet-500/30"}`}><div className="flex items-center gap-2"><span className="text-lg">{ic}</span><span className="font-medium text-sm">{l}</span><span className="mr-auto">{(cOpts as any)[k]?<ToggleRight className="w-5 h-5 text-violet-400"/>:<ToggleLeft className="w-5 h-5"/>}</span></div><p className="text-[10px] mt-1 opacity-60">{d}</p></button>)}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <input value={cOpts.changeAppName} onChange={e=>setCOpts(p=>({...p,changeAppName:e.target.value}))} placeholder="اسم جديد (اختياري)" className="bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-violet-500/50"/>
@@ -990,7 +992,53 @@ export default function ReverseEngineer(){
           </div>
           <div className="text-xs font-semibold text-muted-foreground">سجل التعديلات:</div>
           <div className="max-h-48 overflow-y-auto space-y-1.5">{cResult.modifications.map((m:string,i:number)=><div key={i} className="text-xs bg-muted/20 rounded-lg px-3 py-2 flex items-start gap-2 border border-border/50"><span className="text-emerald-400 shrink-0 mt-0.5">{m.includes("🚫")?"🚫":m.includes("🔓")?"🔓":m.includes("💰")?"💰":m.includes("🔑")?"🔑":m.includes("توقيع")?"🔏":"✅"}</span><span className="text-muted-foreground">{m}</span></div>)}</div>
+          {/* Verification Status */}
+          {cResult.verification&&<div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 space-y-2">
+            <div className="text-xs font-semibold flex items-center gap-2"><Shield className="w-4 h-4 text-cyan-400"/>التحقق من الجودة (Quality Gate)</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className={`rounded-lg p-2 text-center border ${cResult.verification.signatureValid?"bg-emerald-500/10 border-emerald-500/30":"bg-red-500/10 border-red-500/30"}`}>
+                <div className={`text-sm font-bold ${cResult.verification.signatureValid?"text-emerald-300":"text-red-300"}`}>{cResult.verification.signatureValid?"صحيح":"فشل"}</div>
+                <div className="text-[10px] text-muted-foreground">apksigner verify</div>
+              </div>
+              <div className={`rounded-lg p-2 text-center border ${cResult.verification.zipValid?"bg-emerald-500/10 border-emerald-500/30":"bg-red-500/10 border-red-500/30"}`}>
+                <div className={`text-sm font-bold ${cResult.verification.zipValid?"text-emerald-300":"text-red-300"}`}>{cResult.verification.zipValid?"سليم":"خطأ"}</div>
+                <div className="text-[10px] text-muted-foreground">unzip -t (ZIP)</div>
+              </div>
+            </div>
+          </div>}
           {cResult.secrets&&cResult.secrets.length>0&&<details className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3"><summary className="text-xs font-bold text-amber-300 cursor-pointer">🗝️ الأسرار المستخرجة ({cResult.secrets.length})</summary><div className="mt-2 max-h-48 overflow-y-auto space-y-1.5">{cResult.secrets.map((s:any,i:number)=><div key={i} className="text-[10px] bg-muted/20 rounded px-2 py-1.5 border border-amber-500/10"><span className="text-amber-400 font-mono">[{s.type}]</span><span className="text-muted-foreground ml-2 font-mono break-all">{s.value}</span><span className="text-muted-foreground/50 ml-1">← {s.file}</span></div>)}</div></details>}
+          {/* Discovered Endpoints */}
+          {cResult.auditReport?.discoveredEndpoints?.length>0&&<details className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-3"><summary className="text-xs font-bold text-cyan-300 cursor-pointer">🌐 النقاط النهائية المكتشفة ({cResult.auditReport.discoveredEndpoints.length})</summary><div className="mt-2 max-h-48 overflow-y-auto space-y-1">{cResult.auditReport.discoveredEndpoints.map((ep:string,i:number)=><div key={i} className="text-[10px] bg-muted/20 rounded px-2 py-1.5 border border-cyan-500/10 font-mono text-cyan-300 break-all">{ep}</div>)}</div></details>}
+          {/* Audit Report Card */}
+          {cResult.auditReport&&<details open={showAuditReport} onToggle={e=>setShowAuditReport((e.target as HTMLDetailsElement).open)} className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-3">
+            <summary className="text-xs font-bold text-indigo-300 cursor-pointer">📋 تقرير التدقيق الأمني (Audit Report)</summary>
+            <div className="mt-3 space-y-3">
+              <div className="grid grid-cols-2 gap-2 text-[10px]">
+                <div className="bg-muted/20 rounded-lg p-2 border border-border"><span className="text-muted-foreground">Package:</span><span className="text-foreground ml-1 font-mono">{cResult.auditReport.packageName}</span></div>
+                <div className="bg-muted/20 rounded-lg p-2 border border-border"><span className="text-muted-foreground">Version:</span><span className="text-foreground ml-1 font-mono">{cResult.auditReport.versionName} ({cResult.auditReport.versionCode})</span></div>
+              </div>
+              <div className="text-[10px] font-semibold text-muted-foreground">مراحل العملية:</div>
+              <div className="space-y-1">{cResult.auditReport.phases?.map((p:any,i:number)=><div key={i} className={`flex items-center gap-2 text-[10px] px-2 py-1.5 rounded-lg border ${p.status==="success"?"bg-emerald-500/5 border-emerald-500/20 text-emerald-300":p.status==="warning"?"bg-yellow-500/5 border-yellow-500/20 text-yellow-300":"bg-red-500/5 border-red-500/20 text-red-300"}`}><span>{p.status==="success"?"✅":p.status==="warning"?"⚠️":"❌"}</span><span className="font-medium">{p.phase}</span><span className="mr-auto text-muted-foreground/70">{p.detail}</span></div>)}</div>
+              {cResult.auditReport.patchCategories?.length>0&&<div><div className="text-[10px] font-semibold text-muted-foreground mb-1">فئات التعديل:</div><div className="flex flex-wrap gap-1">{cResult.auditReport.patchCategories.map((c:any,i:number)=><span key={i} className="text-[9px] px-2 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/30 text-violet-300">{c.category}: {c.count}</span>)}</div></div>}
+              <div className="flex gap-2">
+                <button onClick={()=>{const blob=new Blob([JSON.stringify(cResult.auditReport,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="audit-report.json";a.click();}} className="flex-1 text-[10px] py-2 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 transition-all text-center">📥 تحميل JSON</button>
+              </div>
+            </div>
+          </details>}
+          {/* Frida Script Template */}
+          {cResult.fridaScript&&<details open={showFridaPanel} onToggle={e=>setShowFridaPanel((e.target as HTMLDetailsElement).open)} className="bg-pink-500/5 border border-pink-500/20 rounded-xl p-3">
+            <summary className="text-xs font-bold text-pink-300 cursor-pointer">🔬 Frida Script (مراقبة ديناميكية)</summary>
+            <div className="mt-3 space-y-2">
+              <p className="text-[10px] text-muted-foreground">استخدم هذا السكربت مع Frida لمراقبة سلوك التطبيق أثناء التشغيل على جهاز اختباري معزول.</p>
+              <div className="bg-black rounded-lg p-3 max-h-48 overflow-y-auto">
+                <pre className="text-[10px] text-green-400 font-mono whitespace-pre-wrap">{cResult.fridaScript.slice(0,2000)}{cResult.fridaScript.length>2000?"...":""}</pre>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={()=>{navigator.clipboard.writeText(cResult.fridaScript||"");toast.success("تم النسخ");}} className="flex-1 text-[10px] py-2 rounded-lg bg-pink-500/10 border border-pink-500/30 text-pink-300 hover:bg-pink-500/20 transition-all text-center">📋 نسخ</button>
+                <button onClick={()=>{const blob=new Blob([cResult.fridaScript||""],{type:"text/javascript"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="frida-script.js";a.click();}} className="flex-1 text-[10px] py-2 rounded-lg bg-pink-500/10 border border-pink-500/30 text-pink-300 hover:bg-pink-500/20 transition-all text-center">📥 تحميل .js</button>
+              </div>
+            </div>
+          </details>}
           {cResult.downloadUrl&&<a href={cResult.downloadUrl} download className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-semibold text-sm transition-all"><Download className="w-4 h-4"/>⬇️ تحميل APK المعدّل</a>}
           {cResult.installCommand&&<div className="bg-muted/30 border border-border rounded-lg p-2 font-mono text-xs text-muted-foreground"><span className="text-emerald-400">$</span> {cResult.installCommand}</div>}
         </div>}
