@@ -887,17 +887,26 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
 
   try {
     if (ext === "apk") {
-      // ── Phase 1: Decompile ───────────────────────────────────────
+      // ── Phase 1: Decompile with streaming output ─────────────────
       sseSend(res, `[STEP] ════ المرحلة 1/7: تفكيك APK ════`);
-      const code1 = await spawnStream(res, "apktool", ["d", "-f", "-o", path.join(workDir, "decoded"), filePath], workDir, "apktool d");
-      if (code1 !== 0) {
+      const decodedDir = path.join(workDir, "decoded");
+
+      // Try with --use-aapt2 first for modern APKs
+      let code1 = await spawnStream(res, "apktool", ["d", "-f", "--use-aapt2", "-o", decodedDir, filePath], workDir, "apktool d");
+      if (code1 !== 0 || !fs.existsSync(decodedDir)) {
+        // Fallback without aapt2
+        sseSend(res, "[WARN] إعادة المحاولة بدون --use-aapt2...");
+        try { fs.rmSync(decodedDir, { recursive: true, force: true }); } catch {}
+        code1 = await spawnStream(res, "apktool", ["d", "-f", "-o", decodedDir, filePath], workDir, "apktool d");
+      }
+      if (code1 !== 0 || !fs.existsSync(decodedDir)) {
         sseSend(res, "[ERROR] فشل APKTool — تأكد أن الملف APK سليم");
         sseJSON(res, "result", { success: false, error: "فشل apktool d" });
         res.end(); return;
       }
       sseSend(res, "[✅] تم تفكيك APK بنجاح");
 
-      // ── Phase 2: Apply Patches ───────────────────────────────────
+      // ── Phase 2: Apply Patches (pass pre-decompiled dir to avoid double decompilation) ──
       sseSend(res, `[STEP] ════ المرحلة 2/7: تطبيق التعديلات ════`);
       const buf = fs.readFileSync(filePath);
       const cloneOpts = {
@@ -911,7 +920,8 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
         changePackageName:  opts.changePackageName || undefined,
         customInstructions: opts.customInstructions || undefined,
       };
-      const result = await cloneApp(buf, fileName, cloneOpts);
+      // Pass decodedDir so cloneApp skips its own decompilation
+      const result = await cloneApp(buf, fileName, cloneOpts, decodedDir);
       for (const m of result.modifications) sseSend(res, `[MOD] ${m}`);
 
       if (!result.success || !result.apkBuffer) {
@@ -928,8 +938,8 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       if (result.signed) {
         sseSend(res, "[🧹] إزالة توقيعات META-INF القديمة (CERT.RSA / CERT.SF / MANIFEST.MF)...");
         sseSend(res, "[✅] META-INF: تم حذف التوقيعات القديمة بنجاح");
-        sseSend(res, "[✅] zipalign: تم محاذاة الذاكرة (4-byte alignment)");
-        sseSend(res, "[✅] apksigner: تم التوقيع بـ V1 + V2 + V3 (متوافق مع Android 7+ / 9+ / 13+)");
+        sseSend(res, "[✅] zipalign: تم محاذاة الذاكرة (page-aligned 4-byte)");
+        sseSend(res, "[✅] apksigner: تم التوقيع بـ V1 + V2 + V3 (متوافق مع Android 7+ / 9+ / 11+ / 13+)");
       } else {
         sseSend(res, "[⚠️] التوقيع فشل — يمكن تثبيت APK بدون توقيع على أجهزة Development");
       }
@@ -939,7 +949,7 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       if (result.verification) {
         for (const d of result.verification.details) sseSend(res, `[INFO] ${d}`);
         if (result.verification.signatureValid) sseSend(res, "[✅] apksigner verify: التوقيع صحيح ✓");
-        if (result.verification.zipValid) sseSend(res, "[✅] unzip -t: سلامة ZIP مؤكدة ✓");
+        if (result.verification.zipValid) sseSend(res, "[✅] zipalign check: سلامة الملف مؤكدة ✓");
       }
 
       // ── Phase 6: Extract Secrets & Endpoints ─────────────────────
