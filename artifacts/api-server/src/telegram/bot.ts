@@ -2196,4 +2196,10 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     _botRef = bot;
     _ownerRef = ownerChatId;
     if (convergenceConfig.enabled) {
-      console.log(`[Convergence] Auto-starting convergence scanner (interval: ${convergenceConfig.intervalMinutes}min)`)
+      console.log(`[Convergence] Auto-starting convergence scanner (interval: ${convergenceConfig.intervalMinutes}min)`);
+    }
+    restartConvergenceScanner(bot, ownerChatId);
+  }
+
+  return bot;
+}
