@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { spawnSync } from "child_process";
+import { execSync } from "child_process";
 import { createAnthropicClient } from "../llm";
 
 const PROJECT_ROOT = path.resolve(process.cwd(), "../..");
@@ -291,29 +291,13 @@ ${relevantContext ? `## سياق إضافي:\n${relevantContext}` : ""}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ★ UPGRADE 1: Bash execution — proper PATH, env, spawnSync, stderr capture
+// Bash execution (used by the agentic streaming endpoint)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DENIED_BASH_PATTERNS = [
   "rm -rf /", "rm -rf ~", "mkfs", ":(){:|:&};:", "shutdown", "reboot",
   "halt", "passwd", "sudo rm", "sudo dd",
 ];
-
-/** Build a sane shell environment that includes pnpm/node/local binaries. */
-function buildShellEnv(): NodeJS.ProcessEnv {
-  const localBin = [
-    path.join(PROJECT_ROOT, "node_modules/.bin"),
-    path.join(PROJECT_ROOT, "artifacts/api-server/node_modules/.bin"),
-    path.join(PROJECT_ROOT, "artifacts/hayo-ai/node_modules/.bin"),
-  ].join(process.platform === "win32" ? ";" : ":");
-
-  return {
-    ...process.env,
-    PATH: `${localBin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
-    NODE_ENV: "development",
-    FORCE_COLOR: "0",
-  };
-}
 
 export function executeBashInProject(
   command: string,
@@ -323,35 +307,21 @@ export function executeBashInProject(
   if (DENIED_BASH_PATTERNS.some(p => cmdLower.includes(p))) {
     return { stdout: "", stderr: `[BLOCKED] Command denied by safety policy: ${command}`, exitCode: 1 };
   }
-
-  const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
-  const shellFlag = process.platform === "win32" ? "/c" : "-c";
-
-  const result = spawnSync(shell, [shellFlag, command], {
-    cwd: PROJECT_ROOT,
-    timeout: timeoutMs,
-    encoding: "utf-8",
-    env: buildShellEnv(),
-    maxBuffer: 10 * 1024 * 1024, // 10 MB
-  });
-
-  const stdout = (result.stdout || "").trim().slice(0, 8000);
-  const stderr = (result.stderr || "").trim().slice(0, 4000);
-  const exitCode = result.status ?? (result.error ? 1 : 0);
-
-  // spawnSync sets error on timeout or ENOENT
-  if (result.error) {
-    const errMsg = result.error.message || String(result.error);
+  try {
+    const stdout = execSync(command, {
+      cwd: PROJECT_ROOT,
+      timeout: timeoutMs,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as unknown as string;
+    return { stdout: String(stdout).slice(0, 8000), stderr: "", exitCode: 0 };
+  } catch (e: any) {
     return {
-      stdout,
-      stderr: errMsg.includes("ETIMEDOUT") || errMsg.includes("timeout")
-        ? `[TIMEOUT] Command exceeded ${timeoutMs}ms: ${command}`
-        : `[ERROR] ${errMsg}`,
-      exitCode: 1,
+      stdout: String(e.stdout || "").slice(0, 4000),
+      stderr: String(e.stderr || e.message || "").slice(0, 4000),
+      exitCode: e.status ?? 1,
     };
   }
-
-  return { stdout, stderr, exitCode };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -366,196 +336,232 @@ export interface AgentStreamEvent {
   totalSteps?: number;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ★ UPGRADE 2: tRPC router snapshot — gives agent real API knowledge
-// ─────────────────────────────────────────────────────────────────────────────
+const STREAMING_SYSTEM = `You are an autonomous AI software engineering agent inside the HAYO platform.
+You work on a TypeScript monorepo project (React + Vite frontend, Express + tRPC backend).
 
-function getTrpcSnapshot(): string {
-  const routerPath = path.join(HAYO_BACKEND, "router.ts");
-  if (!fs.existsSync(routerPath)) return "(router.ts not found)";
-  try {
-    const content = fs.readFileSync(routerPath, "utf-8");
-    // Extract only procedure names & types (skip full implementations)
-    const lines = content.split("\n");
-    const snapshot: string[] = [];
-    for (const line of lines) {
-      // Capture procedure declarations
-      if (/^\s+\w+:\s+(admin|public|protected)Procedure/.test(line) ||
-          /^\s+\w+:\s+\w+Router,?$/.test(line) ||
-          /export const \w+Router/.test(line)) {
-        snapshot.push(line.trimEnd());
-      }
-    }
-    return snapshot.slice(0, 120).join("\n") || "(no procedures found)";
-  } catch {
-    return "(failed to read router)";
-  }
-}
+## Working rules
+1. Read files before editing them — always produce COMPLETE file content when writing.
+2. Use execute_bash to run build/lint/test commands and verify your work.
+3. After completing all tasks respond with a JSON object:
+   {"status":"done","summary":"<what was accomplished>"}
+   OR if an error cannot be fixed:
+   {"status":"error","reason":"<description>"}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ★ UPGRADE 3: Context compression — prevent context window overflow
-// ─────────────────────────────────────────────────────────────────────────────
+## Available actions (respond ONLY with JSON tool calls or final status):
 
-const COMPRESS_THRESHOLD = 16; // compress when messages exceed this count
-const KEEP_RECENT = 6;         // always keep latest N messages verbatim
+To read a file:
+{"action":"read","path":"<relative path>"}
 
-async function compressContext(
-  messages: { role: "user" | "assistant"; content: string }[],
-  anthropic: ReturnType<typeof createAnthropicClient>,
-): Promise<{ role: "user" | "assistant"; content: string }[]> {
-  if (messages.length <= COMPRESS_THRESHOLD) return messages;
+To write a file:
+{"action":"write","path":"<relative path>","content":"<full file content>"}
 
-  const toSummarise = messages.slice(0, messages.length - KEEP_RECENT);
-  const recent      = messages.slice(messages.length - KEEP_RECENT);
+To run a bash command:
+{"action":"bash","command":"<shell command>","timeout":30000}
 
-  const summaryMsg = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20251001",   // cheap model for summarisation
-    max_tokens: 1024,
-    system: "Summarise the completed work steps below in ≤300 words. Focus on: which files were written/edited, which commands ran and their outcomes, and any errors encountered. Be concise.",
-    messages: [{ role: "user", content: toSummarise.map(m => `[${m.role}]: ${m.content}`).join("\n\n") }],
-  });
+To list a directory:
+{"action":"list","path":"<relative path>"}
 
-  const summary = (summaryMsg.content[0] as any).text || "(summary unavailable)";
+To search in files:
+{"action":"search","pattern":"<text>","glob":"*.ts,*.tsx"}
 
-  return [
-    { role: "user",      content: `[COMPRESSED HISTORY — ${toSummarise.length} messages summarised]\n${summary}` },
-    { role: "assistant", content: "Understood. Continuing from the summary." },
-    ...recent,
-  ];
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ★ UPGRADE 4: Deterministic reviewer — exit-code + pattern based, not LLM
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface ReviewVerdict {
-  status: "success" | "error" | "continue";
-  reason?: string;
-}
-
-function deterministicReview(
-  agentMessages: { role: string; content: string }[],
-  errorCount: number,
-  maxErrors: number,
-): ReviewVerdict {
-  // Gather all bash results from the conversation
-  const bashResults = agentMessages
-    .filter(m => m.role === "user" && m.content.startsWith("[bash result]"))
-    .map(m => m.content);
-
-  if (bashResults.length === 0) return { status: "continue" };
-
-  const lastBash = bashResults[bashResults.length - 1];
-
-  // Hard failure patterns in terminal output
-  const HARD_FAIL = [
-    /EXIT CODE: [^0\n]/,
-    /error TS\d+:/i,
-    /SyntaxError:/,
-    /Cannot find module/,
-    /ENOENT:/,
-    /Build failed/i,
-    /compilation failed/i,
-    /failed to compile/i,
-  ];
-
-  // Success patterns
-  const SUCCESS = [
-    /EXIT CODE: 0/,
-    /Build complete/i,
-    /Successfully compiled/i,
-    /Finished in/i,
-    /✓/,
-  ];
-
-  const hasHardFail = HARD_FAIL.some(p => p.test(lastBash));
-  const hasSuccess  = SUCCESS.some(p => p.test(lastBash));
-
-  if (hasHardFail) {
-    if (errorCount >= maxErrors) {
-      return { status: "error", reason: `تجاوز الحد الأقصى للمحاولات (${maxErrors}). آخر خطأ:\n${lastBash.slice(0, 600)}` };
-    }
-    return { status: "error", reason: lastBash.slice(0, 600) };
-  }
-
-  if (hasSuccess) return { status: "success" };
-
-  return { status: "continue" };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ★ UPGRADE 5: File diff tracker — shows exactly what changed
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface FileDiff {
-  path: string;
-  action: "created" | "modified" | "deleted";
-  sizeBytes: number;
-}
-
-function trackFileChanges(
-  snapshots: Map<string, number>,
-  agentMessages: { role: string; content: string }[],
-): FileDiff[] {
-  const written = agentMessages
-    .filter(m => m.role === "user" && m.content.startsWith("[OK] كُتب الملف:"))
-    .map(m => {
-      const match = m.content.match(/\[OK\] كُتب الملف: (.+?) \(/);
-      return match?.[1] ?? null;
-    })
-    .filter(Boolean) as string[];
-
-  const diffs: FileDiff[] = [];
-  for (const fp of [...new Set(written)]) {
-    const abs = resolvePath(fp);
-    if (!abs) continue;
-    const existed = snapshots.has(fp);
-    const currentSize = fs.existsSync(abs) ? fs.statSync(abs).size : 0;
-    diffs.push({
-      path: fp,
-      action: existed ? "modified" : "created",
-      sizeBytes: currentSize,
-    });
-  }
-  return diffs;
-}
-
-// system prompt is built dynamically inside executeAgentCommandStreaming
-// (includes live tRPC snapshot, project tree, package.json scripts)
+## Project layout
+- Frontend: artifacts/hayo-ai/src/
+- Backend:  artifacts/api-server/src/hayo/
+- Shared:   shared/
+`;
 
 export async function* executeAgentCommandStreaming(
   command: string,
   conversationHistory: { role: "user" | "assistant"; content: string }[],
 ): AsyncGenerator<AgentStreamEvent> {
   const anthropic = createAnthropicClient();
+  const frontendTree = getProjectTree(HAYO_FRONTEND, "", 0, 3);
+  const backendTree  = getProjectTree(HAYO_BACKEND,  "", 0, 3);
 
-  // ── ★ UPGRADE 4: Build rich system prompt with live project knowledge ──────
-  const frontendTree  = getProjectTree(HAYO_FRONTEND, "", 0, 3);
-  const backendTree   = getProjectTree(HAYO_BACKEND,  "", 0, 3);
-  const trpcSnapshot  = getTrpcSnapshot();
+  const system = STREAMING_SYSTEM +
+    `\n\n## Project tree (frontend):\n${frontendTree}` +
+    `\n\n## Project tree (backend):\n${backendTree}`;
 
-  // Read package.json scripts so agent knows build/dev commands
-  let pkgScripts = "(unavailable)";
+  const messages: { role: "user" | "assistant"; content: string }[] = [
+    ...conversationHistory.slice(-8),
+    { role: "user", content: command },
+  ];
+
+  // ── Phase 1: planning ──────────────────────────────────────────────────────
+  yield { type: "thinking", node: "planner", content: "جاري تحليل الطلب وبناء الخطة..." };
+
+  const planMsg = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 2048,
+    system: `You are a planner. Analyse the user task and output ONLY a JSON array of step strings (max 8 steps). No other text.\nExample: ["Read App.tsx","Create NewPage.tsx","Add route"]`,
+    messages: [{ role: "user", content: command }],
+  });
+
+  let plan: string[] = [`تنفيذ: ${command}`];
   try {
-    const apiPkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "artifacts/api-server/package.json"), "utf-8"));
-    const fePkg  = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "artifacts/hayo-ai/package.json"),    "utf-8"));
-    pkgScripts = [
-      "api-server scripts: " + JSON.stringify(apiPkg.scripts ?? {}),
-      "hayo-ai scripts:    " + JSON.stringify(fePkg.scripts  ?? {}),
-    ].join("\n");
+    const raw = ((planMsg.content[0] as any).text || "").trim()
+      .replace(/^```json/, "").replace(/^```/, "").replace(/```$/, "").trim();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) plan = parsed;
   } catch {}
 
-  const SYSTEM = `You are an autonomous AI software engineering agent inside the HAYO platform.
-Stack: TypeScript monorepo — React+Vite frontend, Express+tRPC backend, Drizzle ORM, PostgreSQL.
-UI: Tailwind CSS + shadcn/ui + Lucide icons. Routing: wouter. Language: Arabic (RTL).
+  yield { type: "plan", node: "planner", content: JSON.stringify(plan), totalSteps: plan.length };
 
-## Available actions — respond with ONE JSON object per turn:
+  // ── Phase 2: agentic execution with self-healing ───────────────────────────
+  const MAX_ROUNDS = 20;
+  const MAX_ERRORS = 5;
+  let errorCount = 0;
+  let lastError = "";
 
-Read a file:          {"action":"read","path":"<rel path>"}
-Write/create a file:  {"action":"write","path":"<rel path>","content":"<FULL content — no placeholders>"}
-Run a shell command:  {"action":"bash","command":"<cmd>","timeout":60000}
-List a directory:     {"action":"list","path":"<rel path>"}
-Search in codebase:   {"action":"search","pattern":"<text>","path":"artifacts/"}
-TypeScript check:     {"action":"bash","command":"npx tsc --noEmit -p artifacts/api-server/tsconfig.json 2>&1 | head -30"}
-Done signal:          {"status":"done","summary":"<what was done>","files":["list of modified files"]}
-Error sig
+  const agentMessages = [...messages];
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    // Build context injection with last error if any
+    const userContent = round === 0
+      ? command
+      : (lastError
+          ? `Previous error (attempt ${errorCount}/${MAX_ERRORS}):\n${lastError}\n\nAnalyse and fix it.`
+          : "Continue with the next step.");
+
+    if (round > 0) {
+      agentMessages.push({ role: "user", content: userContent });
+    }
+
+    yield { type: "thinking", node: "coder", content: `جولة التنفيذ ${round + 1}...` };
+
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      system,
+      messages: agentMessages,
+    });
+
+    const rawText = ((response.content[0] as any).text || "").trim();
+    agentMessages.push({ role: "assistant", content: rawText });
+
+    // ── Check for final status ───────────────────────────────────────────────
+    const finalMatch = rawText.match(/\{[\s\S]*?"status"\s*:\s*"(done|error)"[\s\S]*?\}/);
+    if (finalMatch) {
+      try {
+        const final = JSON.parse(finalMatch[0]);
+        if (final.status === "done") {
+          yield { type: "done", node: "reviewer", content: final.summary || "اكتملت المهمة بنجاح." };
+          return;
+        }
+        if (final.status === "error") {
+          yield { type: "error", node: "reviewer", content: final.reason || "فشلت المهمة." };
+          return;
+        }
+      } catch {}
+    }
+
+    // ── Parse and execute tool calls ─────────────────────────────────────────
+    const actionMatches = [...rawText.matchAll(/\{[\s\S]*?"action"\s*:\s*"[^"]+?"[\s\S]*?\}/g)];
+
+    if (actionMatches.length === 0) {
+      // Model produced plain text — treat as thinking/commentary
+      if (rawText.length > 0) {
+        yield { type: "thinking", node: "coder", content: rawText.slice(0, 400) };
+      }
+      continue;
+    }
+
+    let roundHadError = false;
+
+    for (const match of actionMatches) {
+      let action: any;
+      try { action = JSON.parse(match[0]); } catch { continue; }
+
+      switch (action.action) {
+        case "read": {
+          yield { type: "tool_call", node: "coder", content: `📖 قراءة: ${action.path}` };
+          const content = readFilesSafe([action.path]);
+          yield { type: "tool_result", node: "coder", content: content.slice(0, 3000) };
+          agentMessages.push({ role: "user", content: `[read result]\n${content.slice(0, 6000)}` });
+          break;
+        }
+        case "write": {
+          yield { type: "tool_call", node: "coder", content: `✍️ كتابة: ${action.path}` };
+          const abs = resolvePath(action.path);
+          if (!abs) {
+            const err = `[ERROR] مسار خارج المشروع: ${action.path}`;
+            yield { type: "error", node: "coder", content: err };
+            agentMessages.push({ role: "user", content: err });
+            roundHadError = true;
+          } else {
+            try {
+              const dir = path.dirname(abs);
+              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+              fs.writeFileSync(abs, action.content || "", "utf-8");
+              const ok = `[OK] كُتب الملف: ${action.path} (${(action.content?.length || 0).toLocaleString()} حرف)`;
+              yield { type: "tool_result", node: "coder", content: ok };
+              agentMessages.push({ role: "user", content: ok });
+            } catch (e: any) {
+              const err = `[ERROR] فشل الكتابة: ${e.message}`;
+              yield { type: "error", node: "coder", content: err };
+              agentMessages.push({ role: "user", content: err });
+              roundHadError = true;
+            }
+          }
+          break;
+        }
+        case "bash": {
+          const cmd = action.command || "";
+          yield { type: "tool_call", node: "executor", content: `⚡ bash: ${cmd}` };
+          const result = executeBashInProject(cmd, action.timeout || 60_000);
+          const output = [
+            `EXIT CODE: ${result.exitCode}`,
+            result.stdout ? `STDOUT:\n${result.stdout}` : "",
+            result.stderr ? `STDERR:\n${result.stderr}` : "",
+          ].filter(Boolean).join("\n");
+          yield { type: "terminal", node: "executor", content: output };
+          agentMessages.push({ role: "user", content: `[bash result]\n${output}` });
+          if (result.exitCode !== 0) {
+            roundHadError = true;
+            lastError = output;
+            errorCount++;
+          }
+          break;
+        }
+        case "list": {
+          yield { type: "tool_call", node: "coder", content: `📁 قائمة: ${action.path}` };
+          const tree = getProjectTree(
+            path.join(PROJECT_ROOT, action.path || "."), "", 0, 3,
+          );
+          yield { type: "tool_result", node: "coder", content: tree.slice(0, 2000) };
+          agentMessages.push({ role: "user", content: `[list result]\n${tree.slice(0, 3000)}` });
+          break;
+        }
+        case "search": {
+          yield { type: "tool_call", node: "coder", content: `🔍 بحث: "${action.pattern}"` };
+          // Simple grep across project
+          try {
+            const grepResult = execSync(
+              `grep -r --include="*.ts" --include="*.tsx" --include="*.js" -n "${action.pattern}" artifacts/ 2>/dev/null | head -40`,
+              { cwd: PROJECT_ROOT, encoding: "utf-8", timeout: 10_000 },
+            ) as unknown as string;
+            yield { type: "tool_result", node: "coder", content: String(grepResult).slice(0, 2000) };
+            agentMessages.push({ role: "user", content: `[search result]\n${String(grepResult).slice(0, 3000)}` });
+          } catch (e: any) {
+            const r = String(e.stdout || "لا نتائج").slice(0, 500);
+            yield { type: "tool_result", node: "coder", content: r };
+            agentMessages.push({ role: "user", content: `[search result]\n${r}` });
+          }
+          break;
+        }
+      }
+    }
+
+    // ── Self-healing gate ────────────────────────────────────────────────────
+    if (roundHadError && errorCount >= MAX_ERRORS) {
+      yield {
+        type: "error",
+        node: "reviewer",
+        content: `تجاوز الحد الأقصى للمحاولات (${MAX_ERRORS}). آخر خطأ:\n${lastError}`,
+      };
+      return;
+    }
+  }
+
+  yield { type: "done", node: "reviewer", content: "اكتملت جميع جولات التنفيذ." };
+}
