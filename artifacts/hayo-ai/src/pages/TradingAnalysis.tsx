@@ -1506,4 +1506,24 @@ export default function TradingAnalysis() {
                     </div>
                     {oandaEnv === "live" && (
                       <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-[10px] text-red-400">
-                        ⚠️ أنت في ا
+                        ⚠️ أنت في البيئة الحقيقية — ستُنفَّذ الصفقات بأموال حقيقية
+                      </div>
+                    )}
+                  </div>
+                )}
+                </>
+              )}
+
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Footer disclaimer */}
+        <div className="text-center text-[10px] text-muted-foreground py-2">
+          ⚠️ هذا التحليل للأغراض التعليمية فقط وليس نصيحة مالية. تداول على مسؤوليتك الخاصة.
+        </div>
+
+      </div>
+    </div>
+  );
+}
