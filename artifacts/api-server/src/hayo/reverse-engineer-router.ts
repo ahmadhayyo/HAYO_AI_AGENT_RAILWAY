@@ -322,7 +322,6 @@ export const reverseEngineerRouter = router({
         unlockPremium: z.boolean().default(false),
         removeTracking: z.boolean().default(false),
         removeLicenseCheck: z.boolean().default(false),
-        bypassTrial: z.boolean().default(false),
         changeAppName: z.string().optional(),
         changePackageName: z.string().optional(),
         customInstructions: z.string().optional(),

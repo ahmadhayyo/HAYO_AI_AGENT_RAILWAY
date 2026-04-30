@@ -17,7 +17,7 @@ import {
   RefreshCw, Shield, AlertTriangle, ChevronDown, ChevronUp,
   Activity, Target, StopCircle, Zap, Trophy, Send,
   Newspaper, Scan, CheckCircle2, XCircle, Clock, ToggleLeft, ToggleRight,
-  Crosshair, Radio, Brain,
+  Crosshair, Radio,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
@@ -148,15 +148,7 @@ function QuickScanPanel({ onSelectPair }: { onSelectPair: (pair: string, tf: str
         toast.success(`🎯 ${high.length} إشارة عالية الجودة اكتُشفت!`);
       }
     },
-    onError: (err: any) => {
-      if (err.data?.code === "PRECONDITION_FAILED") {
-        toast.error("⚠️ أضف TWELVE_DATA_API_KEY في إعدادات Railway أولاً");
-      } else if (err.data?.code === "TOO_MANY_REQUESTS") {
-        toast.error("⏳ نفد رصيد مفاتيح TwelveData اليوم — يتجدد غداً");
-      } else {
-        toast.error(`خطأ في الفحص: ${err.message}`);
-      }
-    },
+    onError: (err) => toast.error(`خطأ في الفحص: ${err.message}`),
   });
 
   const runScan = useCallback(() => {
@@ -1506,23 +1498,16 @@ export default function TradingAnalysis() {
                     </div>
                     {oandaEnv === "live" && (
                       <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-[10px] text-red-400">
-                        ⚠️ أنت في البيئة الحقيقية — ستُنفَّذ الصفقات بأموال حقيقية
+                        ⚠️ أنت في الوضع الحقيقي! الصفقات ستنفذ بأموال حقيقية. تأكد من ضبط نسبة المخاطرة بحذر.
                       </div>
                     )}
                   </div>
                 )}
                 </>
               )}
-
             </motion.div>
           )}
         </AnimatePresence>
-
-        {/* Footer disclaimer */}
-        <div className="text-center text-[10px] text-muted-foreground py-2">
-          ⚠️ هذا التحليل للأغراض التعليمية فقط وليس نصيحة مالية. تداول على مسؤوليتك الخاصة.
-        </div>
-
       </div>
     </div>
   );

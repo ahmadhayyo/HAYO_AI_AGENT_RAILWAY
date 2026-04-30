@@ -887,11 +887,10 @@ export async function rebuildAPK(sessionId: string): Promise<{ success: boolean;
 // ═══════════════════════════════════════════════════════════════
 async function signAPKFile(apkPath: string, workDir: string): Promise<string | null> {
   try {
-    // ── 1. Resolve or create keystore (RSA 4096 for maximum compatibility) ──
+    // ── 1. Resolve keystore ──────────────────────────────────
     const keystorePaths = [
       "/home/runner/debug.keystore",
       path.join(workDir, "debug.keystore"),
-      path.join(os.homedir(), ".android", "debug.keystore"),
     ];
     let keystorePath = keystorePaths.find(p => fs.existsSync(p)) ?? null;
 
@@ -904,7 +903,7 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
         "-alias", "androiddebugkey",
         "-keypass", "android",
         "-keyalg", "RSA",
-        "-keysize", "4096",
+        "-keysize", "2048",
         "-validity", "36500",
         "-dname", "CN=Android Debug,O=Android,C=US",
       ], workDir, 30_000);
@@ -916,41 +915,34 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
       return null;
     }
 
-    // ── 2. Thorough META-INF cleanup ──
-    // Remove ALL old signature files — wildcard patterns + explicit names
-    // APKTool rebuild can keep stale META-INF from original APK.
-    // If old CERT.RSA claims V2-signed but no valid V2 block, Android 7+ rejects.
-    console.log("[SignAPK] Stripping ALL old META-INF signature files...");
-    const stripPatterns = [
-      "META-INF/*.RSA", "META-INF/*.DSA", "META-INF/*.EC",
-      "META-INF/*.SF", "META-INF/MANIFEST.MF",
-      "META-INF/CERT.RSA", "META-INF/CERT.SF",
-      "META-INF/ANDROIDD.RSA", "META-INF/ANDROIDD.SF",
-      "META-INF/BNDLTOOL.RSA", "META-INF/BNDLTOOL.SF",
-    ];
-    const stripResult = runCmd("zip", ["-d", apkPath, ...stripPatterns], workDir, 15_000);
+    // ── 2. Strip old V1 signature files — CRITICAL for modern Android ──
+    // APKTool rebuild keeps META-INF from original. If the old CERT.RSA claims
+    // V2-signed but no valid V2 block exists, Android 7+ throws INSTALL_PARSE_FAILED.
+    // We must remove all old signature files BEFORE zipalign + apksigner.
+    console.log("[SignAPK] Stripping old META-INF signature files...");
+    const stripResult = runCmd("zip", [
+      "-d", apkPath,
+      "META-INF/CERT.RSA",
+      "META-INF/CERT.SF",
+      "META-INF/MANIFEST.MF",
+      "META-INF/*.RSA",
+      "META-INF/*.SF",
+      "META-INF/*.DSA",
+      "META-INF/*.EC",
+    ], workDir, 15_000);
+    // zip -d exits with code 12 if no files matched — that's OK
     console.log(`[SignAPK] META-INF strip exit code: ${stripResult.code} (0 or 12 = OK)`);
 
-    // ── 3. Detect minSdkVersion from APK for signing ──
-    let minSdk = 21; // default
-    try {
-      const aapt2Out = runCmd("aapt2", ["dump", "badging", apkPath], workDir, 15_000);
-      const sdkMatch = (aapt2Out.stdout || "").match(/sdkVersion:'(\d+)'/);
-      if (sdkMatch) minSdk = parseInt(sdkMatch[1], 10);
-    } catch {}
-    if (minSdk < 21) minSdk = 21;
-    console.log(`[SignAPK] Detected minSdkVersion: ${minSdk}`);
-
-    // ── 4. zipalign -f -p 4 (page-aligned, required for Android 11+) ──
+    // ── 3. zipalign -f 4 (required for Android 11+) ─────────
     const alignedPath = apkPath.replace(/\.apk$/, "-aligned.apk");
-    const alignResult = runCmd("zipalign", ["-f", "-p", "4", apkPath, alignedPath], workDir, 60_000);
+    const alignResult = runCmd("zipalign", ["-f", "-v", "4", apkPath, alignedPath], workDir, 60_000);
     const useAligned = alignResult.code === 0 && fs.existsSync(alignedPath);
     const targetForSigning = useAligned ? alignedPath : apkPath;
-    console.log(`[SignAPK] zipalign ${useAligned ? "OK (page-aligned)" : "FAILED (using unaligned APK)"}`);
+    console.log(`[SignAPK] zipalign ${useAligned ? "OK" : "FAILED (using unaligned APK)"}`);
 
-    // ── 5. apksigner (preferred — V1/V2/V3 schemes) ──
+    // ── 4. apksigner (preferred — Android 11+ V2/V3 schemes) ─
     const signedPath = apkPath.replace(/\.apk$/, "-signed.apk");
-    const apkSignerArgs = [
+    const apkSignerResult = runCmd("apksigner", [
       "sign",
       "--ks", keystorePath,
       "--ks-pass", "pass:android",
@@ -960,23 +952,23 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
       "--v1-signing-enabled", "true",
       "--v2-signing-enabled", "true",
       "--v3-signing-enabled", "true",
-      "--min-sdk-version", String(minSdk),
       targetForSigning,
-    ];
-    const apkSignerResult = runCmd("apksigner", apkSignerArgs, workDir, 60_000);
+    ], workDir, 60_000);
 
     if (apkSignerResult.code === 0 && fs.existsSync(signedPath)) {
       console.log("[SignAPK] apksigner OK — V1/V2/V3 signatures applied");
+      // ── 5. Verify signature (confirms APK will install on modern Android) ─
       const verifyResult = runCmd("apksigner", ["verify", "--verbose", "--print-certs", signedPath], workDir, 30_000);
       if (verifyResult.code === 0) {
-        console.log("[SignAPK] Signature VERIFIED ✓");
+        console.log("[SignAPK] Signature VERIFIED ✓ — APK is installable on modern Android");
+        console.log("[SignAPK] Verify output:", (verifyResult.stdout || "").substring(0, 300));
       } else {
         console.warn("[SignAPK] Signature verify returned non-zero:", verifyResult.stderr);
       }
       return signedPath;
     }
 
-    // ── 6. Fallback: jarsigner (V1 only — older devices) ──
+    // ── 4. Fallback: jarsigner (older devices) ────────────────
     console.warn("[SignAPK] apksigner failed, trying jarsigner fallback...");
     const jarSignedPath = apkPath.replace(/\.apk$/, "-jarsigned.apk");
     fs.copyFileSync(targetForSigning, jarSignedPath);
@@ -1007,388 +999,6 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
 // ═══════════════════════════════════════════════════════════════
 // CLONE APP — THE MAIN FUNCTION
 // ═══════════════════════════════════════════════════════════════
-// Install apktool framework for the target APK's Android version
-function installApkToolFramework(apkPath: string, workDir: string): void {
-  try {
-    const apkt = findApkTool();
-    // Install empty-framework to prevent missing framework errors
-    runCmd(apkt, ["empty-framework-dir", "--force"], workDir, 15_000);
-    console.log("[CloneApp] APKTool framework reset OK");
-  } catch {}
-}
-
-// Strip META-INF signature files directly from decompiled directory (before rebuild)
-function stripDecompiledMetaInf(decompDir: string): number {
-  const metaInfDir = path.join(decompDir, "original", "META-INF");
-  let removed = 0;
-  if (fs.existsSync(metaInfDir)) {
-    const sigExts = [".RSA", ".DSA", ".EC", ".SF"];
-    try {
-      const files = fs.readdirSync(metaInfDir);
-      for (const f of files) {
-        const ext = path.extname(f).toUpperCase();
-        if (sigExts.includes(ext) || f === "MANIFEST.MF") {
-          fs.unlinkSync(path.join(metaInfDir, f));
-          removed++;
-        }
-      }
-    } catch {}
-  }
-  // Also check the META-INF in the decompDir root (some apktool versions put it here)
-  const rootMetaInf = path.join(decompDir, "META-INF");
-  if (fs.existsSync(rootMetaInf)) {
-    try {
-      const files = fs.readdirSync(rootMetaInf);
-      for (const f of files) {
-        const ext = path.extname(f).toUpperCase();
-        if ([".RSA", ".DSA", ".EC", ".SF"].includes(ext) || f === "MANIFEST.MF") {
-          fs.unlinkSync(path.join(rootMetaInf, f));
-          removed++;
-        }
-      }
-    } catch {}
-  }
-  return removed;
-}
-
-// Patch apps that verify their own signature at runtime (anti-tampering bypass)
-function patchSignatureVerification(decompDir: string): string[] {
-  const mods: string[] = [];
-  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 10000);
-  let patched = 0;
-
-  for (const fp of smaliFiles) {
-    try {
-      let content = fs.readFileSync(fp, "utf-8");
-      let changed = false;
-
-      // 1. Patch signature comparison methods (most common anti-tampering)
-      const sigComparePatterns = [
-        /(\.method\s+(?:public|private|protected|static)[^\n]*(?:checkSignature|verifySignature|isSignatureValid|checkIntegrity|isOriginalSignature|validateCertificate|isTampered|isModified|checkAppIntegrity|isDebuggable|isRooted|isEmulator|detectRoot|detectEmulator|isHooked|detectHook|isXposed|detectXposed|isFrida|detectFrida|isDebugging|antiDebug|antiTamper|checkRoot|checkDebug)[^\n]*\)Z\n)([\s\S]*?)(\.end method)/gm,
-      ];
-      for (const re of sigComparePatterns) {
-        content = content.replace(re, (match, header, body, end) => {
-          if (body.length < 5000) {
-            patched++;
-            changed = true;
-            const isNegative = /(?:Tampered|Modified|Rooted|Debuggable|Hooked|Xposed|Frida|Debugging)/.test(header);
-            const retVal = isNegative ? "0x0" : "0x1";
-            return `${header}    .locals 1\n    # [HAYO CLONER] SECURITY CHECK BYPASSED\n    const/4 v0, ${retVal}\n    return v0\n${end}`;
-          }
-          return match;
-        });
-      }
-
-      // 2. Patch PackageManager.checkSignatures calls to always return MATCH (0)
-      content = content.replace(
-        /(invoke-virtual\s+\{[^}]*\},\s*Landroid\/content\/pm\/PackageManager;->checkSignatures\([^)]*\)I)/g,
-        (match) => {
-          changed = true;
-          patched++;
-          return `# [HAYO CLONER] SIGNATURE CHECK BYPASSED\n    const/4 v0, 0x0  # SIGNATURE_MATCH`;
-        }
-      );
-
-      // 3. Patch Google Play Integrity / SafetyNet attestation calls
-      if (content.includes("SafetyNet") || content.includes("PlayIntegrity") || content.includes("Attestation")) {
-        const integrityRe = /(\.method\s+(?:public|private|protected|static)[^\n]*(?:onSuccess|onFailure|handleSafetyNet|handleIntegrity|onAttestationResult|checkDeviceIntegrity|verifyDeviceIntegrity)[^\n]*\n)([\s\S]*?)(\.end method)/gm;
-        content = content.replace(integrityRe, (match, header, body, end) => {
-          if (body.length < 3000) {
-            changed = true;
-            patched++;
-            return `${header}    .locals 0\n    # [HAYO CLONER] INTEGRITY CHECK BYPASSED\n    return-void\n${end}`;
-          }
-          return match;
-        });
-      }
-
-      // 4. Patch hashCode comparisons for signature verification
-      // Many apps compute the hash of their signing certificate and compare
-      if (content.includes("hashCode") && (content.includes("Signature") || content.includes("PackageInfo"))) {
-        // Patch any method that gets signatures and compares hash
-        const hashCheckRe = /(\.method\s+(?:public|private|protected|static)[^\n]*(?:getSignatureHash|getAppSignature|getCertificateHash|getSigningCertificate)[^\n]*\n)([\s\S]*?)(\.end method)/gm;
-        content = content.replace(hashCheckRe, (match, header, body, end) => {
-          if (body.length < 3000) {
-            changed = true;
-            patched++;
-            if (header.includes(")I") || header.includes(")J")) {
-              return `${header}    .locals 1\n    # [HAYO CLONER] HASH CHECK BYPASSED\n    const v0, 0x0\n    return v0\n${end}`;
-            }
-            return match;
-          }
-          return match;
-        });
-      }
-
-      // 5. Neutralize calls to Process.killProcess and System.exit in security contexts
-      if (content.includes("killProcess") || content.includes("System;->exit")) {
-        const fileName = path.basename(fp).toLowerCase();
-        const isSecurityFile = fileName.includes("security") || fileName.includes("integrity") ||
-          fileName.includes("tamper") || fileName.includes("protect") || fileName.includes("guard") ||
-          content.includes("checkSignature") || content.includes("isRooted") || content.includes("isTampered");
-        if (isSecurityFile) {
-          content = content.replace(
-            /(invoke-static\s+\{[^}]*\},\s*Landroid\/os\/Process;->killProcess\(I\)V)/g,
-            `# [HAYO CLONER] KILL BLOCKED\n    # $1`
-          );
-          content = content.replace(
-            /(invoke-static\s+\{[^}]*\},\s*Ljava\/lang\/System;->exit\(I\)V)/g,
-            `# [HAYO CLONER] EXIT BLOCKED\n    # $1`
-          );
-          changed = true;
-          patched++;
-        }
-      }
-
-      if (changed) fs.writeFileSync(fp, content, "utf-8");
-    } catch {}
-  }
-
-  if (patched > 0) mods.push(`🛡️ تم تجاوز ${patched} فحص توقيع / سلامة (Signature & Integrity bypass)`);
-  return mods;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// SSL PINNING BYPASS — Disable certificate pinning for security analysis
-// ═══════════════════════════════════════════════════════════════
-function patchSSLPinning(decompDir: string): string[] {
-  const mods: string[] = [];
-  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 10000);
-  let patched = 0;
-
-  for (const fp of smaliFiles) {
-    try {
-      let content = fs.readFileSync(fp, "utf-8");
-      let changed = false;
-
-      // 1. Patch OkHttp CertificatePinner.check() — most common pinning
-      if (content.includes("CertificatePinner") || content.includes("certificatePinner")) {
-        content = content.replace(
-          /(\.method\s+(?:public|private|protected|static)[^\n]*check\(Ljava\/lang\/String;Ljava\/util\/List;\)V\n)([\s\S]*?)(\.end method)/gm,
-          (match, header, body, end) => {
-            if (body.length < 3000) { patched++; changed = true;
-              return `${header}    .locals 0\n    # [HAYO CLONER] SSL PINNING BYPASSED\n    return-void\n${end}`;
-            }
-            return match;
-          }
-        );
-      }
-
-      // 2. Patch custom TrustManager implementations
-      if (content.includes("X509TrustManager") || content.includes("checkServerTrusted")) {
-        content = content.replace(
-          /(\.method\s+(?:public)[^\n]*checkServerTrusted\([^\n]*\n)([\s\S]*?)(\.end method)/gm,
-          (match, header, body, end) => {
-            if (body.length < 3000) { patched++; changed = true;
-              return `${header}    .locals 0\n    # [HAYO CLONER] TRUST MANAGER BYPASSED\n    return-void\n${end}`;
-            }
-            return match;
-          }
-        );
-        content = content.replace(
-          /(\.method\s+(?:public)[^\n]*checkClientTrusted\([^\n]*\n)([\s\S]*?)(\.end method)/gm,
-          (match, header, body, end) => {
-            if (body.length < 3000) { patched++; changed = true;
-              return `${header}    .locals 0\n    # [HAYO CLONER] TRUST MANAGER BYPASSED\n    return-void\n${end}`;
-            }
-            return match;
-          }
-        );
-      }
-
-      // 3. Patch HostnameVerifier
-      if (content.includes("HostnameVerifier")) {
-        content = content.replace(
-          /(\.method\s+(?:public)[^\n]*verify\(Ljava\/lang\/String;Ljavax\/net\/ssl\/SSLSession;\)Z\n)([\s\S]*?)(\.end method)/gm,
-          (match, header, body, end) => {
-            if (body.length < 3000) { patched++; changed = true;
-              return `${header}    .locals 1\n    # [HAYO CLONER] HOSTNAME VERIFICATION BYPASSED\n    const/4 v0, 0x1\n    return v0\n${end}`;
-            }
-            return match;
-          }
-        );
-      }
-
-      // 4. Patch TrustKit / Android Security Library pinning
-      if (content.includes("TrustKit") || content.includes("NetworkSecurityPolicy")) {
-        content = content.replace(
-          /(\.method\s+(?:public|private|protected|static)[^\n]*(?:initializeWithConfiguration|isCleartextTrafficPermitted|getPinSet)[^\n]*\n)([\s\S]*?)(\.end method)/gm,
-          (match, header, body, end) => {
-            if (body.length < 3000) { patched++; changed = true;
-              if (header.includes(")Z")) {
-                return `${header}    .locals 1\n    # [HAYO CLONER] TRUSTKIT BYPASSED\n    const/4 v0, 0x1\n    return v0\n${end}`;
-              }
-              return `${header}    .locals 0\n    # [HAYO CLONER] TRUSTKIT BYPASSED\n    return-void\n${end}`;
-            }
-            return match;
-          }
-        );
-      }
-
-      if (changed) fs.writeFileSync(fp, content, "utf-8");
-    } catch {}
-  }
-
-  if (patched > 0) mods.push(`🔒 تم تجاوز ${patched} فحص SSL Pinning / Certificate Validation`);
-  return mods;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// NETWORK SECURITY CONFIG — Allow cleartext traffic and user CAs
-// ═══════════════════════════════════════════════════════════════
-function patchNetworkSecurityConfig(decompDir: string): string[] {
-  const mods: string[] = [];
-
-  // 1. Create/overwrite network_security_config.xml to allow all traffic
-  const xmlDir = path.join(decompDir, "res", "xml");
-  try {
-    fs.mkdirSync(xmlDir, { recursive: true });
-    const nscPath = path.join(xmlDir, "network_security_config.xml");
-    const nscContent = `<?xml version="1.0" encoding="utf-8"?>
-<!-- [HAYO CLONER] Network Security Config — allows cleartext and user CAs for analysis -->
-<network-security-config>
-    <base-config cleartextTrafficPermitted="true">
-        <trust-anchors>
-            <certificates src="system" />
-            <certificates src="user" />
-        </trust-anchors>
-    </base-config>
-</network-security-config>`;
-    fs.writeFileSync(nscPath, nscContent, "utf-8");
-    mods.push("🌐 تم إنشاء network_security_config.xml — يسمح بكل الاتصالات");
-  } catch {}
-
-  // 2. Ensure AndroidManifest references the security config
-  const manifestPath = path.join(decompDir, "AndroidManifest.xml");
-  if (fs.existsSync(manifestPath)) {
-    try {
-      let manifest = fs.readFileSync(manifestPath, "utf-8");
-
-      // Add networkSecurityConfig attribute if not present
-      if (!manifest.includes("networkSecurityConfig")) {
-        manifest = manifest.replace(
-          /<application\s/,
-          '<application android:networkSecurityConfig="@xml/network_security_config" '
-        );
-        mods.push("📋 تم تحديث AndroidManifest بـ networkSecurityConfig");
-      }
-
-      // Allow cleartext traffic
-      if (!manifest.includes("usesCleartextTraffic")) {
-        manifest = manifest.replace(
-          /<application\s/,
-          '<application android:usesCleartextTraffic="true" '
-        );
-      }
-
-      // Allow backup (useful for data extraction in analysis)
-      manifest = manifest.replace(
-        /android:allowBackup="false"/g,
-        'android:allowBackup="true"'
-      );
-
-      // Enable debuggable for analysis (only in debug/test context)
-      if (!manifest.includes("android:debuggable")) {
-        manifest = manifest.replace(
-          /<application\s/,
-          '<application android:debuggable="true" '
-        );
-        mods.push("🐛 تم تفعيل وضع التصحيح (debuggable) للتحليل");
-      }
-
-      fs.writeFileSync(manifestPath, manifest, "utf-8");
-    } catch {}
-  }
-
-  return mods;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// SHARED PREFERENCES XML PATCHING — Force premium flags in default prefs
-// ═══════════════════════════════════════════════════════════════
-function patchSharedPreferencesXML(decompDir: string): string[] {
-  const mods: string[] = [];
-  let patched = 0;
-
-  // Look for shared_prefs XML defaults that might be bundled with APK
-  const sharedPrefsDir = path.join(decompDir, "shared_prefs");
-  const assetsDir = path.join(decompDir, "assets");
-
-  const xmlDirsToSearch = [sharedPrefsDir, assetsDir, path.join(decompDir, "res", "raw")];
-  const premiumKeys = [
-    "is_premium", "isPremium", "premium", "is_pro", "isPro", "pro",
-    "subscribed", "is_subscribed", "purchased", "has_purchased",
-    "unlocked", "is_unlocked", "paid", "is_paid", "ad_free",
-    "no_ads", "remove_ads", "vip", "is_vip", "premium_user",
-    "pro_version", "full_version", "lifetime", "has_lifetime",
-  ];
-  const expiredKeys = [
-    "is_expired", "trial_expired", "is_trial", "trial_mode",
-    "show_ads", "ads_enabled", "is_free", "is_locked", "is_limited",
-  ];
-
-  for (const dir of xmlDirsToSearch) {
-    if (!fs.existsSync(dir)) continue;
-    try {
-      const files = readDirRecursive(dir).filter(f =>
-        f.endsWith(".xml") || f.endsWith(".json")
-      );
-      for (const fp of files) {
-        try {
-          let content = fs.readFileSync(fp, "utf-8");
-          let changed = false;
-
-          if (fp.endsWith(".xml")) {
-            // Patch XML SharedPreferences: <boolean name="is_premium" value="false" /> → true
-            for (const key of premiumKeys) {
-              const re = new RegExp(`(<boolean\\s+name="${key}"\\s+value=")false("\\s*/>)`, "gi");
-              if (re.test(content)) {
-                content = content.replace(re, "$1true$2");
-                patched++; changed = true;
-              }
-            }
-            for (const key of expiredKeys) {
-              const re = new RegExp(`(<boolean\\s+name="${key}"\\s+value=")true("\\s*/>)`, "gi");
-              if (re.test(content)) {
-                content = content.replace(re, "$1false$2");
-                patched++; changed = true;
-              }
-            }
-            // Patch integer limits: <int name="daily_limit" value="3" /> → 999999
-            content = content.replace(
-              /(<int\s+name="(?:daily_limit|free_uses|trial_count|max_uses|remaining|quota|limit)"\s+value=")\d+(")/gi,
-              "$1999999$2"
-            );
-          }
-
-          if (fp.endsWith(".json")) {
-            // Patch JSON config files
-            for (const key of premiumKeys) {
-              const re = new RegExp(`("${key}"\\s*:\\s*)false`, "gi");
-              if (re.test(content)) {
-                content = content.replace(re, "$1true");
-                patched++; changed = true;
-              }
-            }
-            for (const key of expiredKeys) {
-              const re = new RegExp(`("${key}"\\s*:\\s*)true`, "gi");
-              if (re.test(content)) {
-                content = content.replace(re, "$1false");
-                patched++; changed = true;
-              }
-            }
-          }
-
-          if (changed) fs.writeFileSync(fp, content, "utf-8");
-        } catch {}
-      }
-    } catch {}
-  }
-
-  if (patched > 0) mods.push(`📝 تم تعديل ${patched} علم Premium/Trial في ملفات الإعدادات المحلية`);
-  return mods;
-}
-
 export async function cloneApp(
   buffer: Buffer,
   fileName: string,
@@ -1397,54 +1007,35 @@ export async function cloneApp(
     unlockPremium?: boolean;
     removeTracking?: boolean;
     removeLicenseCheck?: boolean;
-    bypassTrial?: boolean;
     changeAppName?: string;
     changePackageName?: string;
     customInstructions?: string;
     extractSecrets?: boolean;
-  } = {},
-  preDecompiledDir?: string,
-): Promise<{ success: boolean; apkBuffer?: Buffer; modifications: string[]; signed?: boolean; secrets?: ExtractedSecret[]; auditReport?: CloneAuditReport; fridaScript?: string; verification?: { signatureValid: boolean; zipValid: boolean; details: string[] }; error?: string }> {
+  } = {}
+): Promise<{ success: boolean; apkBuffer?: Buffer; modifications: string[]; signed?: boolean; secrets?: ExtractedSecret[]; error?: string }> {
   const modifications: string[] = [];
   const ext = fileName.split(".").pop()?.toLowerCase() || "apk";
-  const workDir = preDecompiledDir
-    ? path.dirname(preDecompiledDir)
-    : path.join(os.tmpdir(), `clone_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`);
+  const workDir = path.join(os.tmpdir(), `clone_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`);
   const inputPath = path.join(workDir, "input.apk");
-  const decompDir = preDecompiledDir || path.join(workDir, "decompiled");
+  const decompDir = path.join(workDir, "decompiled");
   const outputApk = path.join(workDir, "cloned.apk");
-  if (!preDecompiledDir) fs.mkdirSync(workDir, { recursive: true });
+  fs.mkdirSync(workDir, { recursive: true });
 
   try {
-    if (!preDecompiledDir) fs.writeFileSync(inputPath, buffer);
+    fs.writeFileSync(inputPath, buffer);
 
     if (ext !== "apk") {
+      // For non-APK: basic modification (zip + extraction)
       return await cloneNonAPK(buffer, fileName, options, workDir, modifications);
     }
 
-    // ── Step 1: Decompile with APKTool (skip if pre-decompiled) ──
-    if (!preDecompiledDir) {
-      const apkt = findApkTool();
-      installApkToolFramework(inputPath, workDir);
-
-      // Try with --use-aapt2 first for modern APKs
-      let decompResult = runCmd(apkt, ["d", "-f", "--use-aapt2", "-o", decompDir, inputPath], workDir, 300_000);
-      if (!fs.existsSync(decompDir) || readDirRecursive(decompDir).length === 0) {
-        // Fallback without aapt2
-        try { fs.rmSync(decompDir, { recursive: true, force: true }); } catch {}
-        decompResult = runCmd(apkt, ["d", "-f", "-o", decompDir, inputPath], workDir, 300_000);
-      }
-      if (!fs.existsSync(decompDir) || readDirRecursive(decompDir).length === 0) {
-        return { success: false, modifications, error: "فشل APKTool في تفكيك الملف: " + decompResult.stderr.slice(0, 300) };
-      }
+    // ── Step 1: Decompile with APKTool ──
+    const apkt = findApkTool();
+    const decompResult = runCmd(apkt, ["d", "-f", "-o", decompDir, inputPath], workDir, 180_000);
+    if (!fs.existsSync(decompDir)) {
+      return { success: false, modifications, error: "فشل APKTool في تفكيك الملف: " + decompResult.stderr.slice(0, 200) };
     }
     modifications.push("✅ تم تفكيك APK بنجاح باستخدام APKTool");
-
-    // ── Step 1.5: Strip old signatures from decompiled dir ──
-    const strippedCount = stripDecompiledMetaInf(decompDir);
-    if (strippedCount > 0) {
-      modifications.push(`🧹 تم حذف ${strippedCount} ملف توقيع قديم من META-INF`);
-    }
 
     // ── Step 2: Apply Modifications ──
     const manifestPath = path.join(decompDir, "AndroidManifest.xml");
@@ -1474,28 +1065,6 @@ export async function cloneApp(
       const mods = await patchTracking(decompDir);
       modifications.push(...mods);
     }
-
-    // 2d2. Bypass Trial / Usage Limits
-    if (options.bypassTrial !== false) {
-      const mods = await patchTrialExpired(decompDir);
-      modifications.push(...mods);
-    }
-
-    // 2d3. Bypass signature self-verification (anti-tampering)
-    const sigBypassMods = patchSignatureVerification(decompDir);
-    modifications.push(...sigBypassMods);
-
-    // 2d4. Bypass SSL Certificate Pinning (for security analysis)
-    const sslMods = patchSSLPinning(decompDir);
-    modifications.push(...sslMods);
-
-    // 2d5. Patch Network Security Config (allow cleartext & user CAs)
-    const netMods = patchNetworkSecurityConfig(decompDir);
-    modifications.push(...netMods);
-
-    // 2d6. Patch SharedPreferences XML files for premium flags
-    const prefMods = patchSharedPreferencesXML(decompDir);
-    modifications.push(...prefMods);
 
     // 2e. Change App Name
     if (options.changeAppName) {
@@ -1528,155 +1097,36 @@ export async function cloneApp(
       }
     }
 
-    // ── Step 3: Rebuild APK (multiple fallback strategies) ──
-    const apkt = findApkTool();
-    let buildSuccess = false;
-
-    // Strategy 1: --use-aapt2 (best for modern APKs)
-    let buildResult = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
-    if (fs.existsSync(outputApk) && fs.statSync(outputApk).size > 100) {
-      buildSuccess = true;
-      console.log("[CloneApp] Build OK with --use-aapt2");
-    }
-
-    // Strategy 2: without aapt2
-    if (!buildSuccess) {
+    // ── Step 3: Rebuild ──
+    // Try with --use-aapt2 first (required for modern APKs with Android 9+ resources)
+    let buildResult = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 180_000);
+    if (!fs.existsSync(outputApk)) {
+      // Fallback without aapt2 for older APKs
       console.warn("[CloneApp] aapt2 build failed, retrying without --use-aapt2...");
-      try { fs.unlinkSync(outputApk); } catch {}
-      buildResult = runCmd(apkt, ["b", "-o", outputApk, decompDir], workDir, 300_000);
-      if (fs.existsSync(outputApk) && fs.statSync(outputApk).size > 100) {
-        buildSuccess = true;
-        console.log("[CloneApp] Build OK without aapt2");
+      buildResult = runCmd(apkt, ["b", "-o", outputApk, decompDir], workDir, 180_000);
+      if (!fs.existsSync(outputApk)) {
+        return { success: false, modifications, error: "فشل إعادة البناء (APKTool b): " + buildResult.stderr.slice(0, 300) };
       }
-    }
-
-    // Strategy 3: --force-all (force overwrite of manifest and resources)
-    if (!buildSuccess) {
-      console.warn("[CloneApp] Standard build failed, retrying with --force-all...");
-      try { fs.unlinkSync(outputApk); } catch {}
-      buildResult = runCmd(apkt, ["b", "--force-all", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
-      if (fs.existsSync(outputApk) && fs.statSync(outputApk).size > 100) {
-        buildSuccess = true;
-        console.log("[CloneApp] Build OK with --force-all + aapt2");
-      }
-    }
-
-    // Strategy 4: --force-all without aapt2
-    if (!buildSuccess) {
-      console.warn("[CloneApp] Trying --force-all without aapt2...");
-      try { fs.unlinkSync(outputApk); } catch {}
-      buildResult = runCmd(apkt, ["b", "--force-all", "-o", outputApk, decompDir], workDir, 300_000);
-      if (fs.existsSync(outputApk) && fs.statSync(outputApk).size > 100) {
-        buildSuccess = true;
-        console.log("[CloneApp] Build OK with --force-all");
-      }
-    }
-
-    // Strategy 5: Fix resource errors and retry
-    // If build failed due to resource compilation, try fixing common issues
-    if (!buildSuccess) {
-      console.warn("[CloneApp] All builds failed. Attempting resource error recovery...");
-      const errStr = (buildResult.stderr || "") + (buildResult.stdout || "");
-
-      // Fix 1: Remove problematic resource files mentioned in error
-      const resErrorFiles = errStr.match(/error:?\s+.*?(?:res\/[^\s:]+)/g) || [];
-      for (const errLine of resErrorFiles) {
-        const fileMatch = errLine.match(/(res\/[^\s:]+)/);
-        if (fileMatch) {
-          const problemFile = path.join(decompDir, fileMatch[1]);
-          if (fs.existsSync(problemFile)) {
-            try { fs.unlinkSync(problemFile); console.log(`[CloneApp] Removed problematic resource: ${fileMatch[1]}`); } catch {}
-          }
-        }
-      }
-
-      // Fix 2: Remove public.xml if it causes ID conflicts
-      const publicXml = path.join(decompDir, "res", "values", "public.xml");
-      if (fs.existsSync(publicXml) && errStr.includes("public.xml")) {
-        try { fs.unlinkSync(publicXml); console.log("[CloneApp] Removed conflicting public.xml"); } catch {}
-      }
-
-      // Fix 3: Clean apktool.yml to avoid framework issues
-      const apktoolYml = path.join(decompDir, "apktool.yml");
-      if (fs.existsSync(apktoolYml)) {
-        try {
-          let yml = fs.readFileSync(apktoolYml, "utf-8");
-          // Remove doNotCompress entries that may cause issues
-          yml = yml.replace(/doNotCompress:[\s\S]*?(?=\n\w|\n$)/m, "doNotCompress: []");
-          fs.writeFileSync(apktoolYml, yml, "utf-8");
-        } catch {}
-      }
-
-      // Retry build with fixes applied
-      try { fs.unlinkSync(outputApk); } catch {}
-      buildResult = runCmd(apkt, ["b", "--force-all", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
-      if (fs.existsSync(outputApk) && fs.statSync(outputApk).size > 100) {
-        buildSuccess = true;
-        console.log("[CloneApp] Build OK after resource error recovery");
-        modifications.push("🔧 تم إصلاح أخطاء الموارد وإعادة البناء بنجاح");
-      }
-
-      if (!buildSuccess) {
-        try { fs.unlinkSync(outputApk); } catch {}
-        buildResult = runCmd(apkt, ["b", "--force-all", "-o", outputApk, decompDir], workDir, 300_000);
-        if (fs.existsSync(outputApk) && fs.statSync(outputApk).size > 100) {
-          buildSuccess = true;
-          console.log("[CloneApp] Build OK after resource recovery (no aapt2)");
-          modifications.push("🔧 تم إصلاح أخطاء الموارد وإعادة البناء بنجاح");
-        }
-      }
-    }
-
-    if (!buildSuccess) {
-      return { success: false, modifications, error: "فشل إعادة البناء بجميع الاستراتيجيات (APKTool b): " + buildResult.stderr.slice(0, 500) };
     }
     modifications.push("✅ تم إعادة بناء APK بنجاح");
 
     // ── Step 4: Sign (zipalign → apksigner → jarsigner fallback) ──
     const signedPath = await signAPKFile(outputApk, workDir);
     if (signedPath) {
-      modifications.push("✅ تم توقيع APK بـ zipalign + apksigner (V1+V2+V3 — متوافق مع Android 7+/9+/11+/13+)");
+      modifications.push("✅ تم توقيع APK بـ zipalign + apksigner (متوافق مع Android 11+)");
     } else {
       modifications.push("⚠️ التوقيع تخطى — يمكن تثبيته يدوياً");
     }
 
-    // ── Step 5: Verify APK (Quality Gate) ──
+    // ── Step 5: Return result ──
     const finalApk = signedPath || outputApk;
     const apkBuffer = fs.readFileSync(finalApk);
-    const verification = verifyAPK(finalApk, workDir);
-    if (verification.signatureValid) {
-      modifications.push("✅ apksigner verify: التوقيع صحيح — APK جاهز للتثبيت");
-    }
-    if (verification.zipValid) {
-      modifications.push("✅ ZIP Integrity: سلامة الملف مؤكدة");
-    }
 
-    // ── Step 6: Generate Audit Report ──
-    const auditReport = generateAuditReport(
-      decompDir, modifications, extractedSecrets,
-      !!signedPath, apkBuffer,
-      verification.signatureValid, verification.zipValid,
-    );
-
-    // ── Step 7: Generate Frida Script Template ──
-    let packageName = "com.unknown.app";
-    const mfPath = path.join(decompDir, "AndroidManifest.xml");
-    if (fs.existsSync(mfPath)) {
-      const mfContent = fs.readFileSync(mfPath, "utf-8");
-      const pkgMatch = mfContent.match(/package="([^"]+)"/);
-      if (pkgMatch) packageName = pkgMatch[1];
-    }
-    const fridaScript = generateFridaScript(packageName, decompDir);
-
-    // ── Step 8: Return result ──
-    return { success: true, apkBuffer, modifications, signed: !!signedPath, secrets: extractedSecrets, auditReport, fridaScript, verification };
+    return { success: true, apkBuffer, modifications, signed: !!signedPath, secrets: extractedSecrets };
   } catch (e: any) {
     return { success: false, modifications, error: e.message };
   } finally {
-    // Cleanup after 60s (give time for download)
-    if (!preDecompiledDir) {
-      setTimeout(() => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {} }, 60_000);
-    }
+    setTimeout(() => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {} }, 30_000);
   }
 }
 
@@ -1764,48 +1214,21 @@ const PREMIUM_METHODS = [
   "hasPurchased", "isUnlocked", "isPaid", "isActivated", "isBought",
   "isFullVersion", "hasFeature", "checkPremium", "verifyPremium",
   "isPremiumUser", "isProUser", "isPurchased",
-  // Kotlin-style naming patterns
-  "getIsPremium", "getIsPro", "getIsVip", "getIsSubscribed",
-  // Additional patterns seen in real apps
-  "hasAccess", "isEntitled", "hasEntitlement", "isLicensed",
-  "hasValidSubscription", "isTrialActive", "isRegistered",
-  "checkAccess", "verifyAccess", "isUpgraded", "canAccess",
-  "isAdFree", "isNoAds", "hasRemoveAds",
-  // More patterns from real-world apps
-  "isGoldMember", "isDiamondUser", "isPlatinumUser", "isSilverUser",
-  "hasLifetimeAccess", "hasLifetimePurchase", "isLifetimeMember",
-  "isPremiumFeatureEnabled", "isFeatureUnlocked", "isModuleUnlocked",
-  "canUseFeature", "canAccessFeature", "isFeatureAvailable",
-  "checkSubscription", "validateSubscription", "verifySubscription",
-  "hasActiveSubscription", "isSubscriptionActive", "isSubscriptionValid",
-  "hasPremiumAccess", "hasPremiumPlan", "hasProPlan", "hasPaidPlan",
-  "isUserPremium", "isUserPro", "isUserVip", "isUserSubscribed",
-  "getSubscriptionStatus", "checkPurchaseStatus", "verifyPurchase",
-  "isContentLocked", "isLocked", "shouldShowPaywall", "shouldShowUpgrade",
-  "needsSubscription", "needsPremium", "needsPro", "needsUpgrade",
-  "isFreemium", "isFreeUser", "isFreeVersion", "isBasicUser",
-  "hasInAppPurchase", "hasMadePurchase", "didPurchase",
-  // Firebase Remote Config patterns
-  "getRemoteConfigBoolean", "fetchPremiumStatus",
 ];
 
 async function patchPremium(decompDir: string): Promise<string[]> {
   const mods: string[] = [];
-  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 10000);
+  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 2000);
   let patchedMethods = 0;
   let patchedFiles = 0;
   let patchedCoins = 0;
-  let patchedBehavioral = 0;
-  let patchedSharedPrefs = 0;
-  let patchedBilling = 0;
-  let patchedXmlFlags = 0;
 
   for (const fp of smaliFiles) {
     try {
       let content = fs.readFileSync(fp, "utf-8");
       let changed = false;
 
-      // ── A. Patch boolean isPremium/isPro/isVip... methods (by name) ──
+      // ── A. Patch boolean isPremium/isPro/isVip... methods ──
       for (const method of PREMIUM_METHODS) {
         const methodRegex = new RegExp(
           `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)Z\\n)([\\s\\S]*?)(\\.end method)`,
@@ -1821,121 +1244,12 @@ async function patchPremium(decompDir: string): Promise<string[]> {
         });
       }
 
-      // ── B. BEHAVIORAL ANALYSIS for ProGuard/R8 obfuscated methods ──
-      // Detect short boolean methods that likely gate premium features:
-      // Pattern: method returns Z, body is < 500 bytes, reads a boolean field,
-      // and the field name hints at premium (or it's the only iget-boolean in the class)
-      const obfuscatedBoolMethods = content.matchAll(
-        /(\.method\s+(?:public|private|protected|static)\s+(?:final\s+)?[a-z]\([^)]*\)Z\n)([\s\S]*?)(\.end method)/gm
-      );
-      for (const m of obfuscatedBoolMethods) {
-        const [fullMatch, header, body, end] = m;
-        if (body.length > 500) continue; // skip complex methods
-        // Check if this method reads a boolean field (iget-boolean)
-        const igetBool = body.match(/iget-boolean\s+(v\d+),\s+[^,]+,\s+L[^;]+;->([a-zA-Z_][a-zA-Z0-9_]*):Z/);
-        if (igetBool) {
-          const fieldName = igetBool[2].toLowerCase();
-          // Heuristic: field names that suggest premium gating
-          const premiumHints = ["premium", "pro", "vip", "paid", "subscribe", "unlock",
-            "purchase", "bought", "activated", "license", "full", "member", "gold",
-            "access", "entitle", "upgrade", "adfree", "noad"];
-          if (premiumHints.some(h => fieldName.includes(h))) {
-            content = content.replace(fullMatch,
-              `${header}    .locals 1\n    # [HAYO CLONER] PREMIUM UNLOCKED (behavioral)\n    const/4 v0, 0x1\n    return v0\n${end}`);
-            patchedBehavioral++;
-            changed = true;
-          }
-        }
-        // Also catch methods that just return a static boolean field (sget-boolean)
-        const sgetBool = body.match(/sget-boolean\s+(v\d+),\s+L[^;]+;->([a-zA-Z_][a-zA-Z0-9_]*):Z/);
-        if (sgetBool) {
-          const fieldName = sgetBool[2].toLowerCase();
-          const premiumHints = ["premium", "pro", "vip", "paid", "subscribe", "unlock",
-            "purchase", "bought", "activated", "license", "full", "member"];
-          if (premiumHints.some(h => fieldName.includes(h))) {
-            content = content.replace(fullMatch,
-              `${header}    .locals 1\n    # [HAYO CLONER] PREMIUM UNLOCKED (static field)\n    const/4 v0, 0x1\n    return v0\n${end}`);
-            patchedBehavioral++;
-            changed = true;
-          }
-        }
-      }
-
-      // ── C. Patch SharedPreferences premium reads ──
-      // Many apps do: getBoolean("is_premium", false) → intercept and force true
-      const premiumPrefKeys = [
-        '"is_premium"', '"isPremium"', '"premium"', '"is_pro"', '"isPro"', '"pro_user"',
-        '"vip"', '"isVip"', '"subscribed"', '"is_subscribed"', '"purchased"',
-        '"has_purchased"', '"unlocked"', '"is_unlocked"', '"paid"', '"is_paid"',
-        '"ad_free"', '"no_ads"', '"remove_ads"', '"premium_user"', '"pro_version"',
-        '"full_version"', '"is_full"', '"lifetime"', '"has_lifetime"',
-      ];
-      for (const key of premiumPrefKeys) {
-        if (content.includes(key)) {
-          // Find getBoolean calls near this key and patch the default value
-          const getBoolRe = new RegExp(
-            `(const-string\s+(v\d+),\s*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\s\S]{0,200}?invoke-[a-z/]+\s+\{[^}]*\},\s*Landroid/content/SharedPreferences;->getBoolean\(Ljava/lang/String;Z\)Z[\s\S]{0,50}?move-result\s+(v\d+))`,
-            "g"
-          );
-          content = content.replace(getBoolRe, (match, fullBlock, keyReg, resultReg) => {
-            patchedSharedPrefs++;
-            changed = true;
-            return `${fullBlock}\n    const/4 ${resultReg}, 0x1    # [HAYO CLONER] PREMIUM FORCED VIA SHAREDPREFS`;
-          });
-        }
-      }
-
-      // ── D. Patch Google Play BillingClient purchase verification ──
-      // Intercept Purchase.getPurchaseState() to always return PURCHASED (1)
-      if (content.includes("BillingClient") || content.includes("Purchase") || content.includes("billing")) {
-        // Patch getPurchaseState() → return 1 (PURCHASED)
-        content = content.replace(
-          /(\.method\s+(?:public|private|protected|static)[^\n]*getPurchaseState[^\n]*\)I\n)([\s\S]*?)(\.end method)/gm,
-          (match, header, body, end) => {
-            if (body.length < 2000) {
-              patchedBilling++;
-              changed = true;
-              return `${header}    .locals 1\n    # [HAYO CLONER] PURCHASE STATE = PURCHASED\n    const/4 v0, 0x1\n    return v0\n${end}`;
-            }
-            return match;
-          }
-        );
-        // Patch isAcknowledged() → return true
-        content = content.replace(
-          /(\.method\s+(?:public|private|protected|static)[^\n]*isAcknowledged[^\n]*\)Z\n)([\s\S]*?)(\.end method)/gm,
-          (match, header, body, end) => {
-            if (body.length < 2000) {
-              patchedBilling++;
-              changed = true;
-              return `${header}    .locals 1\n    # [HAYO CLONER] ACKNOWLEDGED\n    const/4 v0, 0x1\n    return v0\n${end}`;
-            }
-            return match;
-          }
-        );
-        // Patch onPurchasesUpdated callback — prevent error handling
-        content = content.replace(
-          /(\.method\s+(?:public)[^\n]*onPurchasesUpdated[^\n]*\n)([\s\S]*?)(\.end method)/gm,
-          (match, header, body, end) => {
-            if (body.length < 5000 && body.includes("BillingResult")) {
-              patchedBilling++;
-              changed = true;
-              return `${header}    .locals 0\n    # [HAYO CLONER] BILLING CALLBACK BYPASSED\n    return-void\n${end}`;
-            }
-            return match;
-          }
-        );
-      }
-
-      // ── E. Patch getCoins / getCredits / getPoints returning int ──
+      // ── B. Patch getCoins / getCredits / getPoints returning int ──
+      // Replace methods that return coins/credits/points with MAX_INT (0x7FFFFFFF)
       const COIN_METHODS = [
         "getCoins?", "getCredit", "getPoints?", "getBalance", "getScore",
         "getGems?", "getDiamond", "getToken", "getEnergy", "getLives?",
         "getRemainingTrial", "getTrialDays?", "getFreeCount",
-        "getStamina", "getHearts?", "getKeys?", "getStars?",
-        "getRemainingUses", "getUsesLeft", "getQuota",
-        "getMaxRetries", "getAttemptsLeft", "getRemainingAttempts",
-        "getAvailableCredits", "getTokenBalance", "getCoinBalance",
-        "getPointBalance", "getGemBalance", "getDiamondBalance",
       ];
       for (const coinMethod of COIN_METHODS) {
         const coinRegex = new RegExp(
@@ -1946,19 +1260,22 @@ async function patchPremium(decompDir: string): Promise<string[]> {
           if (body.length < 2000) {
             patchedCoins++;
             changed = true;
+            // Return 0x7FFFFFFF (Integer.MAX_VALUE = 2,147,483,647)
             return `${header}    .locals 1\n    # [HAYO CLONER] COINS UNLIMITED\n    const v0, 0x7fffffff\n    return v0\n${end}`;
           }
           return match;
         });
       }
 
-      // ── F. Patch const/16 v0, 0x0 → const v0, 0x7fffffff in coin-related context ──
+      // ── C. Patch const/16 v0, 0x0 → const v0, 0x7fffffff in coin-related context ──
+      // Find smali files that likely handle coins/credits display
       const isCoinFile = COIN_METHODS.some(m => fp.toLowerCase().includes(m.toLowerCase().replace("?", "")))
         || content.toLowerCase().includes("getcoins")
         || content.toLowerCase().includes("getcredits")
         || content.toLowerCase().includes("getpoints");
 
       if (isCoinFile) {
+        // Replace zero-constant assignments in coin return paths
         content = content.replace(/\bconst\/16\s+(v\d+),\s*0x0\b/g, (match, reg) => {
           changed = true;
           patchedCoins++;
@@ -1978,45 +1295,8 @@ async function patchPremium(decompDir: string): Promise<string[]> {
     } catch {}
   }
 
-  // ── G. Patch XML boolean resource flags for premium features ──
-  try {
-    const boolXml = path.join(decompDir, "res", "values", "bools.xml");
-    if (fs.existsSync(boolXml)) {
-      let boolContent = fs.readFileSync(boolXml, "utf-8");
-      const premiumBoolPatterns = [
-        "is_premium", "is_pro", "is_paid", "is_full_version", "premium_enabled",
-        "pro_enabled", "ads_enabled", "show_ads", "enable_ads", "is_free",
-        "is_trial", "feature_locked", "is_locked",
-      ];
-      for (const bp of premiumBoolPatterns) {
-        // Unlock: set premium flags to true, disable ad/trial/lock flags
-        const shouldBeTrue = bp.includes("premium") || bp.includes("pro") || bp.includes("paid") || bp.includes("full");
-        const shouldBeFalse = bp.includes("ads") || bp.includes("free") || bp.includes("trial") || bp.includes("locked");
-        if (shouldBeTrue) {
-          const re = new RegExp(`(<bool name="${bp}">)false(</bool>)`);
-          if (re.test(boolContent)) {
-            boolContent = boolContent.replace(re, "$1true$2");
-            patchedXmlFlags++;
-          }
-        } else if (shouldBeFalse) {
-          const re = new RegExp(`(<bool name="${bp}">)true(</bool>)`);
-          if (re.test(boolContent)) {
-            boolContent = boolContent.replace(re, "$1false$2");
-            patchedXmlFlags++;
-          }
-        }
-      }
-      if (patchedXmlFlags > 0) fs.writeFileSync(boolXml, boolContent, "utf-8");
-    }
-  } catch {}
-
   if (patchedMethods > 0) mods.push(`🔓 تم فتح ${patchedMethods} دالة Premium في ${patchedFiles} ملف smali`);
-  if (patchedBehavioral > 0) mods.push(`🧠 تم فتح ${patchedBehavioral} دالة مبهمة (ProGuard/R8) بالتحليل السلوكي`);
-  if (patchedSharedPrefs > 0) mods.push(`📱 تم تجاوز ${patchedSharedPrefs} فحص Premium عبر SharedPreferences`);
-  if (patchedBilling > 0) mods.push(`💳 تم تجاوز ${patchedBilling} فحص Google Play Billing`);
-  if (patchedXmlFlags > 0) mods.push(`🏷️ تم تعديل ${patchedXmlFlags} علم XML للميزات المدفوعة`);
-  if (patchedMethods === 0 && patchedBehavioral === 0 && patchedSharedPrefs === 0 && patchedBilling === 0)
-    mods.push("🔍 تم فحص دوال Premium — لم يتم العثور على قيود قياسية");
+  else mods.push("🔍 تم فحص دوال Premium — لم يتم العثور على قيود قياسية");
 
   if (patchedCoins > 0) mods.push(`💰 تم تثبيت العملات/النقاط عند القيمة القصوى (2,147,483,647) في ${patchedCoins} موضع`);
 
@@ -2027,19 +1307,11 @@ const LICENSE_CLASSES = [
   "LicenseChecker", "LicenseValidator", "LicenseVerifier",
   "BillingClient", "PurchasesUpdatedListener", "SkuDetailsResponseListener",
   "LicenseCheckerCallback",
-  // Additional patterns
-  "PlayStoreLicenseChecker", "SubscriptionManager",
-  "BillingManager", "IabHelper", "InAppBilling",
-  // More patterns from real apps
-  "BillingProcessor", "PurchaseManager", "StoreManager",
-  "SubscriptionHelper", "PurchaseHelper", "BillingHelper",
-  "LicenseManager", "ActivationManager", "RegistrationChecker",
-  "PlayBilling", "GooglePlayBilling", "BillingService",
 ];
 
 async function patchLicense(decompDir: string): Promise<string[]> {
   const mods: string[] = [];
-  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 10000);
+  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 2000);
   let found = 0;
 
   for (const fp of smaliFiles) {
@@ -2058,57 +1330,15 @@ async function patchLicense(decompDir: string): Promise<string[]> {
             changed = true; found++;
             return `${header}    .locals 0\n    # [HAYO CLONER] LICENSE BYPASSED\n    return-void\n${end}`;
           });
-
-          // Patch allow() to always get called
-          const allowRe = new RegExp(
-            `(\\.method\\s+(?:public)[^\\n]*\\ballow\\b[^\\n]*\\n)([\\s\\S]*?)(\\.end method)`,
-            "gm"
-          );
-          content = content.replace(allowRe, (match, header, body, end) => {
-            if (body.length < 3000) {
-              changed = true; found++;
-              return match; // keep allow() as is
-            }
-            return match;
-          });
         }
       }
 
-      // Patch checkLicense / verifyLicense methods to always return true/valid
-      const licenseMethodPatterns = [
-        "checkLicense", "verifyLicense", "validateLicense",
-        "isLicenseValid", "isActivated", "checkActivation",
-        "isRegistered", "checkRegistration", "validateKey",
-        "verifyKey", "checkSerialNumber", "isValidKey",
-      ];
-      for (const method of licenseMethodPatterns) {
-        const methodRe = new RegExp(
-          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)Z\\n)([\\s\\S]*?)(\\.end method)`,
-          "gm"
-        );
-        content = content.replace(methodRe, (match, header, body, end) => {
-          if (body.length < 3000) {
-            changed = true; found++;
-            return `${header}    .locals 1\n    # [HAYO CLONER] LICENSE ALWAYS VALID\n    const/4 v0, 0x1\n    return v0\n${end}`;
-          }
-          return match;
-        });
-      }
-
-      // Patch check() methods that might throw license exceptions
+      // Also patch check() methods that might throw license exceptions
       const checkMethodRe = /(\s*invoke-[a-z/]+\s+\{[^}]*\},\s*Landroid\/content\/pm\/[^;]*;->checkSignatures[^\n]*)/g;
       content = content.replace(checkMethodRe, (match) => {
         changed = true;
         return `\n    # [HAYO CLONER] SIGNATURE CHECK SKIPPED`;
       });
-
-      // Patch methods that call System.exit() or finish() after license failure
-      if (content.includes("LicenseChecker") || content.includes("license")) {
-        content = content.replace(
-          /(invoke-[a-z/]+\s+\{[^}]*\},\s*Ljava\/lang\/System;->exit\(I\)V)/g,
-          `# [HAYO CLONER] EXIT BLOCKED\n    # $1`
-        );
-      }
 
       if (changed) { fs.writeFileSync(fp, content, "utf-8"); }
     } catch {}
@@ -2246,401 +1476,6 @@ interface ExtractedSecret {
   line?: number;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// AUDIT REPORT
-// ═══════════════════════════════════════════════════════════════
-export interface CloneAuditReport {
-  packageName: string;
-  versionCode: string;
-  versionName: string;
-  secretsFound: number;
-  secretsSummary: Array<{ type: string; count: number; masked: string }>;
-  discoveredEndpoints: string[];
-  patchedMethods: number;
-  patchCategories: Array<{ category: string; count: number }>;
-  signatureStatus: "signed_v1v2v3" | "signed_v1" | "unsigned" | "failed";
-  verificationPassed: boolean;
-  zipIntegrityPassed: boolean;
-  finalSize: number;
-  timestamp: string;
-  phases: Array<{ phase: string; status: "success" | "warning" | "error"; detail: string }>;
-}
-
-export function generateAuditReport(
-  decompDir: string,
-  modifications: string[],
-  secrets: ExtractedSecret[],
-  signed: boolean,
-  apkBuffer: Buffer | undefined,
-  verifyOk: boolean,
-  zipOk: boolean,
-): CloneAuditReport {
-  let packageName = "unknown";
-  let versionCode = "?";
-  let versionName = "?";
-  const manifestPath = path.join(decompDir, "AndroidManifest.xml");
-  if (fs.existsSync(manifestPath)) {
-    const m = fs.readFileSync(manifestPath, "utf-8");
-    const pkgM = m.match(/package="([^"]+)"/);
-    if (pkgM) packageName = pkgM[1];
-    const vcM = m.match(/android:versionCode="([^"]+)"/);
-    if (vcM) versionCode = vcM[1];
-    const vnM = m.match(/android:versionName="([^"]+)"/);
-    if (vnM) versionName = vnM[1];
-  }
-
-  const secretTypes = new Map<string, { count: number; sample: string }>();
-  for (const s of secrets) {
-    const e = secretTypes.get(s.type);
-    const masked = s.value.length > 8 ? s.value.slice(0, 4) + "****" + s.value.slice(-4) : "****";
-    if (e) e.count++;
-    else secretTypes.set(s.type, { count: 1, sample: masked });
-  }
-
-  const endpointSet = new Set<string>();
-  const textFiles = readDirRecursive(decompDir).filter(f => {
-    const ext = path.extname(f).toLowerCase();
-    return [".smali", ".xml", ".json", ".txt", ".properties", ".js"].includes(ext);
-  });
-  const urlRe = /https?:\/\/[^\s"'<>\\)}\]]+/g;
-  const frameworkDomains = ["schemas.android.com", "www.w3.org", "ns.adobe.com", "xml.org", "xmlpull.org", "apache.org"];
-  for (const fp of textFiles.slice(0, 500)) {
-    try {
-      const c = fs.readFileSync(fp, "utf-8");
-      if (c.length > 500_000) continue;
-      const urls = c.match(urlRe) || [];
-      for (const u of urls) {
-        if (frameworkDomains.some(d => u.includes(d))) continue;
-        endpointSet.add(u);
-        if (endpointSet.size >= 50) break;
-      }
-    } catch {}
-    if (endpointSet.size >= 50) break;
-  }
-
-  const patchCats = new Map<string, number>();
-  for (const m of modifications) {
-    if (m.includes("إعلان") || m.includes("Ad")) patchCats.set("ads", (patchCats.get("ads") || 0) + 1);
-    else if (m.includes("Premium") || m.includes("مدفوع")) patchCats.set("premium", (patchCats.get("premium") || 0) + 1);
-    else if (m.includes("License") || m.includes("رخصة")) patchCats.set("license", (patchCats.get("license") || 0) + 1);
-    else if (m.includes("تتبع") || m.includes("Tracking")) patchCats.set("tracking", (patchCats.get("tracking") || 0) + 1);
-    else if (m.includes("Trial") || m.includes("تجريب")) patchCats.set("trial", (patchCats.get("trial") || 0) + 1);
-    else if (m.includes("عمل") || m.includes("Coins") || m.includes("نقاط")) patchCats.set("resources", (patchCats.get("resources") || 0) + 1);
-  }
-
-  const phases: CloneAuditReport["phases"] = [
-    { phase: "Decompilation", status: "success", detail: "APKTool decompiled successfully" },
-    { phase: "Static Audit", status: secrets.length > 0 ? "warning" : "success", detail: `${secrets.length} secrets found` },
-    { phase: "Logic Modification", status: "success", detail: `${modifications.length} modifications applied` },
-    { phase: "Rebuild", status: apkBuffer ? "success" : "error", detail: apkBuffer ? `${(apkBuffer.length / 1048576).toFixed(2)} MB` : "Rebuild failed" },
-    { phase: "Signing", status: signed ? "success" : "warning", detail: signed ? "V1+V2+V3" : "Unsigned" },
-    { phase: "Verification", status: verifyOk ? "success" : "warning", detail: verifyOk ? "apksigner verify passed" : "Verification skipped or failed" },
-    { phase: "ZIP Integrity", status: zipOk ? "success" : "warning", detail: zipOk ? "No errors" : "Check skipped" },
-  ];
-
-  return {
-    packageName,
-    versionCode,
-    versionName,
-    secretsFound: secrets.length,
-    secretsSummary: [...secretTypes.entries()].map(([type, { count, sample }]) => ({ type, count, masked: sample })),
-    discoveredEndpoints: [...endpointSet],
-    patchedMethods: modifications.filter(m => m.includes("دالة") || m.includes("ملف smali") || m.includes("method")).length,
-    patchCategories: [...patchCats.entries()].map(([category, count]) => ({ category, count })),
-    signatureStatus: signed ? "signed_v1v2v3" : "unsigned",
-    verificationPassed: verifyOk,
-    zipIntegrityPassed: zipOk,
-    finalSize: apkBuffer?.length || 0,
-    timestamp: new Date().toISOString(),
-    phases,
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════
-// FRIDA SCRIPT TEMPLATE GENERATOR
-// ═══════════════════════════════════════════════════════════════
-export function generateFridaScript(packageName: string, decompDir: string): string {
-  const premiumMethods: string[] = [];
-  const coinMethods: string[] = [];
-  const licenseMethods: string[] = [];
-
-  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 500);
-  for (const fp of smaliFiles) {
-    try {
-      const content = fs.readFileSync(fp, "utf-8");
-      const classMatch = content.match(/\.class\s+(?:public\s+)?(?:final\s+)?(?:abstract\s+)?L([^;]+);/);
-      if (!classMatch) continue;
-      const className = classMatch[1].replace(/\//g, ".");
-
-      for (const m of PREMIUM_METHODS) {
-        const re = new RegExp(`\\.method\\s+(?:public|private|protected|static)[^\\n]*${m}[^\\n]*\\)Z`);
-        if (re.test(content)) premiumMethods.push(`${className}.${m}`);
-      }
-      for (const m of ["getCoins", "getCredits", "getPoints", "getBalance", "getScore"]) {
-        const re = new RegExp(`\\.method\\s+(?:public|private|protected|static)[^\\n]*${m}[^\\n]*\\)I`);
-        if (re.test(content)) coinMethods.push(`${className}.${m}`);
-      }
-      for (const cls of LICENSE_CLASSES) {
-        if (content.includes(cls)) licenseMethods.push(className);
-      }
-    } catch {}
-  }
-
-  return `/**
- * HAYO AI — Frida Dynamic Observation Script
- * Target: ${packageName}
- * Generated: ${new Date().toISOString()}
- *
- * Usage:
- *   frida -U -f ${packageName} -l this_script.js --no-pause
- *
- * IMPORTANT: For authorized security audits only.
- */
-
-'use strict';
-
-Java.perform(function () {
-  console.log('[HAYO] Frida script loaded for: ${packageName}');
-
-  // ═══ 1. Monitor SharedPreferences ═══
-  try {
-    var SharedPrefsEditor = Java.use('android.content.SharedPreferences$Editor');
-    SharedPrefsEditor.putString.overload('java.lang.String', 'java.lang.String').implementation = function (key, val) {
-      console.log('[SharedPrefs] putString: ' + key + ' = ' + val);
-      return this.putString(key, val);
-    };
-    SharedPrefsEditor.putBoolean.overload('java.lang.String', 'boolean').implementation = function (key, val) {
-      console.log('[SharedPrefs] putBoolean: ' + key + ' = ' + val);
-      return this.putBoolean(key, val);
-    };
-    SharedPrefsEditor.putInt.overload('java.lang.String', 'int').implementation = function (key, val) {
-      console.log('[SharedPrefs] putInt: ' + key + ' = ' + val);
-      return this.putInt(key, val);
-    };
-    console.log('[HAYO] SharedPreferences monitoring: ACTIVE');
-  } catch (e) { console.log('[HAYO] SharedPreferences hook failed: ' + e); }
-
-  // ═══ 2. Monitor HTTP Requests (OkHttp) ═══
-  try {
-    var OkHttpClient = Java.use('okhttp3.OkHttpClient');
-    var Request = Java.use('okhttp3.Request');
-    var RealCall = Java.use('okhttp3.internal.connection.RealCall');
-    RealCall.execute.implementation = function () {
-      var req = this.request();
-      console.log('[HTTP] ' + req.method() + ' ' + req.url().toString());
-      return this.execute();
-    };
-    console.log('[HAYO] OkHttp monitoring: ACTIVE');
-  } catch (e) { console.log('[HAYO] OkHttp hook failed: ' + e); }
-
-  // ═══ 3. Monitor URL connections ═══
-  try {
-    var URL = Java.use('java.net.URL');
-    URL.openConnection.overload().implementation = function () {
-      console.log('[NET] URL.openConnection: ' + this.toString());
-      return this.openConnection();
-    };
-    console.log('[HAYO] URL monitoring: ACTIVE');
-  } catch (e) { console.log('[HAYO] URL hook failed: ' + e); }
-
-  // ═══ 4. SSL Certificate Validation Assessment ═══
-  try {
-    var X509TM = Java.use('javax.net.ssl.X509TrustManager');
-    var TrustManagers = Java.use('javax.net.ssl.TrustManagerFactory');
-    console.log('[HAYO] SSL TrustManager classes found — certificate validation is in place');
-  } catch (e) { console.log('[HAYO] SSL assessment: ' + e); }
-
-  // ═══ 5. Monitor Premium / Feature Gating Methods ═══
-${premiumMethods.slice(0, 10).map(m => {
-    const parts = m.split(".");
-    const method = parts.pop();
-    const cls = parts.join(".");
-    return `  try {
-    var cls_${method} = Java.use('${cls}');
-    cls_${method}.${method}.implementation = function () {
-      var orig = this.${method}();
-      console.log('[PREMIUM] ${cls}.${method}() returned: ' + orig);
-      return orig;
-    };
-  } catch (e) {}`;
-  }).join("\n")}
-
-  // ═══ 6. Monitor Resource Counter Methods ═══
-${coinMethods.slice(0, 10).map(m => {
-    const parts = m.split(".");
-    const method = parts.pop();
-    const cls = parts.join(".");
-    return `  try {
-    var cls_${method} = Java.use('${cls}');
-    cls_${method}.${method}.implementation = function () {
-      var orig = this.${method}();
-      console.log('[RESOURCE] ${cls}.${method}() returned: ' + orig);
-      return orig;
-    };
-  } catch (e) {}`;
-  }).join("\n")}
-
-  console.log('[HAYO] All hooks installed. Observing runtime behavior...');
-});
-`;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// APK VERIFICATION — Pre-delivery quality gate
-// ═══════════════════════════════════════════════════════════════
-export function verifyAPK(apkPath: string, workDir: string): { signatureValid: boolean; zipValid: boolean; details: string[] } {
-  const details: string[] = [];
-  let signatureValid = false;
-  let zipValid = false;
-
-  // Test A: apksigner verify (definitive signature check)
-  try {
-    const r = runCmd("apksigner", ["verify", "--verbose", "--print-certs", apkPath], workDir, 30_000);
-    const combined = (r.stdout || "") + (r.stderr || "");
-    if (r.code === 0 && combined.toLowerCase().includes("verified")) {
-      signatureValid = true;
-      details.push("apksigner verify: PASSED ✓");
-      // Extract signature scheme info
-      const lines = (r.stdout || "").split("\n").filter(l => l.trim()).slice(0, 8);
-      details.push(...lines.map(l => "  " + l.trim()));
-    } else {
-      details.push("apksigner verify: FAILED — " + combined.slice(0, 300));
-    }
-  } catch (e: any) {
-    details.push("apksigner verify: ERROR — " + e.message);
-  }
-
-  // Test B: zipalign -c 4 (alignment check — better than unzip -t for signed APKs)
-  // V2/V3 signing adds a signing block that confuses `unzip -t`, so we use
-  // zipalign verification instead, which is what Android actually checks.
-  try {
-    const r = runCmd("zipalign", ["-c", "-v", "4", apkPath], workDir, 30_000);
-    if (r.code === 0) {
-      zipValid = true;
-      details.push("zipalign -c 4: PASSED ✓ (4-byte alignment verified)");
-    } else {
-      // If zipalign check fails, try unzip -t as fallback
-      const r2 = runCmd("unzip", ["-t", apkPath], workDir, 30_000);
-      const out2 = (r2.stdout || "") + (r2.stderr || "");
-      // For signed APKs, unzip may report warnings about "extra bytes" from V2 block
-      // This is normal — only real errors (CRC failures) matter
-      const hasCRCError = out2.toLowerCase().includes("bad crc") || out2.toLowerCase().includes("incorrect");
-      if (r2.code === 0 || !hasCRCError) {
-        zipValid = true;
-        details.push("ZIP integrity: PASSED ✓ (no CRC errors)");
-      } else {
-        details.push("ZIP integrity: ISSUES — " + (r2.stderr || "").slice(0, 200));
-      }
-    }
-  } catch (e: any) {
-    // If both checks fail, consider it OK if signature is valid (APK is usable)
-    if (signatureValid) {
-      zipValid = true;
-      details.push("ZIP integrity: OK (signature valid, alignment check unavailable)");
-    } else {
-      details.push("ZIP integrity: ERROR — " + e.message);
-    }
-  }
-
-  return { signatureValid, zipValid, details };
-}
-
-// ═══════════════════════════════════════════════════════════════
-// TRIAL EXPIRED PATCHING
-// ═══════════════════════════════════════════════════════════════
-const TRIAL_EXPIRED_METHODS = [
-  "isTrialExpired", "isExpired", "hasExpired", "isTrialEnded",
-  "isFreeTrialOver", "isTrialPeriodOver", "checkExpiration",
-  "isLimitReached", "isDailyLimitReached", "isQuotaExceeded",
-  // Additional patterns
-  "isTrialOver", "isTrialFinished", "shouldShowPaywall",
-  "isRateLimited", "isBlocked", "isRestricted", "isLocked",
-  "isUsageLimitReached", "hasReachedLimit", "isOverLimit",
-  "needsUpgrade", "requiresSubscription", "isFreeTierExhausted",
-  // More patterns from real apps
-  "isTrialMode", "isTrialVersion", "isDemo", "isDemoMode",
-  "isFreeVersion", "isLimitedVersion", "isBasicVersion",
-  "checkTrialStatus", "checkTrialExpiry", "checkTrialValidity",
-  "isExpiredTrial", "isExpiredSubscription", "isExpiredLicense",
-  "shouldBlockAccess", "shouldLimitAccess", "shouldRestrictAccess",
-  "isAccountExpired", "isAccountLocked", "isAccountSuspended",
-  "checkPaywall", "showPaywall", "displayPaywall",
-  "isOverQuota", "isOverUsage", "isOverBudget",
-  "hasReachedMaxUses", "hasReachedMaxAttempts",
-];
-
-export async function patchTrialExpired(decompDir: string): Promise<string[]> {
-  const mods: string[] = [];
-  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 5000);
-  let patched = 0;
-
-  for (const fp of smaliFiles) {
-    try {
-      let content = fs.readFileSync(fp, "utf-8");
-      let changed = false;
-
-      for (const method of TRIAL_EXPIRED_METHODS) {
-        const methodRegex = new RegExp(
-          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)Z\\n)([\\s\\S]*?)(\\.end method)`,
-          "gm"
-        );
-        content = content.replace(methodRegex, (match, header, body, end) => {
-          if (body.length < 3000) {
-            patched++;
-            changed = true;
-            return `${header}    .locals 1\n    # [HAYO CLONER] TRIAL NEVER EXPIRES\n    const/4 v0, 0x0\n    return v0\n${end}`;
-          }
-          return match;
-        });
-      }
-
-      // Also patch getDailyLimit / getRemainingTries to return MAX
-      const LIMIT_METHODS = [
-        "getDailyLimit", "getRemainingTries", "getTrialDaysLeft", "getFreeTier", "getUsageLimit",
-        "getMaxUses", "getRemainingCredits", "getAllowedCount", "getAvailableSlots",
-        "getTrialRemaining", "getQuotaRemaining", "getUsesRemaining",
-      ];
-      for (const method of LIMIT_METHODS) {
-        const methodRegex = new RegExp(
-          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)I\\n)([\\s\\S]*?)(\\.end method)`,
-          "gm"
-        );
-        content = content.replace(methodRegex, (match, header, body, end) => {
-          if (body.length < 2000) {
-            patched++;
-            changed = true;
-            return `${header}    .locals 1\n    # [HAYO CLONER] LIMIT REMOVED\n    const v0, 0x7fffffff\n    return v0\n${end}`;
-          }
-          return match;
-        });
-      }
-
-      // Patch long return methods for resource limits
-      const LONG_LIMIT_METHODS = ["getDailyLimit", "getRemainingCredits", "getMaxUsage"];
-      for (const method of LONG_LIMIT_METHODS) {
-        const methodRegex = new RegExp(
-          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)J\\n)([\\s\\S]*?)(\\.end method)`,
-          "gm"
-        );
-        content = content.replace(methodRegex, (match, header, body, end) => {
-          if (body.length < 2000) {
-            patched++;
-            changed = true;
-            return `${header}    .locals 2\n    # [HAYO CLONER] LIMIT REMOVED (LONG)\n    const-wide v0, 0x7fffffffffffffffL\n    return-wide v0\n${end}`;
-          }
-          return match;
-        });
-      }
-
-      if (changed) fs.writeFileSync(fp, content, "utf-8");
-    } catch {}
-  }
-
-  if (patched > 0) mods.push(`⏰ تم تعطيل ${patched} قيد تجريبي / حد استخدام (Trial/Limit bypass)`);
-  else mods.push("🔍 تم فحص قيود التجريب — لم يتم العثور على قيود قياسية");
-  return mods;
-}
-
 export function extractSecretsFromAPK(decompDir: string): ExtractedSecret[] {
   const secrets: ExtractedSecret[] = [];
 
@@ -2666,20 +1501,6 @@ export function extractSecretsFromAPK(decompDir: string): ExtractedSecret[] {
     { type: "Database Connection String",regex: /(?:mongodb|postgres|mysql|redis):\/\/[^\s"'<>]{10,}/gi },
     { type: "Slack Webhook URL",         regex: /https:\/\/hooks\.slack\.com\/services\/[A-Z0-9]{9}\/[A-Z0-9]{11}\/[A-Za-z0-9]{24}/g },
     { type: "Facebook App Secret",       regex: /(?:fb|facebook)[_-]?(?:app)?[_-]?secret[^\n]*?[=:]\s*["']([a-f0-9]{32})["']/gi },
-    // Additional patterns for thorough extraction
-    { type: "Mailgun API Key",           regex: /key-[0-9a-zA-Z]{32}/g },
-    { type: "Square Access Token",       regex: /sq0atp-[0-9A-Za-z\-_]{22}/g },
-    { type: "Square OAuth Secret",       regex: /sq0csp-[0-9A-Za-z\-_]{43}/g },
-    { type: "PayPal Client ID",          regex: /A[a-zA-Z0-9_-]{79}/g },
-    { type: "Heroku API Key",            regex: /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g },
-    { type: "Algolia API Key",           regex: /[a-f0-9]{32}/g },
-    { type: "Mapbox Token",              regex: /pk\.[a-zA-Z0-9]{60,}/g },
-    { type: "Cloudinary URL",            regex: /cloudinary:\/\/[0-9]+:[A-Za-z0-9_-]+@[a-z0-9]+/g },
-    { type: "OpenAI API Key",            regex: /sk-[A-Za-z0-9]{32,}/g },
-    { type: "Supabase Key",              regex: /eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+/g },
-    { type: "Hardcoded URL/Endpoint",    regex: /https?:\/\/(?:api|backend|server|gateway|service)[a-zA-Z0-9.-]*\.[a-z]{2,}(?:\/[^\s"'<>]*)?/gi },
-    { type: "Internal IP Address",       regex: /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?::\d+)?/g },
-    { type: "Encryption Key (Hex)",      regex: /(?:encryption[_-]?key|aes[_-]?key|secret[_-]?key)\s*[:=]\s*["']([0-9a-fA-F]{32,64})["']/gi },
   ];
 
   const allFiles = readDirRecursive(decompDir);
@@ -2690,7 +1511,7 @@ export function extractSecretsFromAPK(decompDir: string): ExtractedSecret[] {
 
   const seen = new Set<string>();
 
-  for (const fp of textFiles.slice(0, 5000)) {
+  for (const fp of textFiles.slice(0, 1000)) {
     try {
       const content = fs.readFileSync(fp, "utf-8");
       if (content.length > 500_000) continue; // skip huge files

@@ -398,7 +398,7 @@ function calcFilters(
 // ─── Market Data — TwelveData API ─────────────────────────────────────
 interface CacheEntry { data: any; ts: number }
 const marketCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10-minute cache — conserves API quota
+const CACHE_TTL_MS = 3 * 60 * 1000; // 3-minute cache
 
 async function fetchMarket(pair: string, tfCfg: TfConfig) {
   const p = PAIRS[pair];
@@ -782,7 +782,7 @@ interface ConvergenceConfig {
   enabled: boolean;
   intervalMinutes: number;
 }
-let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 15 }; // 15 min default — 5 min burns API quota too fast
+let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 5 };
 let convergenceTimer: NodeJS.Timeout | null = null;
 const convergenceCooldown = new Map<string, number>();
 const CONVERGENCE_COOLDOWN_MS = 60 * 60 * 1000;
@@ -2197,8 +2197,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     _ownerRef = ownerChatId;
     if (convergenceConfig.enabled) {
       console.log(`[Convergence] Auto-starting convergence scanner (interval: ${convergenceConfig.intervalMinutes}min)`);
+      restartConvergenceScanner(bot, ownerChatId);
     }
-    restartConvergenceScanner(bot, ownerChatId);
   }
 
   return bot;
