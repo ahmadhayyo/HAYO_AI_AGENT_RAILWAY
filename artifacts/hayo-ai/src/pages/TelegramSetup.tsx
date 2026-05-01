@@ -177,6 +177,16 @@ function BotDashboard({
     },
   });
 
+  const syncWebhookMutation = trpc.telegram.syncWebhook.useMutation({
+    onSuccess: (data: any) => {
+      toast.success(`✅ تم إصلاح Webhook بنجاح`);
+      onRefresh();
+    },
+    onError: (err: any) => {
+      toast.error(`فشل إصلاح Webhook: ${err.message}`);
+    },
+  });
+
   const webhookOk = bot.webhookStatus?.url && !bot.webhookStatus?.last_error_message;
 
   return (
@@ -215,6 +225,18 @@ function BotDashboard({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {!webhookOk && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => syncWebhookMutation.mutate()}
+                disabled={syncWebhookMutation.isPending}
+                className="gap-1.5 border-amber-500/40 text-amber-400 hover:bg-amber-500/10"
+              >
+                <RefreshCw className={`w-4 h-4 ${syncWebhookMutation.isPending ? "animate-spin" : ""}`} />
+                {syncWebhookMutation.isPending ? "جاري الإصلاح..." : "إصلاح Webhook"}
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={onRefresh} className="gap-1.5">
               <RefreshCw className="w-4 h-4" />
               تحديث
