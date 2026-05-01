@@ -1,6 +1,6 @@
 import {
   pgTable, pgEnum, serial, text, varchar, integer,
-  boolean, timestamp, jsonb, index, uniqueIndex
+  boolean, timestamp, jsonb, index, uniqueIndex, numeric
 } from "drizzle-orm/pg-core";
 
 export const userRoleEnum = pgEnum("user_role", ["user", "admin"]);
@@ -261,3 +261,47 @@ export const osintCountryCoverage = pgTable("osint_country_coverage", {
 });
 
 export type OsintCountryCoverage = typeof osintCountryCoverage.$inferSelect;
+
+// ─── Broker / Trading ─────────────────────────────────────────────
+export const brokerPlatformEnum = pgEnum("broker_platform", ["quotex", "iqoption", "pocketoption", "olymptrade"]);
+export const tradeResultEnum = pgEnum("trade_result", ["pending", "win", "loss", "draw", "cancelled"]);
+
+export const brokerAccounts = pgTable("broker_accounts", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  platform: brokerPlatformEnum("platform").notNull(),
+  accountEmail: text("account_email"),
+  accountName: text("account_name"),
+  isActive: boolean("is_active").default(true).notNull(),
+  balance: numeric("balance", { precision: 15, scale: 2 }),
+  currency: text("currency").default("USD"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => [index("broker_accounts_user_id_idx").on(t.userId)]);
+
+export type BrokerAccount = typeof brokerAccounts.$inferSelect;
+export type InsertBrokerAccount = typeof brokerAccounts.$inferInsert;
+
+export const brokerTrades = pgTable("broker_trades", {
+  id: serial("id").primaryKey(),
+  brokerAccountId: integer("broker_account_id").notNull().references(() => brokerAccounts.id, { onDelete: "cascade" }),
+  asset: text("asset").notNull(),
+  direction: text("direction").notNull(),
+  amount: numeric("amount", { precision: 15, scale: 2 }).notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  entryPrice: numeric("entry_price", { precision: 20, scale: 8 }),
+  exitPrice: numeric("exit_price", { precision: 20, scale: 8 }),
+  result: tradeResultEnum("result").default("pending").notNull(),
+  profitLoss: numeric("profit_loss", { precision: 15, scale: 2 }),
+  openedAt: timestamp("opened_at").defaultNow().notNull(),
+  closedAt: timestamp("closed_at"),
+  externalTradeId: text("external_trade_id"),
+  signalSource: text("signal_source"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [
+  index("broker_trades_account_id_idx").on(t.brokerAccountId),
+  index("broker_trades_opened_at_idx").on(t.openedAt),
+]);
+
+export type BrokerTrade = typeof brokerTrades.$inferSelect;
+export type InsertBrokerTrade = typeof brokerTrades.$inferInsert;

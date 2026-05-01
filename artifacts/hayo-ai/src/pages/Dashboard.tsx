@@ -87,7 +87,9 @@ export default function Dashboard() {
       gradient: "from-emerald-500/10 to-green-500/10", border: "border-emerald-500/15",
       pages: [
         { href: "/trading", icon: TrendingUp, name: t("dashboard.tradingAnalysis"), desc: t("dashboard.tradingDesc"), color: "from-emerald-500 to-green-600" },
+        { href: "/trading-brokers", icon: BarChart3, name: "منصات التداول", desc: "ربط حسابات Quotex • IQ Option • Pocket Option وتتبع الصفقات", color: "from-blue-500 to-cyan-600" },
         { href: "/ea-factory", icon: Cpu, name: t("dashboard.eaFactory"), desc: t("dashboard.eaFactoryDesc"), color: "from-violet-500 to-fuchsia-500" },
+        { href: "/telegram", icon: Bot, name: t("dashboard.telegramBot"), desc: t("dashboard.telegramDesc"), color: "from-[#26A5E4] to-cyan-500" },
       ],
     },
     {
@@ -97,7 +99,6 @@ export default function Dashboard() {
       pages: [
         { href: "/admin", icon: Crown, name: t("dashboard.adminPanel"), desc: t("dashboard.adminDesc"), color: "from-amber-500 to-yellow-500" },
         { href: "/maintenance", icon: Activity, name: t("dashboard.maintenance"), desc: t("dashboard.maintenanceDesc"), color: "from-red-500 to-pink-500" },
-        { href: "/telegram", icon: Bot, name: t("dashboard.telegramBot"), desc: t("dashboard.telegramDesc"), color: "from-blue-400 to-cyan-400" },
       ],
     },
   ];

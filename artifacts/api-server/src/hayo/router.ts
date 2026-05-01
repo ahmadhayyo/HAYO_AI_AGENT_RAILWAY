@@ -1812,6 +1812,134 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
   }),
 
+  // ==================== Broker Accounts ====================
+  broker: router({
+    listAccounts: protectedProcedure.query(async ({ ctx }) => {
+      const { db } = await import("@workspace/db");
+      const { brokerAccounts } = await import("@workspace/db/schema");
+      const { eq, desc } = await import("drizzle-orm");
+      return db.select().from(brokerAccounts)
+        .where(eq(brokerAccounts.userId, ctx.user.id))
+        .orderBy(desc(brokerAccounts.createdAt));
+    }),
+
+    addAccount: protectedProcedure
+      .input(z.object({
+        platform: z.enum(["quotex", "iqoption", "pocketoption", "olymptrade"]),
+        accountEmail: z.string().email().optional(),
+        accountName: z.string().min(1).max(128).optional(),
+        balance: z.number().positive().optional(),
+        currency: z.string().default("USD"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { brokerAccounts } = await import("@workspace/db/schema");
+        const [account] = await db.insert(brokerAccounts).values({
+          userId: ctx.user.id,
+          platform: input.platform,
+          accountEmail: input.accountEmail,
+          accountName: input.accountName,
+          balance: input.balance?.toString(),
+          currency: input.currency,
+          isActive: true,
+        }).returning();
+        return account;
+      }),
+
+    deleteAccount: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { brokerAccounts } = await import("@workspace/db/schema");
+        const { and, eq } = await import("drizzle-orm");
+        await db.delete(brokerAccounts)
+          .where(and(eq(brokerAccounts.id, input.id), eq(brokerAccounts.userId, ctx.user.id)));
+        return { success: true };
+      }),
+
+    updateBalance: protectedProcedure
+      .input(z.object({ id: z.number(), balance: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { brokerAccounts } = await import("@workspace/db/schema");
+        const { and, eq } = await import("drizzle-orm");
+        await db.update(brokerAccounts)
+          .set({ balance: input.balance.toString(), updatedAt: new Date() })
+          .where(and(eq(brokerAccounts.id, input.id), eq(brokerAccounts.userId, ctx.user.id)));
+        return { success: true };
+      }),
+
+    listTrades: protectedProcedure
+      .input(z.object({ accountId: z.number().optional(), limit: z.number().default(50) }))
+      .query(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { brokerTrades, brokerAccounts } = await import("@workspace/db/schema");
+        const { eq, desc, and, inArray } = await import("drizzle-orm");
+        // Get user accounts first
+        const accounts = await db.select({ id: brokerAccounts.id })
+          .from(brokerAccounts).where(eq(brokerAccounts.userId, ctx.user.id));
+        if (accounts.length === 0) return [];
+        const accountIds = accounts.map(a => a.id);
+        const whereClause = input.accountId
+          ? and(eq(brokerTrades.brokerAccountId, input.accountId), inArray(brokerTrades.brokerAccountId, accountIds))
+          : inArray(brokerTrades.brokerAccountId, accountIds);
+        return db.select().from(brokerTrades)
+          .where(whereClause)
+          .orderBy(desc(brokerTrades.openedAt))
+          .limit(input.limit);
+      }),
+
+    addTrade: protectedProcedure
+      .input(z.object({
+        accountId: z.number(),
+        asset: z.string().min(1),
+        direction: z.enum(["call", "put"]),
+        amount: z.number().positive(),
+        durationSeconds: z.number().int().positive(),
+        result: z.enum(["pending", "win", "loss", "draw", "cancelled"]).default("pending"),
+        profitLoss: z.number().optional(),
+        signalSource: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { brokerTrades, brokerAccounts } = await import("@workspace/db/schema");
+        const { and, eq } = await import("drizzle-orm");
+        // Verify ownership
+        const [account] = await db.select().from(brokerAccounts)
+          .where(and(eq(brokerAccounts.id, input.accountId), eq(brokerAccounts.userId, ctx.user.id)));
+        if (!account) throw new Error("Account not found");
+        const [trade] = await db.insert(brokerTrades).values({
+          brokerAccountId: input.accountId,
+          asset: input.asset,
+          direction: input.direction,
+          amount: input.amount.toString(),
+          durationSeconds: input.durationSeconds,
+          result: input.result,
+          profitLoss: input.profitLoss?.toString(),
+          signalSource: input.signalSource,
+        }).returning();
+        return trade;
+      }),
+
+    getStats: protectedProcedure.query(async ({ ctx }) => {
+      const { db } = await import("@workspace/db");
+      const { brokerTrades, brokerAccounts } = await import("@workspace/db/schema");
+      const { eq, inArray, sql } = await import("drizzle-orm");
+      const accounts = await db.select({ id: brokerAccounts.id })
+        .from(brokerAccounts).where(eq(brokerAccounts.userId, ctx.user.id));
+      if (accounts.length === 0) return { total: 0, wins: 0, losses: 0, winRate: 0, totalPnl: 0 };
+      const accountIds = accounts.map(a => a.id);
+      const trades = await db.select().from(brokerTrades)
+        .where(inArray(brokerTrades.brokerAccountId, accountIds));
+      const total = trades.length;
+      const wins = trades.filter(t => t.result === "win").length;
+      const losses = trades.filter(t => t.result === "loss").length;
+      const winRate = total > 0 ? Math.round((wins / (wins + losses || 1)) * 100) : 0;
+      const totalPnl = trades.reduce((sum, t) => sum + parseFloat(t.profitLoss ?? "0"), 0);
+      return { total, wins, losses, winRate, totalPnl: Math.round(totalPnl * 100) / 100 };
+    }),
+  }),
+
   // ==================== Telegram ====================
   telegram: router({
     getBot: protectedProcedure.query(async ({ ctx }) => {

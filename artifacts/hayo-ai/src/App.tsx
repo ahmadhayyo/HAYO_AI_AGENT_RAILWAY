@@ -25,6 +25,7 @@ import WarRoom from "./pages/WarRoom";
 import OfficeSuite from "./pages/OfficeSuite";
 import AppBuilder from "./pages/AppBuilder";
 import TradingAnalysis from "./pages/TradingAnalysis";
+import TradingBrokers from "./pages/TradingBrokers";
 import ReverseEngineer from "./pages/ReverseEngineer";
 import SmartFixer from "./pages/SmartFixer";
 import EAFactory from "./pages/EAFactory";
@@ -73,6 +74,9 @@ function Router() {
         </Route>
         <Route path="/trading">
           <ProtectedRoute><TradingAnalysis /></ProtectedRoute>
+        </Route>
+        <Route path="/trading-brokers">
+          <ProtectedRoute><TradingBrokers /></ProtectedRoute>
         </Route>
         <Route path="/reverse">
           <ProtectedRoute><ReverseEngineer /></ProtectedRoute>
