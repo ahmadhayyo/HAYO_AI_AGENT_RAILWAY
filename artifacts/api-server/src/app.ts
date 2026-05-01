@@ -163,6 +163,89 @@ app.post(WEBHOOK_PATH_BRIDGE_V2, (req, res) => {
   }
 });
 
+// ─── User Bot Webhook Handler ─────────────────────────────────────────────
+// Each user connects their own Telegram bot. Messages are forwarded here,
+// processed by HAYO AI LLM, and replied back to the user's Telegram chat.
+app.post("/api/telegram/webhook/:userId", async (req, res) => {
+  res.sendStatus(200); // Acknowledge immediately to avoid Telegram retries
+
+  const userId = parseInt(req.params.userId, 10);
+  if (isNaN(userId)) return;
+
+  const update = req.body;
+  const msg = update?.message;
+  if (!msg?.text || !msg.chat?.id) return;
+
+  const chatId = msg.chat.id;
+  const text   = msg.text.trim();
+
+  // Ignore commands like /start silently — just send a welcome
+  if (text === "/start") {
+    try {
+      const { db } = await import("@workspace/db");
+      const { telegramBots } = await import("@workspace/db/schema");
+      const { eq } = await import("drizzle-orm");
+      const bots = await db.select().from(telegramBots)
+        .where(eq(telegramBots.userId, userId)).limit(1);
+      if (!bots[0]?.isActive) return;
+      const welcome = bots[0].welcomeMessage ||
+        "مرحباً! أنا مساعدك الذكي من HAYO AI 🤖\nأرسل لي أي سؤال وسأجيبك فوراً!";
+      await fetch(`https://api.telegram.org/bot${bots[0].botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: welcome }),
+      });
+    } catch {}
+    return;
+  }
+
+  try {
+    // Load bot settings from DB
+    const { db } = await import("@workspace/db");
+    const { telegramBots } = await import("@workspace/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const bots = await db.select().from(telegramBots)
+      .where(eq(telegramBots.userId, userId)).limit(1);
+
+    if (!bots[0] || !bots[0].isActive || !bots[0].botToken) return;
+
+    const { botToken, systemPrompt } = bots[0];
+
+    // Send "typing..." indicator
+    await fetch(`https://api.telegram.org/bot${botToken}/sendChatAction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, action: "typing" }),
+    }).catch(() => {});
+
+    // Invoke LLM
+    const { invokeLLM } = await import("./hayo/llm.js");
+    const reply = await invokeLLM(
+      [{ role: "user", content: text }],
+      systemPrompt || "أنت مساعد ذكاء اصطناعي متقدم من HAYO AI. أجب بشكل مفيد ودقيق بنفس لغة المستخدم."
+    );
+
+    // Send reply — split if > 4096 chars
+    const chunks = reply.match(/[\s\S]{1,4096}/g) || [reply];
+    for (const chunk of chunks) {
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: "Markdown" }),
+      }).catch(async () => {
+        // Fallback without markdown if parse error
+        await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: chunk }),
+        }).catch(() => {});
+      });
+    }
+  } catch (err: any) {
+    logger.error({ err: err.message }, "[UserBot] Webhook handler error");
+  }
+});
+
 /** Derive a stable secret token from the bot token (sha256 hex, first 64 chars) */
 function webhookSecret(botToken: string): string {
   const crypto = require("crypto") as typeof import("crypto");

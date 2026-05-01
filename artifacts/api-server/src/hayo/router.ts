@@ -1965,9 +1965,9 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         const botUsername = input.botUsername || botInfo.result?.username || null;
 
         // 2. Register the webhook with Telegram
-        const domain = process.env.REPLIT_DOMAINS || process.env.REPLIT_DEV_DOMAIN;
-        if (domain) {
-          const webhookUrl = `https://${domain}/api/telegram/webhook/${ctx.user.id}`;
+        const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
+        if (appUrl) {
+          const webhookUrl = `${appUrl}/api/telegram/webhook/${ctx.user.id}`;
           const webhookRes = await fetch(`https://api.telegram.org/bot${input.botToken}/setWebhook`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
