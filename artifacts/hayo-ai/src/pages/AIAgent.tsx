@@ -485,4 +485,115 @@ export default function AIAgent() {
         <div className="flex items-center gap-3">
           {isStreaming && currentNode && (
             <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${NODE_COLORS[currentNode]}`}
+            >
+              <Loader2 className="w-3 h-3 animate-spin" />
+              {NODE_LABELS[currentNode]}
+            </motion.div>
+          )}
+
+          {isStreaming ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleStop}
+              className="w-8 h-8 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+              title="إيقاف"
+            >
+              <XCircle className="w-4 h-4" />
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setMessages([])}
+              className="w-8 h-8 text-white/30 hover:text-white/60"
+              title="مسح المحادثة"
+              disabled={messages.length === 0}
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Chat Area ── */}
+      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6">
+        {messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-6 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center shadow-xl">
+              <Bot className="w-8 h-8 text-white" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-xl font-bold text-white">وكيل البرمجة الذكي</h2>
+              <p className="text-white/40 text-sm max-w-sm">
+                أعطني أي مهمة برمجية وسأقوم بتحليلها وتنفيذها خطوة بخطوة باستخدام Claude Sonnet 4.6
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-2 w-full max-w-lg">
+              {EXAMPLES.map((ex, i) => (
+                <button
+                  key={i}
+                  onClick={() => { setInput(ex); inputRef.current?.focus(); }}
+                  className="text-right text-xs text-white/50 hover:text-white/80 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl px-4 py-2.5 transition-all"
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <>
+            {messages.map(msg => (
+              <StreamMessageCard key={msg.id} msg={msg} />
+            ))}
+            <div ref={chatEndRef} />
+          </>
+        )}
+      </div>
+
+      {/* ── Input Area ── */}
+      <div className="shrink-0 border-t border-white/10 px-4 py-3 bg-black/30 backdrop-blur-sm">
+        <div className="flex items-end gap-2 max-w-4xl mx-auto">
+          <div className="flex-1 relative">
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="اكتب مهمتك البرمجية هنا… (Enter للإرسال، Shift+Enter لسطر جديد)"
+              rows={1}
+              disabled={isStreaming}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 resize-none focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/30 disabled:opacity-50 transition-all"
+              style={{ minHeight: "48px", maxHeight: "160px" }}
+              onInput={e => {
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = Math.min(el.scrollHeight, 160) + "px";
+              }}
+              dir="rtl"
+            />
+          </div>
+          <Button
+            onClick={handleSend}
+            disabled={isStreaming || !input.trim()}
+            className="shrink-0 w-11 h-11 bg-gradient-to-br from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white rounded-xl shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {isStreaming ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Send className="w-4 h-4" />
+            )}
+          </Button>
+        </div>
+        <p className="text-center text-[10px] text-white/20 mt-2">
+          وكيل ذكي يعمل بـ Claude Sonnet 4.6 • LangGraph • متعدد المراحل
+        </p>
+      </div>
+    </div>
+  );
+}
+
               
