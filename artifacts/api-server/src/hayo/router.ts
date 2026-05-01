@@ -1947,7 +1947,40 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       const { telegramBots } = await import("@workspace/db/schema");
       const { eq } = await import("drizzle-orm");
       const bots = await db.select().from(telegramBots).where(eq(telegramBots.userId, ctx.user.id)).limit(1);
-      return bots[0] || null;
+      const bot = bots[0];
+      if (!bot) return null;
+
+      // Fetch live webhook info from Telegram so the UI shows real status
+      let webhookStatus: Record<string, unknown> | null = null;
+      try {
+        const wRes = await fetch(`https://api.telegram.org/bot${bot.botToken}/getWebhookInfo`);
+        const wData = await wRes.json() as { ok: boolean; result?: Record<string, unknown> };
+        if (wData.ok) webhookStatus = wData.result ?? null;
+      } catch { /* ignore */ }
+
+      return { ...bot, webhookStatus };
+    }),
+
+    syncWebhook: protectedProcedure.mutation(async ({ ctx }) => {
+      const { db } = await import("@workspace/db");
+      const { telegramBots } = await import("@workspace/db/schema");
+      const { eq } = await import("drizzle-orm");
+      const bots = await db.select().from(telegramBots).where(eq(telegramBots.userId, ctx.user.id)).limit(1);
+      const bot = bots[0];
+      if (!bot) throw new Error("لا يوجد بوت مربوط");
+
+      const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
+      if (!appUrl) throw new Error("APP_URL غير مضبوط على السيرفر");
+
+      const webhookUrl = `${appUrl}/api/telegram/webhook/${ctx.user.id}`;
+      const res = await fetch(`https://api.telegram.org/bot${bot.botToken}/setWebhook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: webhookUrl, allowed_updates: ["message", "edited_message"] }),
+      });
+      const data = await res.json() as { ok: boolean; description?: string };
+      if (!data.ok) throw new Error(`فشل ضبط الـ Webhook: ${data.description ?? "خطأ"}`);
+      return { success: true, webhookUrl };
     }),
 
     connect: protectedProcedure
