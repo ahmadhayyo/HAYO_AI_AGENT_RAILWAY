@@ -1092,21 +1092,47 @@ export default function TradingAnalysis() {
     onError: (err: any) => toast.error(`خطأ: ${err.message}`),
   });
 
+  // ─── Bridge: Saved Broker Accounts (auto-execute on real platforms) ──
+  const brokerAccountsQ = trpc.hayo.broker.listAccounts.useQuery(undefined, { staleTime: 30_000 });
+  const executeBrokerSignal = trpc.hayo.broker.executeSignal.useMutation({
+    onSuccess: (r: any) => {
+      if (r?.success) toast.success(`✅ تم تنفيذ الصفقة على المنصة (${r.platform})`);
+      else toast.error(`فشل التنفيذ: ${r?.error || r?.message || "غير معروف"}`);
+    },
+    onError: (err: any) => toast.error(`خطأ في الجسر: ${err.message}`),
+  });
+
   const autoSignalMut = trpc.tradingAnalysis.autoSignal.useMutation({
     onSuccess: (data) => {
       if (data.signalsFound > 0) {
         toast.success(`🚨 ${data.signalsFound} إشارة تقاطع 3 فريمات — تم الإرسال لـ Telegram!`);
 
-        // Auto-execute on OANDA if enabled
-        if (autoExecuteEnabled && oandaConnected) {
+        // Bridge auto-execute: prefer saved broker accounts (with auto-trade enabled),
+        // fall back to legacy OANDA-from-localStorage if no saved account exists.
+        const autoAccounts = (brokerAccountsQ.data || []).filter((a: any) =>
+          a.autoTradeEnabled && a.isActive && a.connectionStatus !== "error"
+        );
+
+        if (autoAccounts.length > 0) {
+          for (const sig of data.confirmedSignals) {
+            for (const acc of autoAccounts) {
+              executeBrokerSignal.mutate({
+                accountId: acc.id,
+                pair: sig.pair,
+                direction: sig.signal as "BUY" | "SELL",
+                confidence: sig.confidence,
+                stopLoss: parseFloat(sig.stopLoss) || undefined,
+                takeProfit: parseFloat(sig.takeProfit) || undefined,
+              });
+            }
+          }
+          toast.info(`🤖 جسر التنفيذ: ${autoAccounts.length} حساب نشط × ${data.signalsFound} إشارة`);
+        } else if (autoExecuteEnabled && oandaConnected) {
+          // Legacy fallback (kept for backwards compat)
           for (const sig of data.confirmedSignals) {
             autoExecuteMut.mutate({
-              apiToken: oandaToken,
-              accountId: oandaAccount,
-              environment: oandaEnv,
-              pair: sig.pair,
-              direction: sig.signal,
-              confidence: sig.confidence,
+              apiToken: oandaToken, accountId: oandaAccount, environment: oandaEnv,
+              pair: sig.pair, direction: sig.signal, confidence: sig.confidence,
               stopLoss: parseFloat(sig.stopLoss) || undefined,
               takeProfit: parseFloat(sig.takeProfit) || undefined,
               riskPercent,

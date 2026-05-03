@@ -174,6 +174,26 @@ export const telegramBots = pgTable("telegramBots", {
 export type TelegramBot = typeof telegramBots.$inferSelect;
 export type InsertTelegramBot = typeof telegramBots.$inferInsert;
 
+// Stores chat_ids that have started a conversation with a user's bot —
+// used to broadcast trading signals to the right Telegram chats.
+export const telegramChats = pgTable("telegram_chats", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  chatId: varchar("chat_id", { length: 32 }).notNull(),
+  username: varchar("username", { length: 128 }),
+  firstName: varchar("first_name", { length: 128 }),
+  isActive: boolean("is_active").default(true).notNull(),
+  receiveSignals: boolean("receive_signals").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex("telegram_chats_user_chat_idx").on(t.userId, t.chatId),
+  index("telegram_chats_user_id_idx").on(t.userId),
+]);
+
+export type TelegramChat = typeof telegramChats.$inferSelect;
+export type InsertTelegramChat = typeof telegramChats.$inferInsert;
+
 export const appBuilds = pgTable("appBuilds", {
   id: serial("id").primaryKey(),
   userId: integer("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -263,7 +283,7 @@ export const osintCountryCoverage = pgTable("osint_country_coverage", {
 export type OsintCountryCoverage = typeof osintCountryCoverage.$inferSelect;
 
 // ─── Broker / Trading ─────────────────────────────────────────────
-export const brokerPlatformEnum = pgEnum("broker_platform", ["quotex", "iqoption", "pocketoption", "olymptrade"]);
+export const brokerPlatformEnum = pgEnum("broker_platform", ["quotex", "iqoption", "pocketoption", "olymptrade", "oanda", "mt4", "mt5"]);
 export const tradeResultEnum = pgEnum("trade_result", ["pending", "win", "loss", "draw", "cancelled"]);
 
 export const brokerAccounts = pgTable("broker_accounts", {
@@ -272,6 +292,18 @@ export const brokerAccounts = pgTable("broker_accounts", {
   platform: brokerPlatformEnum("platform").notNull(),
   accountEmail: text("account_email"),
   accountName: text("account_name"),
+  // Encrypted credentials (AES-encrypted at rest – never returned raw to client)
+  accountPasswordEnc: text("account_password_enc"),
+  apiTokenEnc: text("api_token_enc"),
+  apiSecretEnc: text("api_secret_enc"),
+  externalAccountId: text("external_account_id"),       // OANDA account id, MT4/5 login number, etc.
+  serverHost: text("server_host"),                       // MT4/5 broker server, OANDA env URL, etc.
+  environment: text("environment").default("practice"),  // practice|live
+  connectionStatus: text("connection_status").default("disconnected"), // connected|disconnected|error
+  connectionMessage: text("connection_message"),
+  lastConnectedAt: timestamp("last_connected_at"),
+  autoTradeEnabled: boolean("auto_trade_enabled").default(false).notNull(),
+  riskPercent: numeric("risk_percent", { precision: 5, scale: 2 }).default("1.00"),
   isActive: boolean("is_active").default(true).notNull(),
   balance: numeric("balance", { precision: 15, scale: 2 }),
   currency: text("currency").default("USD"),

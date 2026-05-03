@@ -1818,32 +1818,235 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       const { db } = await import("@workspace/db");
       const { brokerAccounts } = await import("@workspace/db/schema");
       const { eq, desc } = await import("drizzle-orm");
-      return db.select().from(brokerAccounts)
+      const rows = await db.select().from(brokerAccounts)
         .where(eq(brokerAccounts.userId, ctx.user.id))
         .orderBy(desc(brokerAccounts.createdAt));
+      // SECURITY: never return raw encrypted secrets to the client – just a flag indicating presence
+      return rows.map(r => ({
+        ...r,
+        accountPasswordEnc: undefined,
+        apiTokenEnc: undefined,
+        apiSecretEnc: undefined,
+        hasPassword: !!r.accountPasswordEnc,
+        hasApiToken: !!r.apiTokenEnc,
+        hasApiSecret: !!r.apiSecretEnc,
+      }));
     }),
 
     addAccount: protectedProcedure
       .input(z.object({
-        platform: z.enum(["quotex", "iqoption", "pocketoption", "olymptrade"]),
-        accountEmail: z.string().email().optional(),
+        platform: z.enum(["quotex", "iqoption", "pocketoption", "olymptrade", "oanda", "mt4", "mt5"]),
+        accountEmail: z.string().email().optional().or(z.literal("")),
         accountName: z.string().min(1).max(128).optional(),
+        accountPassword: z.string().min(1).optional(),
+        apiToken: z.string().min(1).optional(),
+        apiSecret: z.string().min(1).optional(),
+        externalAccountId: z.string().optional(),
+        serverHost: z.string().optional(),
+        environment: z.enum(["practice", "live"]).default("practice"),
+        autoTradeEnabled: z.boolean().default(false),
+        riskPercent: z.number().min(0.1).max(10).default(1),
         balance: z.number().positive().optional(),
         currency: z.string().default("USD"),
       }))
       .mutation(async ({ ctx, input }) => {
         const { db } = await import("@workspace/db");
         const { brokerAccounts } = await import("@workspace/db/schema");
+        const { encryptCred, testBrokerConnection } = await import("./services/trading-bridge.js");
+
+        // Validate per-platform required fields
+        const isOanda = input.platform === "oanda";
+        const isMT = input.platform === "mt4" || input.platform === "mt5";
+        const isBinary = !isOanda && !isMT;
+
+        if (isBinary && (!input.accountEmail || !input.accountPassword)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "البريد الإلكتروني وكلمة المرور مطلوبان لمنصات الخيارات الثنائية" });
+        }
+        if (isOanda && (!input.apiToken || !input.externalAccountId)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "OANDA يتطلب API Token + Account ID" });
+        }
+        if (isMT && (!input.externalAccountId || !input.accountPassword || !input.serverHost)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "MT4/MT5 يتطلب رقم الحساب + كلمة المرور + اسم السيرفر" });
+        }
+
+        const accountPasswordEnc = encryptCred(input.accountPassword);
+        const apiTokenEnc = encryptCred(input.apiToken);
+        const apiSecretEnc = encryptCred(input.apiSecret);
+
+        // Test connection BEFORE insert
+        const test = await testBrokerConnection({
+          platform: input.platform,
+          accountEmail: input.accountEmail || null,
+          accountPasswordEnc,
+          apiTokenEnc,
+          apiSecretEnc,
+          externalAccountId: input.externalAccountId || null,
+          serverHost: input.serverHost || null,
+          environment: input.environment,
+        });
+
         const [account] = await db.insert(brokerAccounts).values({
           userId: ctx.user.id,
           platform: input.platform,
-          accountEmail: input.accountEmail,
+          accountEmail: input.accountEmail || null,
           accountName: input.accountName,
+          accountPasswordEnc,
+          apiTokenEnc,
+          apiSecretEnc,
+          externalAccountId: input.externalAccountId || null,
+          serverHost: input.serverHost || null,
+          environment: input.environment,
+          autoTradeEnabled: input.autoTradeEnabled,
+          riskPercent: input.riskPercent.toString(),
+          connectionStatus: test.success ? "connected" : "error",
+          connectionMessage: test.message,
+          lastConnectedAt: test.success ? new Date() : null,
           balance: input.balance?.toString(),
           currency: input.currency,
           isActive: true,
         }).returning();
-        return account;
+
+        return {
+          ...account,
+          accountPasswordEnc: undefined,
+          apiTokenEnc: undefined,
+          apiSecretEnc: undefined,
+          testResult: test,
+        };
+      }),
+
+    testConnection: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { brokerAccounts } = await import("@workspace/db/schema");
+        const { and, eq } = await import("drizzle-orm");
+        const { testBrokerConnection } = await import("./services/trading-bridge.js");
+        const [account] = await db.select().from(brokerAccounts)
+          .where(and(eq(brokerAccounts.id, input.id), eq(brokerAccounts.userId, ctx.user.id)));
+        if (!account) throw new Error("Account not found");
+        const r = await testBrokerConnection(account as any);
+        await db.update(brokerAccounts)
+          .set({
+            connectionStatus: r.success ? "connected" : "error",
+            connectionMessage: r.message,
+            lastConnectedAt: r.success ? new Date() : account.lastConnectedAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(brokerAccounts.id, input.id));
+        return r;
+      }),
+
+    setAutoTrade: protectedProcedure
+      .input(z.object({ id: z.number(), enabled: z.boolean(), riskPercent: z.number().min(0.1).max(10).optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { brokerAccounts } = await import("@workspace/db/schema");
+        const { and, eq } = await import("drizzle-orm");
+        const updates: any = { autoTradeEnabled: input.enabled, updatedAt: new Date() };
+        if (input.riskPercent !== undefined) updates.riskPercent = input.riskPercent.toString();
+        await db.update(brokerAccounts).set(updates)
+          .where(and(eq(brokerAccounts.id, input.id), eq(brokerAccounts.userId, ctx.user.id)));
+        return { success: true };
+      }),
+
+    /** Execute a trading signal on a saved broker account (real bridge) */
+    executeSignal: protectedProcedure
+      .input(z.object({
+        accountId: z.number(),
+        pair: z.string(),
+        direction: z.enum(["BUY", "SELL", "CALL", "PUT"]),
+        confidence: z.number().min(0).max(100),
+        amount: z.number().positive().optional(),
+        durationSeconds: z.number().int().positive().optional(),
+        stopLoss: z.number().optional(),
+        takeProfit: z.number().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { brokerAccounts, brokerTrades, telegramBots } = await import("@workspace/db/schema");
+        const { and, eq } = await import("drizzle-orm");
+        const { executeSignalOnBroker, broadcastToTelegram, formatSignalMessage } = await import("./services/trading-bridge.js");
+
+        const [account] = await db.select().from(brokerAccounts)
+          .where(and(eq(brokerAccounts.id, input.accountId), eq(brokerAccounts.userId, ctx.user.id)));
+        if (!account) throw new TRPCError({ code: "NOT_FOUND", message: "الحساب غير موجود" });
+        if (!account.isActive) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الحساب غير مفعل" });
+
+        // Execute on broker
+        const result = await executeSignalOnBroker(account as any, {
+          pair: input.pair,
+          direction: input.direction,
+          confidence: input.confidence,
+          amount: input.amount,
+          durationSeconds: input.durationSeconds,
+          stopLoss: input.stopLoss,
+          takeProfit: input.takeProfit,
+          riskPercent: parseFloat(account.riskPercent ?? "1") || 1,
+        });
+
+        // Record trade
+        const dbDirection: "call" | "put" = (input.direction === "BUY" || input.direction === "CALL") ? "call" : "put";
+        await db.insert(brokerTrades).values({
+          brokerAccountId: account.id,
+          asset: input.pair,
+          direction: dbDirection,
+          amount: (input.amount ?? 0).toString(),
+          durationSeconds: input.durationSeconds ?? 60,
+          result: result.success ? "pending" : "cancelled",
+          entryPrice: result.price?.toString(),
+          externalTradeId: result.externalId,
+          signalSource: "HAYO Auto-Bridge",
+        });
+
+        // Broadcast to user's Telegram bot + global bot
+        const userBots = await db.select().from(telegramBots)
+          .where(eq(telegramBots.userId, ctx.user.id)).limit(1);
+        const userBotToken = userBots[0]?.botToken || null;
+
+        // Pull persisted chat_ids from telegram_chats (filled by /start in the webhook)
+        let userChatIds: number[] = [];
+        try {
+          const { telegramChats } = await import("@workspace/db/schema");
+          const chats = await db.select().from(telegramChats)
+            .where(and(eq(telegramChats.userId, ctx.user.id), eq(telegramChats.isActive, true)));
+          userChatIds = chats
+            .filter((c: any) => c.receiveSignals)
+            .map((c: any) => parseInt(c.chatId, 10))
+            .filter((n: number) => !Number.isNaN(n));
+        } catch { /* table may not exist yet on first deploy */ }
+
+        // Fallback: discover chatIds from the bot's recent updates if persistence empty
+        if (userBotToken && userChatIds.length === 0) {
+          try {
+            const upd = await fetch(`https://api.telegram.org/bot${userBotToken}/getUpdates?limit=20`).then(r => r.json()) as any;
+            if (upd?.ok && Array.isArray(upd.result)) {
+              const seen = new Set<number>();
+              for (const u of upd.result) {
+                const id = u?.message?.chat?.id;
+                if (typeof id === "number" && !seen.has(id)) { seen.add(id); userChatIds.push(id); }
+              }
+            }
+          } catch {/* ignore */}
+        }
+
+        const text = formatSignalMessage(
+          { pair: input.pair, direction: input.direction, confidence: input.confidence,
+            amount: input.amount, durationSeconds: input.durationSeconds,
+            stopLoss: input.stopLoss, takeProfit: input.takeProfit },
+          account.platform,
+          result,
+        );
+
+        const broadcast = await broadcastToTelegram({
+          userBotToken,
+          userChatIds,
+          globalBotToken: process.env.TELEGRAM_BOT_TOKEN || null,
+          globalChatId: process.env.TELEGRAM_OWNER_CHAT_ID || null,
+          text,
+        });
+
+        return { ...result, telegram: broadcast };
       }),
 
     deleteAccount: protectedProcedure
@@ -1950,13 +2153,13 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       const bot = bots[0];
       if (!bot) return null;
 
-      // Fetch live webhook info from Telegram so the UI shows real status
+      // Fetch live webhook info from Telegram so the UI can show real status
       let webhookStatus: Record<string, unknown> | null = null;
       try {
         const wRes = await fetch(`https://api.telegram.org/bot${bot.botToken}/getWebhookInfo`);
         const wData = await wRes.json() as { ok: boolean; result?: Record<string, unknown> };
         if (wData.ok) webhookStatus = wData.result ?? null;
-      } catch { /* ignore */ }
+      } catch { /* ignore – Telegram may be unreachable */ }
 
       return { ...bot, webhookStatus };
     }),
@@ -2050,6 +2253,45 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         const { eq } = await import("drizzle-orm");
         await db.update(telegramBots).set({ welcomeMessage: input.welcomeMessage || null, systemPrompt: input.systemPrompt || null }).where(eq(telegramBots.userId, ctx.user.id));
         return { success: true };
+      }),
+
+    /** قائمة المحادثات (chat_ids) المسجلة لبوت المستخدم — يُملأ تلقائياً عند /start */
+    listChats: protectedProcedure.query(async ({ ctx }) => {
+      const { db } = await import("@workspace/db");
+      const { telegramChats } = await import("@workspace/db/schema");
+      const { eq, desc } = await import("drizzle-orm");
+      return db.select().from(telegramChats)
+        .where(eq(telegramChats.userId, ctx.user.id))
+        .orderBy(desc(telegramChats.lastSeenAt));
+    }),
+
+    /** اختبار البث: يرسل رسالة فعلية لكل محادثات المستخدم */
+    sendTestBroadcast: protectedProcedure
+      .input(z.object({ message: z.string().min(1).max(2000).optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const { db } = await import("@workspace/db");
+        const { telegramBots, telegramChats } = await import("@workspace/db/schema");
+        const { and, eq } = await import("drizzle-orm");
+        const bots = await db.select().from(telegramBots).where(eq(telegramBots.userId, ctx.user.id)).limit(1);
+        if (!bots[0]?.botToken) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يوجد بوت مربوط" });
+        const chats = await db.select().from(telegramChats)
+          .where(and(eq(telegramChats.userId, ctx.user.id), eq(telegramChats.isActive, true)));
+        if (chats.length === 0) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لم يبدأ أحد محادثة مع البوت بعد. أرسل /start من حسابك على Telegram" });
+        }
+        const text = input.message || "🔔 اختبار جسر HAYO AI — البوت متصل بنجاح وجاهز لاستقبال الإشارات.";
+        let sent = 0; let failed = 0;
+        for (const c of chats) {
+          try {
+            const r = await fetch(`https://api.telegram.org/bot${bots[0].botToken}/sendMessage`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ chat_id: c.chatId, text, parse_mode: "Markdown" }),
+            });
+            if (r.ok) sent++; else failed++;
+          } catch { failed++; }
+        }
+        return { sent, failed, total: chats.length };
       }),
   }),
 
@@ -4495,39 +4737,6 @@ ${newsContext}
         return { success: true };
       }),
   }),
-
-  
-  // ==================== Model Instructions ====================
-  modelInstructions: router({
-    getAll: adminProcedure.query(async () => {
-      const { getAllInstructions } = await import("./system-prompts.js");
-      return getAllInstructions();
-    }),
-    get: protectedProcedure
-      .input(z.object({ modelId: z.string() }))
-      .query(async ({ input }) => {
-        const { getModelInstruction } = await import("./system-prompts.js");
-        return { modelId: input.modelId, instruction: getModelInstruction(input.modelId) };
-      }),
-    update: adminProcedure
-      .input(z.object({ modelId: z.string(), instruction: z.string().max(5000) }))
-      .mutation(async ({ input }) => {
-        const { setModelInstruction } = await import("./system-prompts.js");
-        setModelInstruction(input.modelId, input.instruction);
-        return { success: true, modelId: input.modelId };
-      }),
-    reset: adminProcedure
-      .input(z.object({ modelId: z.string() }))
-      .mutation(async ({ input }) => {
-        const { resetModelInstruction, getModelInstruction } = await import("./system-prompts.js");
-        resetModelInstruction(input.modelId);
-        return { success: true, instruction: getModelInstruction(input.modelId) };
-      }),
-  }),
-
-// ==================== Reverse Engineer ====================
-  reverseEngineer: reverseEngineerRouter,
-  aiAgent: aiAgentRouter,
 });
 
 export type AppRouter = typeof appRouter;
