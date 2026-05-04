@@ -13,12 +13,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zip \
     curl \
     python3 \
+    python3-pip \
     make \
     g++ \
     zipalign \
     apksigner \
     file \
+    binwalk \
+    strace \
+    ltrace \
+    upx-ucl \
+    aapt \
     && rm -rf /var/lib/apt/lists/*
+
+# ── Install Python dependencies ───────────────────────────────────
+RUN pip3 install --no-cache-dir --break-system-packages colorama
 
 # Create directory structure for reverse-engineering tools
 RUN mkdir -p /home/runner/jadx/bin /home/runner/apktool
@@ -41,6 +50,25 @@ RUN wget -q --timeout=60 \
        > /usr/local/bin/apktool \
     && chmod +x /usr/local/bin/apktool \
     || echo "WARNING: APKTool download failed — reverse engineering features will be limited"
+
+# ── Download dex2jar (fault-tolerant) ─────────────────────────────
+RUN wget -q --timeout=60 \
+    "https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip" \
+    -O /tmp/dex2jar.zip \
+    && unzip -q /tmp/dex2jar.zip -d /home/runner/ \
+    && mv /home/runner/dex-tools-v2.4 /home/runner/dex2jar \
+    && chmod +x /home/runner/dex2jar/*.sh \
+    && ln -sf /home/runner/dex2jar/d2j-dex2jar.sh /usr/local/bin/d2j-dex2jar.sh \
+    && rm /tmp/dex2jar.zip \
+    || echo "WARNING: dex2jar download failed"
+
+# ── Download radare2 (fault-tolerant) ─────────────────────────────
+RUN wget -q --timeout=60 \
+    "https://github.com/radareorg/radare2/releases/download/5.9.8/radare2_5.9.8_amd64.deb" \
+    -O /tmp/radare2.deb \
+    && dpkg -i /tmp/radare2.deb \
+    && rm /tmp/radare2.deb \
+    || echo "WARNING: radare2 download failed"
 
 # ── Generate debug keystore (fault-tolerant) ─────────────────────
 RUN keytool -genkeypair -v \

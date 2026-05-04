@@ -113,7 +113,6 @@ export function getToolStatus(): Record<string, { available: boolean; version?: 
     java:      { ...check("java", "-version"), path: "JDK 17" },
     jadx:      { ...check(jadxPath), path: jadxPath },
     apktool:   { ...check(apkPath), path: apkPath },
-    // keytool / jarsigner use single-dash flags on older JDK; JDK 17 accepts both
     keytool:   check("keytool", "-version"),
     jarsigner: check("jarsigner", "-version"),
     zipalign:  check("zipalign"),
@@ -125,6 +124,57 @@ export function getToolStatus(): Record<string, { available: boolean; version?: 
     wasm2wat:  check("wasm2wat", "--version"),
     file:      check("file", "--version"),
     unzip:     check("unzip", "-v"),
+    python3:   check("python3"),
+    binwalk:   check("binwalk"),
+    nm:        check("nm"),
+    strace:    check("strace"),
+    ltrace:    check("ltrace"),
+    upx:       check("upx"),
+    aapt2:     check("aapt2", "version"),
+    dex2jar:   check("d2j-dex2jar.sh"),
+    r2:        check("r2", "-v"),
+  };
+}
+
+/** Flat response for frontend /check-tools endpoint */
+export function getToolStatusFlat(): Record<string, boolean | string | null> {
+  const check = (cmd: string): boolean => {
+    try { execSync(`${cmd} 2>&1`, { timeout: 5000, stdio: "pipe" }); return true; } catch { return false; }
+  };
+  const ver = (cmd: string): string | null => {
+    try { return execSync(`${cmd} 2>&1`, { timeout: 5000, stdio: "pipe" }).toString().trim().split("\n")[0]; } catch { return null; }
+  };
+
+  const jadxPath = findJADX();
+  const apkPath  = findApkTool();
+
+  return {
+    apkToolPath: apkPath,
+    javaAvailable: check("java -version"),
+    apkToolAvailable: check(`${apkPath} --version`),
+    jadxVersion: ver(`${jadxPath} --version`) || (check("jadx --version") ? "installed" : null),
+    apkToolVersion: ver(`${apkPath} --version`),
+    jarsignerAvailable: check("jarsigner"),
+    keytoolAvailable: check("keytool -help"),
+    keystoreExists: fs.existsSync("/home/runner/debug.keystore"),
+    zipalignAvailable: check("zipalign --version"),
+    apksignerAvailable: check("apksigner --version"),
+    wasm2watAvailable: check("wasm2wat --version"),
+    readelfAvailable: check("readelf --version"),
+    objdumpAvailable: check("objdump --version"),
+    stringsAvailable: check("strings --version"),
+    xxdAvailable: check("echo '' | xxd"),
+    fileAvailable: check("file --version"),
+    python3Available: check("python3 --version"),
+    python3Version: ver("python3 --version"),
+    binwalkAvailable: check("binwalk --help"),
+    nmAvailable: check("nm --version"),
+    straceAvailable: check("strace -V"),
+    ltraceAvailable: check("ltrace -V"),
+    upxAvailable: check("upx --version"),
+    aapt2Available: check("aapt2 version"),
+    dex2jarAvailable: check("d2j-dex2jar.sh --help"),
+    r2Available: check("r2 -v"),
   };
 }
 
