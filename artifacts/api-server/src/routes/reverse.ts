@@ -879,10 +879,14 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
 
   req.on("close", () => { try { (res as any)._sseChild?.kill(); } catch {} });
 
+  // Resolve the Python auditor script path (repo-relative)
+  const auditorScript = path.resolve(__dirname, "../../../../scripts/apk_auditor.py");
+  const hasPythonAuditor = fs.existsSync(auditorScript);
+
   try {
     if (ext === "apk") {
       // ── Phase 1: Decompile ───────────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 1/5: تفكيك APK ════`);
+      sseSend(res, `[STEP] ════ المرحلة 1/6: تفكيك APK ════`);
       const code1 = await spawnStream(res, "apktool", ["d", "-f", "-o", path.join(workDir, "decoded"), filePath], workDir, "apktool d");
       if (code1 !== 0) {
         sseSend(res, "[ERROR] فشل APKTool — تأكد أن الملف APK سليم");
@@ -891,8 +895,22 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       }
       sseSend(res, "[✅] تم تفكيك APK بنجاح");
 
+      // ── Phase 1.5: Python Static Audit (Secret Discovery) ──────
+      if (hasPythonAuditor) {
+        sseSend(res, `[STEP] ════ المرحلة 1.5/6: تدقيق ثابت بايثون (اكتشاف الأسرار) ════`);
+        const auditCode = await spawnStream(
+          res, "python3", [auditorScript, filePath, "--patch-file", "*.smali", "--search", "const/4 v0, 0x0", "--replace", "const/4 v0, 0x1"],
+          workDir, "Python APK Auditor — اكتشاف الأسرار + تعديل Smali"
+        );
+        if (auditCode === 0) {
+          sseSend(res, "[✅] اكتمل التدقيق الثابت بايثون — الأسرار المكتشفة أعلاه");
+        } else {
+          sseSend(res, "[⚠️] تدقيق بايثون أنهى بتحذيرات — سنستمر بالمسار العادي");
+        }
+      }
+
       // ── Phase 2: Apply Patches ───────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 2/5: تطبيق التعديلات ════`);
+      sseSend(res, `[STEP] ════ المرحلة 2/6: تطبيق التعديلات ════`);
       const buf = fs.readFileSync(filePath);
       const cloneOpts = {
         removeAds:          opts.removeAds !== false,
@@ -913,11 +931,11 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       }
 
       // ── Phase 3: Rebuild ─────────────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 3/5: إعادة البناء ════`);
+      sseSend(res, `[STEP] ════ المرحلة 3/6: إعادة البناء ════`);
       sseSend(res, "[✅] تم إعادة بناء APK بنجاح");
 
       // ── Phase 4: zipalign + apksigner ───────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 4/5: المحاذاة والتوقيع ════`);
+      sseSend(res, `[STEP] ════ المرحلة 4/6: المحاذاة والتوقيع ════`);
       if (result.signed) {
         sseSend(res, "[🧹] إزالة توقيعات META-INF القديمة (CERT.RSA / CERT.SF / MANIFEST.MF)...");
         sseSend(res, "[✅] META-INF: تم حذف التوقيعات القديمة بنجاح");
@@ -929,7 +947,7 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       }
 
       // ── Phase 5: Save & Report ───────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 5/5: الملف جاهز ════`);
+      sseSend(res, `[STEP] ════ المرحلة 5/6: الملف جاهز ════`);
       const outPath = path.join(workDir, `cloned-${fileName}`);
       fs.writeFileSync(outPath, result.apkBuffer);
       sseSend(res, `[✅] الحجم النهائي: ${(result.apkBuffer.length / 1048576).toFixed(2)} MB`);
@@ -938,13 +956,18 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       if (result.secrets?.length) {
         sseSend(res, `[🔑] استُخرج ${result.secrets.length} سر مضمّن من التطبيق:`);
         for (const s of result.secrets.slice(0, 15)) {
-          // Show full value — committee needs to see actual secrets to understand the vulnerability
           sseSend(res, `   → [${s.type}] ${s.value} (${s.file}:${s.line ?? "?"})`);
         }
         if (result.secrets.length > 15) {
           sseSend(res, `   ... و${result.secrets.length - 15} سر إضافي (مرئي في نتائج الاستنساخ)`);
         }
       }
+
+      // ── Phase 6: Python Auditor Report ──────────────────────────
+      sseSend(res, `[STEP] ════ المرحلة 6/6: تقرير التدقيق النهائي ════`);
+      sseSend(res, hasPythonAuditor
+        ? "[✅] سكربت Python APK Auditor متوفر — التدقيق الثابت مدمج في الاستنساخ"
+        : "[ℹ️] سكربت Python APK Auditor غير متوفر — استخدام المحرك المدمج فقط");
 
       const dlId = `dl_${Date.now()}`;
       uploadStore.set(dlId, { filePath: outPath, fileName: `cloned-${fileName}`, uploadedAt: Date.now() });
@@ -955,7 +978,8 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
         patchedFiles: result.modifications.length,
         downloadId: dlId,
         secretsFound: result.secrets?.length || 0,
-        secrets: result.secrets || [],   // All secrets — no truncation for committee review
+        secrets: result.secrets || [],
+        pythonAuditorUsed: hasPythonAuditor,
       });
       sseSend(res, `[DONE] ════ اكتمل استنساخ ${fileName} ════`);
 
@@ -1006,7 +1030,7 @@ router.get("/stream/download/:dlId", (req: Request, res: Response) => {
   res.download(dl.filePath, dl.fileName);
 });
 
-const ALLOWED_CMDS = new Set(["apktool", "jadx", "jarsigner", "aapt", "aapt2", "adb", "zipalign", "7zz", "xxd", "objdump", "readelf", "wasm2wat", "file", "strings"]);
+const ALLOWED_CMDS = new Set(["apktool", "jadx", "jarsigner", "aapt", "aapt2", "adb", "zipalign", "7zz", "xxd", "objdump", "readelf", "wasm2wat", "file", "strings", "python3"]);
 
 router.get("/stream/execute", (req: Request, res: Response) => {
   sseHeaders(res);
