@@ -22,7 +22,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     binwalk \
     strace \
     ltrace \
-    upx-ucl \
     aapt \
     && rm -rf /var/lib/apt/lists/*
 
@@ -69,6 +68,16 @@ RUN wget -q --timeout=60 \
     && dpkg -i /tmp/radare2.deb \
     && rm /tmp/radare2.deb \
     || echo "WARNING: radare2 download failed"
+
+# ── Download UPX (fault-tolerant — not in Debian bookworm repos) ──
+RUN wget -q --timeout=60 \
+    "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-amd64_linux.tar.xz" \
+    -O /tmp/upx.tar.xz \
+    && tar -xJf /tmp/upx.tar.xz -C /tmp/ \
+    && cp /tmp/upx-4.2.4-amd64_linux/upx /usr/local/bin/upx \
+    && chmod +x /usr/local/bin/upx \
+    && rm -rf /tmp/upx.tar.xz /tmp/upx-4.2.4-amd64_linux \
+    || echo "WARNING: UPX download failed"
 
 # ── Generate debug keystore (fault-tolerant) ─────────────────────
 RUN keytool -genkeypair -v \
