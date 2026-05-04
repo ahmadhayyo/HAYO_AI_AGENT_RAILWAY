@@ -39,6 +39,7 @@ import {
   isApkToolAvailable,
   findApkTool,
   getToolStatus,
+  getToolStatusFlat,
   decodeStringsInFiles,
   crossReference,
   buildClassHierarchy,
@@ -601,7 +602,7 @@ router.post("/forensic-report", async (req: Request, res: Response) => {
 
 router.get("/check-tools", async (_req: Request, res: Response) => {
   try {
-    res.json(getToolStatus());
+    res.json(getToolStatusFlat());
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1030,7 +1031,7 @@ router.get("/stream/download/:dlId", (req: Request, res: Response) => {
   res.download(dl.filePath, dl.fileName);
 });
 
-const ALLOWED_CMDS = new Set(["apktool", "jadx", "jarsigner", "aapt", "aapt2", "adb", "zipalign", "7zz", "xxd", "objdump", "readelf", "wasm2wat", "file", "strings", "python3"]);
+const ALLOWED_CMDS = new Set(["apktool", "jadx", "jarsigner", "aapt", "aapt2", "adb", "zipalign", "7zz", "xxd", "objdump", "readelf", "wasm2wat", "file", "strings", "python3", "binwalk", "nm", "strace", "ltrace", "upx", "d2j-dex2jar.sh", "r2", "apksigner"]);
 
 router.get("/stream/execute", (req: Request, res: Response) => {
   sseHeaders(res);

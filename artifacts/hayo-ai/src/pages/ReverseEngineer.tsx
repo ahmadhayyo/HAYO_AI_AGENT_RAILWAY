@@ -797,20 +797,21 @@ export default function ReverseEngineer(){
       {showTools&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/30 rounded-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-200">
         <div className="flex items-center gap-2 mb-3"><Wrench className="w-4 h-4 text-emerald-400"/><span className="text-sm font-semibold">أدوات الهندسة العكسية المثبّتة</span><button onClick={()=>setShowTools(false)} className="mr-auto text-muted-foreground hover:text-foreground"><X className="w-4 h-4"/></button></div>
         {!tools?<div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin"/>جاري الفحص...</div>:
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div>
+        <div className="text-[10px] text-muted-foreground mb-1.5 font-semibold">أدوات Android / APK</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
           {([
             ["Java JDK 17","javaAvailable","☕"],
-            ["JADX","jadxVersion","🔍"],
             ["APKTool","apkToolAvailable","📦"],
+            ["JADX","jadxVersion","🔍"],
+            ["APKTool v","apkToolVersion","📋"],
             ["jarsigner","jarsignerAvailable","✍️"],
             ["keytool","keytoolAvailable","🔑"],
             ["Keystore","keystoreExists","🔐"],
-            ["wasm2wat","wasm2watAvailable","🌐"],
-            ["readelf","readelfAvailable","📊"],
-            ["objdump","objdumpAvailable","⚙️"],
-            ["strings","stringsAvailable","🔤"],
-            ["xxd","xxdAvailable","🔢"],
-            ["APKTool v","apkToolVersion","📋"],
+            ["zipalign","zipalignAvailable","📐"],
+            ["apksigner","apksignerAvailable","🔏"],
+            ["aapt2","aapt2Available","📱"],
+            ["dex2jar","dex2jarAvailable","🔄"],
           ] as const).map(([name,key,icon])=>{
             const val=tools[key];
             const ok=val&&val!==null&&val!==false;
@@ -818,6 +819,42 @@ export default function ReverseEngineer(){
               <span>{icon}</span><span className="font-medium">{name}</span><span className="mr-auto text-[10px]">{ok?(typeof val==="string"?val:"✅"):"❌"}</span>
             </div>);
           })}
+        </div>
+        <div className="text-[10px] text-muted-foreground mb-1.5 font-semibold">أدوات التحليل الثنائي</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+          {([
+            ["readelf","readelfAvailable","📊"],
+            ["objdump","objdumpAvailable","⚙️"],
+            ["strings","stringsAvailable","🔤"],
+            ["xxd","xxdAvailable","🔢"],
+            ["nm","nmAvailable","🏷️"],
+            ["file","fileAvailable","📄"],
+            ["binwalk","binwalkAvailable","🔬"],
+            ["radare2","r2Available","🛠️"],
+          ] as const).map(([name,key,icon])=>{
+            const val=tools[key];
+            const ok=val&&val!==null&&val!==false;
+            return(<div key={name} className={`flex items-center gap-2 px-2.5 py-2 rounded-lg border text-xs ${ok?"bg-emerald-500/5 border-emerald-500/20 text-emerald-300":"bg-red-500/5 border-red-500/20 text-red-400"}`}>
+              <span>{icon}</span><span className="font-medium">{name}</span><span className="mr-auto text-[10px]">{ok?(typeof val==="string"?val:"✅"):"❌"}</span>
+            </div>);
+          })}
+        </div>
+        <div className="text-[10px] text-muted-foreground mb-1.5 font-semibold">أدوات إضافية</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {([
+            ["Python3","python3Available","🐍"],
+            ["wasm2wat","wasm2watAvailable","🌐"],
+            ["UPX","upxAvailable","📦"],
+            ["strace","straceAvailable","🔍"],
+            ["ltrace","ltraceAvailable","📡"],
+          ] as const).map(([name,key,icon])=>{
+            const val=tools[key];
+            const ok=val&&val!==null&&val!==false;
+            return(<div key={name} className={`flex items-center gap-2 px-2.5 py-2 rounded-lg border text-xs ${ok?"bg-emerald-500/5 border-emerald-500/20 text-emerald-300":"bg-red-500/5 border-red-500/20 text-red-400"}`}>
+              <span>{icon}</span><span className="font-medium">{name}</span><span className="mr-auto text-[10px]">{ok?(typeof val==="string"?val:"✅"):"❌"}</span>
+            </div>);
+          })}
+        </div>
         </div>}
       </div>}
 
