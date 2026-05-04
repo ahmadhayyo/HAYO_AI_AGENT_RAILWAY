@@ -429,7 +429,7 @@ export default function ReverseEngineer(){
   const[cloning,setCloning]=useState(false);
   const[cloneLive,setCloneLive]=useState<{sseUrl:string}|null>(null);
   const[cOpts,setCOpts]=useState({removeAds:true,unlockPremium:true,removeTracking:false,removeLicenseCheck:true,extractSecrets:true,changeAppName:"",changePackageName:"",customInstructions:""});
-  const[cResult,setCResult]=useState<{modifications:string[];patchedFiles?:number;signed?:boolean;downloadUrl?:string;installCommand?:string;success?:boolean;secrets?:any[];secretsFound?:number}|null>(null);
+  const[cResult,setCResult]=useState<{modifications:string[];patchedFiles?:number;signed?:boolean;downloadUrl?:string;installCommand?:string;success?:boolean;secrets?:any[];secretsFound?:number;pythonAuditorUsed?:boolean}|null>(null);
 
   // ══ TAB 3: EDIT ══
   const[eFile,setEFile]=useState<File|null>(null);
@@ -619,7 +619,7 @@ export default function ReverseEngineer(){
           const blob=await dlR.blob();const dlUrl=URL.createObjectURL(blob);const a=document.createElement("a");a.href=dlUrl;
           const ext=cFile.name.split(".").pop()?.toLowerCase();
           const bn=cFile.name.replace(/\.[^.]+$/,"");a.download=ext==="apk"?`cloned-${bn}.apk`:`cloned-${bn}.zip`;a.click();
-          setCResult({modifications:cloneResult.modifications||[],patchedFiles:cloneResult.patchedFiles||0,signed:cloneResult.signed||false,downloadUrl:dlUrl,installCommand:ext==="apk"?"adb install -r cloned-"+cFile.name:undefined,success:true,secrets:cloneResult.secrets||[],secretsFound:cloneResult.secretsFound||0});
+          setCResult({modifications:cloneResult.modifications||[],patchedFiles:cloneResult.patchedFiles||0,signed:cloneResult.signed||false,downloadUrl:dlUrl,installCommand:ext==="apk"?"adb install -r cloned-"+cFile.name:undefined,success:true,secrets:cloneResult.secrets||[],secretsFound:cloneResult.secretsFound||0,pythonAuditorUsed:cloneResult.pythonAuditorUsed||false});
           toast.success(cloneResult.signed?"🎉 استنساخ + توقيع — جاهز!":"✅ تم الاستنساخ");
         }else{setCResult({modifications:cloneResult.modifications||[],success:false});toast.error("فشل تحميل الملف المستنسخ");}
       }else{
@@ -982,11 +982,12 @@ export default function ReverseEngineer(){
         </div>}
         {cResult&&cResult.success&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/20 rounded-xl p-4 space-y-3">
           <div className="flex items-center gap-2"><CheckCircle2 className="w-5 h-5 text-emerald-400"/><span className="text-sm font-bold text-emerald-300">✅ استنساخ ناجح</span></div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-5 gap-2">
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-2 text-center"><div className="text-lg font-bold text-emerald-300">{cResult.modifications.length}</div><div className="text-[10px] text-muted-foreground">تعديل</div></div>
             <div className="bg-violet-500/10 border border-violet-500/30 rounded-lg p-2 text-center"><div className="text-lg font-bold text-violet-300">{cResult.patchedFiles||0}</div><div className="text-[10px] text-muted-foreground">ملف</div></div>
             <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-2 text-center"><div className="text-base font-bold text-blue-300">{cResult.signed?"موقّع✓":"بدون"}</div><div className="text-[10px] text-muted-foreground">apksigner</div></div>
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2 text-center"><div className="text-lg font-bold text-amber-300">{cResult.secretsFound||0}</div><div className="text-[10px] text-muted-foreground">سر مكتشف</div></div>
+            <div className={`${cResult.pythonAuditorUsed?"bg-cyan-500/10 border-cyan-500/30":"bg-muted/10 border-border"} border rounded-lg p-2 text-center`}><div className={`text-base font-bold ${cResult.pythonAuditorUsed?"text-cyan-300":"text-muted-foreground"}`}>{cResult.pythonAuditorUsed?"🐍✓":"—"}</div><div className="text-[10px] text-muted-foreground">Python Auditor</div></div>
           </div>
           <div className="text-xs font-semibold text-muted-foreground">سجل التعديلات:</div>
           <div className="max-h-48 overflow-y-auto space-y-1.5">{cResult.modifications.map((m:string,i:number)=><div key={i} className="text-xs bg-muted/20 rounded-lg px-3 py-2 flex items-start gap-2 border border-border/50"><span className="text-emerald-400 shrink-0 mt-0.5">{m.includes("🚫")?"🚫":m.includes("🔓")?"🔓":m.includes("💰")?"💰":m.includes("🔑")?"🔑":m.includes("توقيع")?"🔏":"✅"}</span><span className="text-muted-foreground">{m}</span></div>)}</div>
