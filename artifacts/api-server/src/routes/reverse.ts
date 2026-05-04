@@ -879,8 +879,8 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
 
   req.on("close", () => { try { (res as any)._sseChild?.kill(); } catch {} });
 
-  // Resolve the Python auditor script path (repo-relative)
-  const auditorScript = path.resolve(__dirname, "../../../../scripts/apk_auditor.py");
+  // Resolve the Python auditor script path (works in both source and esbuild bundle)
+  const auditorScript = path.resolve(process.cwd(), "scripts/apk_auditor.py");
   const hasPythonAuditor = fs.existsSync(auditorScript);
 
   try {
