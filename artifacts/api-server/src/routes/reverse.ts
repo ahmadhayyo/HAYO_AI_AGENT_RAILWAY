@@ -49,6 +49,7 @@ import {
   methodSignatureSearch,
   generateForensicReport,
   extractSecretsFromAPK,
+  runFullAutoClone,
 } from "../hayo/services/reverse-engineer.js";
 import type { CloneOptions, AuditReport } from "../hayo/services/reverse-engineer.js";
 import { callPowerAI } from "../hayo/providers.js";
@@ -1088,6 +1089,107 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
   } catch (e: any) {
     sseSend(res, `[ERROR] ${e.message}`);
     sseJSON(res, "result", { success: false, error: e.message, modifications: [] });
+  }
+  res.end();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// FULL AUTO CLONE — Unified 6-Phase SSE Pipeline (No Telegram)
+// ═══════════════════════════════════════════════════════════════
+router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
+  sseHeaders(res);
+  const uploadId = req.query.uploadId as string;
+  const upload = uploadStore.get(uploadId);
+  if (!upload) { sseSend(res, "[ERROR] ملف غير موجود — ارفع الملف أولاً"); res.end(); return; }
+
+  const { filePath, fileName } = upload;
+  const ext = fileName.split(".").pop()?.toLowerCase() || "";
+  if (ext !== "apk") {
+    sseSend(res, "[ERROR] Full Auto Clone يدعم ملفات APK فقط");
+    sseJSON(res, "result", { success: false, error: "صيغة غير مدعومة — ارفع ملف APK" });
+    res.end();
+    return;
+  }
+
+  req.on("close", () => {});
+
+  try {
+    const buf = fs.readFileSync(filePath);
+    sseSend(res, `[STEP] ════ بدء Full Auto Clone: ${fileName} (${(buf.length / 1048576).toFixed(1)} MB) ════`);
+
+    const result = await runFullAutoClone(buf, fileName, (phase, phaseName, message) => {
+      sseSend(res, `[PHASE ${phase}/6] ${phaseName}: ${message}`);
+    });
+
+    // Stream phase results
+    for (const phase of result.phases) {
+      sseSend(res, `[STEP] ════ المرحلة ${phase.phase}/6: ${phase.name} [${phase.status}] (${phase.duration}ms) ════`);
+      for (const d of phase.details) {
+        sseSend(res, `[INFO] ${d}`);
+      }
+    }
+
+    // Stream secrets (FULL PLAIN TEXT)
+    if (result.pentest.secrets.length > 0) {
+      sseSend(res, `[STEP] ════ الأسرار المكتشفة (${result.pentest.secrets.length}) — نص كامل ════`);
+      for (const s of result.pentest.secrets) {
+        sseSend(res, `[SECRET] [${s.type}] ${s.value} (${s.file}:${s.line ?? "?"})`);
+      }
+    }
+
+    // Stream endpoints
+    if (result.pentest.endpoints.length > 0) {
+      sseSend(res, `[STEP] ════ نقاط النهاية (${result.pentest.endpoints.length}) ════`);
+      for (const ep of result.pentest.endpoints.slice(0, 30)) {
+        sseSend(res, `[ENDPOINT] ${ep}`);
+      }
+    }
+
+    // Stream clone report summary
+    sseSend(res, `[STEP] ════ ملخص التقرير النهائي ════`);
+    sseSend(res, `[INFO] 📦 Package: ${result.cloneReport.packageName}`);
+    sseSend(res, `[INFO] 🔓 Premium: ${result.cloneReport.premiumMethodsPatched} | 🚪 Login: ${result.cloneReport.loginBypassed ? "تم التجاوز" : "لا"} | 💰 Points: ${result.cloneReport.pointsUnlocked ? "MAX" : "لا"}`);
+    sseSend(res, `[INFO] 🛡️ Tamper: ${result.cloneReport.tamperNeutralized ? "محيّد" : "لا"} | ✍️ Signature: ${result.cloneReport.signatureVerified ? "صحيح" : "لا"} | 📂 ZIP: ${result.cloneReport.zipIntegrity ? "سليم" : "لا"}`);
+
+    if (result.success && result.apkBuffer) {
+      const outDir = path.join(os.tmpdir(), `hayo_fullautoclone_${Date.now()}`);
+      fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, `fullclone-${fileName}`);
+      fs.writeFileSync(outPath, result.apkBuffer);
+      const dlId = `dl_${Date.now()}`;
+      uploadStore.set(dlId, { filePath: outPath, fileName: `fullclone-${fileName}`, uploadedAt: Date.now() });
+
+      sseJSON(res, "result", {
+        success: true,
+        downloadId: dlId,
+        phases: result.phases,
+        pentest: {
+          firebaseConfigs: result.pentest.firebaseConfigs,
+          apiKeys: result.pentest.apiKeys,
+          databaseUrls: result.pentest.databaseUrls,
+          projectIds: result.pentest.projectIds,
+          secrets: result.pentest.secrets,
+          endpoints: result.pentest.endpoints,
+          riskLevel: result.pentest.riskLevel,
+        },
+        cloneReport: result.cloneReport,
+        generatedAt: result.generatedAt,
+      });
+      sseSend(res, `[DONE] ════ اكتمل Full Auto Clone: ${fileName} ════`);
+    } else {
+      sseJSON(res, "result", {
+        success: false,
+        error: result.error,
+        phases: result.phases,
+        pentest: result.pentest,
+        cloneReport: result.cloneReport,
+        generatedAt: result.generatedAt,
+      });
+      sseSend(res, `[ERROR] فشل Full Auto Clone: ${result.error}`);
+    }
+  } catch (e: any) {
+    sseSend(res, `[ERROR] ${e.message}`);
+    sseJSON(res, "result", { success: false, error: e.message });
   }
   res.end();
 });
