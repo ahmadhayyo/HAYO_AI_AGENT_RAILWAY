@@ -514,6 +514,9 @@ export default function ReverseEngineer(){
   const[cpActiveStep,setCpActiveStep]=useState(0);
   const[cpStepsRevealed,setCpStepsRevealed]=useState<number[]>([]);
   const cpFileRef=useRef<HTMLInputElement>(null);
+  const[cpV2,setCpV2]=useState<any>(null);
+  const[cpV2Loading,setCpV2Loading]=useState(false);
+  const[cpViewTab,setCpViewTab]=useState<"overview"|"secrets"|"decoded"|"resources"|"firebase"|"owasp"|"crypto"|"network"|"components"|"dataflow"|"v1steps">("overview");
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -741,25 +744,30 @@ export default function ReverseEngineer(){
   // ═══ TAB 6 HANDLERS ═══
   const doCloudPentestFull=async()=>{
     if(!cpFile){toast.error("ارفع ملف APK أولاً");return;}
-    setCpLoading(true);setCpResult(null);setCpShowReport(false);setCpActiveStep(1);setCpStepsRevealed([]);
+    setCpLoading(true);setCpResult(null);setCpV2(null);setCpShowReport(false);setCpActiveStep(1);setCpStepsRevealed([]);setCpViewTab("overview");
     const revealStep=(n:number)=>setCpStepsRevealed(prev=>[...prev,n]);
-    const stepTitles=["تفكيك APK","استخراج التوكن","المفاتيح","IDOR","استغلال","سحب DB","Telegram","سكريبت + تقرير"];
     let stepTimer:any;
     const simulateSteps=()=>{
       let s=1;
       revealStep(1);setCpActiveStep(1);
-      stepTimer=setInterval(()=>{s++;if(s<=8){revealStep(s);setCpActiveStep(s);}else clearInterval(stepTimer);},2400);
+      stepTimer=setInterval(()=>{s++;if(s<=10){revealStep(s);setCpActiveStep(s);}else clearInterval(stepTimer);},1800);
     };
     simulateSteps();
     try{
       const fd=new FormData();fd.append("file",cpFile);
-      const r=await fetchRE("/api/reverse/cloud-pentest-full",{method:"POST",body:fd});
-      const d=await r.json();
-      if(!r.ok)throw new Error(d.error);
+      const fd2=new FormData();fd2.append("file",cpFile);
+      const [r1,r2]=await Promise.all([
+        fetchRE("/api/reverse/cloud-pentest-full",{method:"POST",body:fd}),
+        fetchRE("/api/reverse/cloud-pentest-v2",{method:"POST",body:fd2}),
+      ]);
+      const d1=await r1.json();
+      const d2=await r2.json();
+      if(!r1.ok)throw new Error(d1.error);
       clearInterval(stepTimer);
-      setCpStepsRevealed([1,2,3,4,5,6,7,8]);setCpActiveStep(0);
-      setCpResult(d);setCpExpanded(new Set([1,2,3,4,5,6,7,8]));
-      toast.success(`اكتمل اختبار الاختراق — درجة الخطورة: ${d.summary?.riskScore}/100`);
+      setCpStepsRevealed([1,2,3,4,5,6,7,8,9,10]);setCpActiveStep(0);
+      setCpResult(d1);setCpV2(r2.ok?d2:null);setCpExpanded(new Set([1,2,3]));
+      const score=r2.ok?d2.overallScore:d1.summary?.riskScore;
+      toast.success(`اكتمل التحليل الأمني — درجة الخطورة: ${score}/100`);
     }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setCpLoading(false);}
   };
 
@@ -1328,7 +1336,7 @@ export default function ReverseEngineer(){
         </div>
       </div>}
 
-      {/* ══ TAB 6: CLOUD PENTEST ══ */}
+      {/* ══ TAB 6: CLOUD PENTEST V2 ══ */}
       {tab==="cloudpen"&&<div className="flex-1 flex flex-col gap-4 min-h-0 overflow-y-auto">
 
         {/* ── PHASE 1: Upload & Start ── */}
@@ -1337,8 +1345,8 @@ export default function ReverseEngineer(){
             <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 border border-cyan-500/30 flex items-center justify-center">
               <Shield className="w-10 h-10 text-cyan-400"/>
             </div>
-            <h2 className="text-2xl font-bold bg-gradient-to-r from-cyan-300 to-blue-400 bg-clip-text text-transparent">اختبار اختراق سحابي تلقائي</h2>
-            <p className="text-sm text-muted-foreground max-w-lg mx-auto">ارفع ملف APK واضغط "ابدأ الاختبار" — سيتم تنفيذ 8 خطوات تلقائياً: تفكيك، مصادقة، مفاتيح، استغلال IDOR، تعديل Pro، سحب بيانات، إرسال Telegram، وسكريبت + تقرير</p>
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-cyan-300 to-blue-400 bg-clip-text text-transparent">تدقيق أمني شامل — OWASP Mobile Top 10</h2>
+            <p className="text-sm text-muted-foreground max-w-lg mx-auto">تحليل متقدم: فك تشفير البيانات المموهة · فحص قواعد البيانات المحلية · تدقيق Firebase/Cloud · تحليل التشفير · فحص المكونات المكشوفة · تصنيف OWASP</p>
           </div>
           <input type="file" ref={cpFileRef} accept=".apk" className="hidden" onChange={e=>{if(e.target.files?.[0])setCpFile(e.target.files[0]);}}/>
           <div className={`w-full max-w-xl border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${cpFile?"border-cyan-500/60 bg-cyan-500/5":"border-border/50 hover:border-cyan-500/40 hover:bg-cyan-500/5"}`} onClick={()=>cpFileRef.current?.click()}>
@@ -1353,49 +1361,51 @@ export default function ReverseEngineer(){
             </div>}
           </div>
           <Button onClick={doCloudPentestFull} disabled={!cpFile} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
-            <Zap className="w-5 h-5"/>ابدأ الاختبار التلقائي
+            <Zap className="w-5 h-5"/>ابدأ التدقيق الأمني الشامل
           </Button>
-          <div className="grid grid-cols-8 gap-1.5 w-full max-w-xl">
-            {["تفكيك","مصادقة","مفاتيح","IDOR","استغلال","سحب DB","Telegram","تقرير"].map((s,i)=><div key={i} className="text-center">
+          <div className="grid grid-cols-5 md:grid-cols-10 gap-1.5 w-full max-w-2xl">
+            {["تفكيك","أسرار","فك تشفير","موارد","Firebase","OWASP","تشفير","شبكة","مكونات","تقرير"].map((s,i)=><div key={i} className="text-center">
               <div className="w-7 h-7 mx-auto rounded-full bg-muted/20 border border-border/50 flex items-center justify-center text-[10px] font-bold text-muted-foreground">{i+1}</div>
               <div className="text-[8px] text-muted-foreground mt-1">{s}</div>
             </div>)}
           </div>
         </div>}
 
-        {/* ── PHASE 2: Live Execution (Steps Revealing) ── */}
+        {/* ── PHASE 2: Live Execution ── */}
         {cpLoading&&<div className="space-y-4">
           <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-5">
             <div className="flex items-center gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-cyan-400"/>
               <div>
-                <h2 className="text-lg font-bold text-cyan-300">جاري تنفيذ اختبار الاختراق...</h2>
+                <h2 className="text-lg font-bold text-cyan-300">جاري تنفيذ التدقيق الأمني الشامل...</h2>
                 <p className="text-xs text-muted-foreground">الملف: {cpFile?.name} ({cpFile?((cpFile.size/1024/1024).toFixed(1)+" MB"):""})</p>
               </div>
             </div>
             <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-1000" style={{width:`${(cpActiveStep/8)*100}%`}}/>
+              <div className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-1000" style={{width:`${(cpActiveStep/10)*100}%`}}/>
             </div>
-            <div className="text-[11px] text-muted-foreground mt-2 text-left">{cpActiveStep}/8 خطوات</div>
+            <div className="text-[11px] text-muted-foreground mt-2 text-left">{cpActiveStep}/10 مرحلة</div>
           </div>
           {[
-            {id:1,title:"تفكيك APK وتحليل الهيكل الداخلي",desc:"apktool + jadx + Manifest + google-services.json + smali",icon:"📦"},
-            {id:2,title:"استخراج التوكن الحقيقي (JWT/Bearer)",desc:"SharedPreferences + Frida + ADB + smali const-string",icon:"🔐"},
-            {id:3,title:"استخراج المفاتيح والتوكنات من الكود",desc:"Firebase keys, AWS, JWT, Bearer tokens, API keys",icon:"🔑"},
-            {id:4,title:"استغلال API وجلب بيانات المستخدمين (IDOR)",desc:"/api/users + /api/user/ID + IDOR enumeration",icon:"🌐"},
-            {id:5,title:"استغلال الحسابات — ترقية/تخفيض/تحويل/PIN",desc:"ترقية + تخفيض خطة + تحويل رصيد + إعادة تعيين PIN",icon:"💎"},
-            {id:6,title:"سحب قاعدة البيانات السحابية بالكامل",desc:"Firebase RTDB dump + REST API pagination + S3/MongoDB",icon:"📡"},
-            {id:7,title:"إرسال البيانات المسروقة إلى بوت Telegram",desc:"sendMessage + sendDocument + تقسيم 4096 حرف",icon:"🤖"},
-            {id:8,title:"السكريبت المتكامل + التقرير النهائي",desc:"Python script + تقرير احترافي + توصيات الإصلاح",icon:"⚙️"},
+            {id:1,title:"تفكيك APK وتحليل الهيكل",icon:"📦",desc:"apktool + Manifest + google-services.json"},
+            {id:2,title:"استخراج الأسرار والمفاتيح",icon:"🔑",desc:"Firebase · AWS · JWT · API Keys · Passwords"},
+            {id:3,title:"محرك فك التشفير والتشويش",icon:"🔓",desc:"Base64 · Hex · XOR · ROT13 · AES Key Detection"},
+            {id:4,title:"فحص الموارد المحلية",icon:"💾",desc:"SQLite · SharedPreferences · Assets · Certificates"},
+            {id:5,title:"تدقيق Firebase / Cloud",icon:"☁️",desc:"RTDB · Firestore · Storage · Auth Configuration"},
+            {id:6,title:"تصنيف OWASP Mobile Top 10",icon:"🛡️",desc:"10 فئات أمنية · تحليل الثغرات · درجات الخطورة"},
+            {id:7,title:"تحليل التشفير",icon:"🔐",desc:"ECB · DES · Hardcoded Keys · Weak Hash"},
+            {id:8,title:"تحليل أمن الشبكة",icon:"🌐",desc:"network_security_config · SSL Pinning · Cleartext"},
+            {id:9,title:"تحليل المكونات المكشوفة",icon:"📱",desc:"Activities · Services · Receivers · Deep Links"},
+            {id:10,title:"إعداد التقرير النهائي",icon:"📊",desc:"تقرير احترافي + توصيات إصلاح + Python Script"},
           ].map(step=>{
             const revealed=cpStepsRevealed.includes(step.id);
             const active=cpActiveStep===step.id;
             return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${!revealed?"opacity-20 border-border/20":"opacity-100"} ${active?"border-cyan-500/60 bg-cyan-500/5 shadow-lg shadow-cyan-900/20":"border-border/40 bg-card/30"}`}>
-              <div className="flex items-center gap-3 p-4">
-                <span className={`w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0 ${active?"bg-cyan-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-5 h-5 animate-spin text-cyan-400"/>:revealed?"✅":step.icon}</span>
+              <div className="flex items-center gap-3 p-3">
+                <span className={`w-9 h-9 rounded-full flex items-center justify-center text-sm shrink-0 ${active?"bg-cyan-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-4 h-4 animate-spin text-cyan-400"/>:revealed?"✅":step.icon}</span>
                 <div className="flex-1 text-right">
                   <div className={`font-semibold text-sm ${active?"text-cyan-300":"text-foreground/80"}`}>{step.title}</div>
-                  <div className="text-[11px] text-muted-foreground">{step.desc}</div>
+                  <div className="text-[10px] text-muted-foreground">{step.desc}</div>
                 </div>
                 <span className={`text-[10px] px-2 py-0.5 rounded-full ${active?"bg-cyan-500/20 text-cyan-300 border border-cyan-500/40":"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":revealed?"مكتمل":"في الانتظار"}</span>
               </div>
@@ -1403,137 +1413,449 @@ export default function ReverseEngineer(){
           })}
         </div>}
 
-        {/* ── PHASE 3: Results ── */}
+        {/* ── PHASE 3: RESULTS DASHBOARD ── */}
         {cpResult&&<>
-          {/* Header with file info */}
+          {/* Header */}
           <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
-                <h2 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-cyan-400"/>تقرير اختبار الاختراق السحابي</h2>
+                <h2 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-cyan-400"/>تقرير التدقيق الأمني الشامل</h2>
                 <p className="text-xs text-muted-foreground mt-1">الملف: <span className="text-cyan-300 font-mono">{cpResult.fileName||cpFile?.name}</span> · {cpResult.fileSize?((cpResult.fileSize/1024/1024).toFixed(1)+" MB"):""} · {new Date(cpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
-                <Button onClick={()=>{setCpResult(null);setCpFile(null);setCpStepsRevealed([]);setCpActiveStep(0);}} variant="outline" className="gap-2 border-cyan-500/30 text-cyan-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
-                <Button onClick={()=>{const blob=new Blob([JSON.stringify(cpResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`cloud-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-cyan-500/30 text-cyan-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
+                <Button onClick={()=>{setCpResult(null);setCpV2(null);setCpFile(null);setCpStepsRevealed([]);setCpActiveStep(0);setCpViewTab("overview");}} variant="outline" className="gap-2 border-cyan-500/30 text-cyan-300"><Undo2 className="w-4 h-4"/>تدقيق جديد</Button>
+                <Button onClick={()=>{const full={v1:cpResult,v2:cpV2};const blob=new Blob([JSON.stringify(full,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`security-audit-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-cyan-500/30 text-cyan-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
               </div>
             </div>
           </div>
 
-          {/* Risk Score Dashboard */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div className={`p-4 rounded-xl border text-center ${cpResult.summary.riskScore>60?"bg-red-500/10 border-red-500/40 shadow-lg shadow-red-900/20":"bg-cyan-500/10 border-cyan-500/30"}`}>
-              <div className={`text-4xl font-black ${cpResult.summary.riskScore>60?"text-red-400":cpResult.summary.riskScore>30?"text-yellow-400":"text-emerald-400"}`}>{cpResult.summary.riskScore}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">درجة الخطورة /100</div>
-              <div className={`text-[11px] mt-1 font-semibold ${cpResult.summary.riskScore>60?"text-red-400":"text-emerald-400"}`}>{cpResult.summary.riskScore>60?"خطر مرتفع":cpResult.summary.riskScore>30?"خطر متوسط":"آمن نسبياً"}</div>
-            </div>
-            <div className="p-4 rounded-xl border bg-red-500/10 border-red-500/30 text-center">
-              <div className="text-3xl font-bold text-red-400">{cpResult.summary.criticalCount}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">ثغرات حرجة</div>
-            </div>
-            <div className="p-4 rounded-xl border bg-orange-500/10 border-orange-500/30 text-center">
-              <div className="text-3xl font-bold text-orange-400">{cpResult.summary.highCount}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">تحذيرات</div>
-            </div>
-            <div className="p-4 rounded-xl border bg-blue-500/10 border-blue-500/30 text-center">
-              <div className="text-3xl font-bold text-blue-400">{cpResult.summary.extractedKeys?.length||0}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">مفاتيح مستخرجة</div>
-            </div>
-            <div className="p-4 rounded-xl border bg-violet-500/10 border-violet-500/30 text-center">
-              <div className="text-3xl font-bold text-violet-400">{cpResult.summary.extractedEndpoints?.length||0}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">نقاط دخول API</div>
-            </div>
+          {/* Score Dashboard */}
+          {(()=>{
+            const score=cpV2?.overallScore??cpResult.summary?.riskScore??0;
+            const v2f=cpV2?.securityFindings||[];
+            const critCount=v2f.filter((f:any)=>f.severity==="critical").length||(cpResult.summary?.criticalCount??0);
+            const highCount=v2f.filter((f:any)=>f.severity==="high").length||(cpResult.summary?.highCount??0);
+            const medCount=v2f.filter((f:any)=>f.severity==="medium").length;
+            const keysCount=cpResult.summary?.extractedKeys?.length||0;
+            const decodedCount=cpV2?.decodedSecrets?.length||0;
+            const resourcesCount=cpV2?.resources?.length||0;
+            const epCount=cpResult.summary?.extractedEndpoints?.length||0;
+            return <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
+              <div className={`p-3 rounded-xl border text-center col-span-2 ${score>60?"bg-red-500/10 border-red-500/40":score>30?"bg-yellow-500/10 border-yellow-500/30":"bg-emerald-500/10 border-emerald-500/30"}`}>
+                <div className={`text-4xl font-black ${score>60?"text-red-400":score>30?"text-yellow-400":"text-emerald-400"}`}>{score}</div>
+                <div className="text-[10px] text-muted-foreground">درجة الخطورة /100</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-red-500/10 border-red-500/30 text-center">
+                <div className="text-2xl font-bold text-red-400">{critCount}</div>
+                <div className="text-[9px] text-muted-foreground">حرج</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-orange-500/10 border-orange-500/30 text-center">
+                <div className="text-2xl font-bold text-orange-400">{highCount}</div>
+                <div className="text-[9px] text-muted-foreground">عالي</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-yellow-500/10 border-yellow-500/30 text-center">
+                <div className="text-2xl font-bold text-yellow-400">{medCount}</div>
+                <div className="text-[9px] text-muted-foreground">متوسط</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-blue-500/10 border-blue-500/30 text-center">
+                <div className="text-2xl font-bold text-blue-400">{keysCount}</div>
+                <div className="text-[9px] text-muted-foreground">أسرار</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-purple-500/10 border-purple-500/30 text-center">
+                <div className="text-2xl font-bold text-purple-400">{decodedCount}</div>
+                <div className="text-[9px] text-muted-foreground">مفكوكة</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-teal-500/10 border-teal-500/30 text-center">
+                <div className="text-2xl font-bold text-teal-400">{resourcesCount}</div>
+                <div className="text-[9px] text-muted-foreground">موارد</div>
+              </div>
+            </div>;
+          })()}
+
+          {/* Navigation Tabs */}
+          <div className="flex gap-1 flex-wrap bg-card/30 border border-border/50 rounded-xl p-1.5">
+            {([
+              {id:"overview" as const,label:"نظرة عامة",icon:"📊"},
+              {id:"secrets" as const,label:"الأسرار",icon:"🔑"},
+              {id:"decoded" as const,label:"مفكوكة التشفير",icon:"🔓"},
+              {id:"resources" as const,label:"الموارد",icon:"💾"},
+              {id:"firebase" as const,label:"Firebase",icon:"☁️"},
+              {id:"owasp" as const,label:"OWASP",icon:"🛡️"},
+              {id:"crypto" as const,label:"التشفير",icon:"🔐"},
+              {id:"network" as const,label:"الشبكة",icon:"🌐"},
+              {id:"components" as const,label:"المكونات",icon:"📱"},
+              {id:"dataflow" as const,label:"تدفق البيانات",icon:"🔄"},
+              {id:"v1steps" as const,label:"الخطوات التفصيلية",icon:"📋"},
+            ] as const).map(t=><button key={t.id} onClick={()=>setCpViewTab(t.id)} className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 ${cpViewTab===t.id?"bg-cyan-500/20 text-cyan-300 border border-cyan-500/40":"text-muted-foreground hover:text-foreground hover:bg-muted/20 border border-transparent"}`}>
+              <span>{t.icon}</span>{t.label}
+            </button>)}
           </div>
 
-          {/* Cloud Providers */}
-          {cpResult.summary?.cloudProviders?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-border/50 rounded-xl px-4 py-3">
-            <span className="text-xs text-muted-foreground font-semibold">تقنيات مكتشفة:</span>
-            {cpResult.summary.cloudProviders.map((p:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-medium">{p}</span>)}
+          {/* ═══ OVERVIEW TAB ═══ */}
+          {cpViewTab==="overview"&&<div className="space-y-4">
+            {/* OWASP Summary */}
+            {cpV2?.owaspSummary&&Object.keys(cpV2.owaspSummary).length>0&&<div className="bg-card/50 border border-border/50 rounded-xl p-4">
+              <div className="text-sm font-semibold text-cyan-300 mb-3 flex items-center gap-2"><Shield className="w-4 h-4"/>OWASP Mobile Top 10 — ملخص</div>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                {["M1","M2","M3","M4","M5","M6","M7","M8","M9","M10"].map(m=>{
+                  const count=cpV2.owaspSummary[m]||0;
+                  const labels:Record<string,string>={M1:"Platform Usage",M2:"Data Storage",M3:"Communication",M4:"Authentication",M5:"Cryptography",M6:"Authorization",M7:"Code Quality",M8:"Tampering",M9:"Reverse Eng.",M10:"Extra Functions"};
+                  return <div key={m} className={`p-2 rounded-lg border text-center ${count>0?"bg-red-500/10 border-red-500/30":"bg-muted/10 border-border/30"}`}>
+                    <div className={`text-lg font-bold ${count>0?"text-red-400":"text-muted-foreground/40"}`}>{count}</div>
+                    <div className="text-[9px] text-muted-foreground">{m}</div>
+                    <div className="text-[8px] text-muted-foreground/70">{labels[m]}</div>
+                  </div>;
+                })}
+              </div>
+            </div>}
+
+            {/* Top Findings */}
+            {cpV2?.securityFindings?.length>0&&<div className="bg-card/50 border border-border/50 rounded-xl p-4">
+              <div className="text-sm font-semibold text-red-300 mb-3 flex items-center gap-2"><AlertTriangle className="w-4 h-4"/>أهم الثغرات المكتشفة</div>
+              <div className="space-y-2">
+                {cpV2.securityFindings.slice(0,8).map((f:any,i:number)=>{
+                  const sevColors:Record<string,string>={critical:"text-red-400 bg-red-500/10 border-red-500/30",high:"text-orange-400 bg-orange-500/10 border-orange-500/30",medium:"text-yellow-400 bg-yellow-500/10 border-yellow-500/30",low:"text-blue-400 bg-blue-500/10 border-blue-500/30"};
+                  return <div key={i} className={`rounded-lg border p-3 ${sevColors[f.severity]||"border-border"}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1">
+                        <div className="text-sm font-semibold">{f.title}</div>
+                        <div className="text-[11px] text-muted-foreground mt-0.5">{f.description}</div>
+                        <div className="text-[10px] mt-1 opacity-70">{f.owasp} · {f.cwe||""}</div>
+                      </div>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${sevColors[f.severity]}`}>{f.severity==="critical"?"حرج":f.severity==="high"?"عالي":f.severity==="medium"?"متوسط":"منخفض"}</span>
+                    </div>
+                  </div>;
+                })}
+              </div>
+            </div>}
+
+            {/* Cloud Providers */}
+            {cpResult.summary?.cloudProviders?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-border/50 rounded-xl px-4 py-3">
+              <span className="text-xs text-muted-foreground font-semibold">تقنيات مكتشفة:</span>
+              {cpResult.summary.cloudProviders.map((p:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-medium">{p}</span>)}
+            </div>}
+
+            {/* AI Report */}
+            {cpResult.report&&<div className="space-y-2">
+              <button onClick={()=>setCpShowReport(r=>!r)} className="w-full flex items-center gap-2 text-sm font-semibold text-cyan-300 hover:text-cyan-200 transition-colors bg-card/50 border border-cyan-500/20 rounded-xl px-4 py-3">
+                <BookOpen className="w-5 h-5"/><span className="flex-1 text-right">التقرير الاحترافي بالذكاء الاصطناعي</span>
+                {cpShowReport?<ChevronDown className="w-4 h-4"/>:<ChevronRight className="w-4 h-4"/>}
+              </button>
+              {cpShowReport&&<div className="bg-card/70 backdrop-blur-sm border border-cyan-500/20 rounded-xl p-6 max-h-[500px] overflow-y-auto">
+                <div className="prose prose-invert prose-sm max-w-none text-sm leading-relaxed whitespace-pre-wrap">{cpResult.report}</div>
+                <div className="flex gap-2 mt-4 pt-3 border-t border-border/30">
+                  <Button onClick={()=>{navigator.clipboard.writeText(cpResult.report);toast.success("تم نسخ التقرير");}} variant="outline" className="gap-2 text-xs"><Copy className="w-3 h-3"/>نسخ التقرير</Button>
+                  <Button onClick={()=>{const blob=new Blob([cpResult.report],{type:"text/markdown"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`pentest-report-${Date.now()}.md`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 text-xs"><Download className="w-3 h-3"/>تحميل التقرير</Button>
+                </div>
+              </div>}
+            </div>}
           </div>}
 
-          {/* 7 Steps with full details */}
-          <div className="space-y-3">
-            <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Terminal className="w-4 h-4"/>الخطوات التنفيذية (8 خطوات)</div>
-            {cpResult.steps.map((step:any)=>{
+          {/* ═══ SECRETS TAB ═══ */}
+          {cpViewTab==="secrets"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-yellow-300 flex items-center gap-2"><Key className="w-4 h-4"/>الأسرار المستخرجة ({cpResult.summary?.extractedKeys?.length||0})</div>
+            <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
+              {(cpResult.summary?.extractedKeys||[]).map((s:any,i:number)=><div key={i} className="bg-black/30 rounded-lg p-3 border border-border/30 group">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${s.type?.includes("AWS")||s.type?.includes("Private")?"bg-red-500/20 text-red-300 border border-red-500/30":s.type?.includes("Firebase")||s.type?.includes("JWT")?"bg-orange-500/20 text-orange-300 border border-orange-500/30":"bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"}`}>{s.type}</span>
+                    <div className="text-xs font-mono text-cyan-300 mt-1.5 break-all select-all">{s.value}</div>
+                    <div className="text-[10px] text-muted-foreground mt-1">{s.file}:{s.line}</div>
+                  </div>
+                  <button onClick={()=>{navigator.clipboard.writeText(s.value);toast.success("تم النسخ");}} className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-cyan-500/10"><Copy className="w-3 h-3 text-cyan-400"/></button>
+                </div>
+              </div>)}
+            </div>
+            {/* Endpoints */}
+            {cpResult.summary?.extractedEndpoints?.length>0&&<>
+              <div className="text-sm font-semibold text-violet-300 flex items-center gap-2 mt-4"><Globe className="w-4 h-4"/>نقاط الدخول ({cpResult.summary.extractedEndpoints.length})</div>
+              <div className="max-h-48 overflow-y-auto space-y-1">
+                {cpResult.summary.extractedEndpoints.slice(0,40).map((url:string,i:number)=><div key={i} className="flex items-center gap-2 group bg-black/20 rounded-lg px-3 py-1.5">
+                  <Globe className="w-3 h-3 text-violet-400 shrink-0"/>
+                  <code className="text-[11px] font-mono text-violet-300 break-all flex-1 select-all">{url}</code>
+                  <button onClick={()=>{navigator.clipboard.writeText(url);toast.success("تم النسخ");}} className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"><Copy className="w-3 h-3 text-muted-foreground hover:text-white"/></button>
+                </div>)}
+              </div>
+            </>}
+          </div>}
+
+          {/* ═══ DECODED SECRETS TAB ═══ */}
+          {cpViewTab==="decoded"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-emerald-300 flex items-center gap-2"><Unlock className="w-4 h-4"/>البيانات المفكوكة من التشفير/التشويش ({cpV2?.decodedSecrets?.length||0})</div>
+            {(!cpV2?.decodedSecrets||cpV2.decodedSecrets.length===0)?<div className="text-sm text-muted-foreground bg-card/50 border border-border/50 rounded-xl p-6 text-center">لم يتم العثور على بيانات مشفرة/مموهة قابلة للفك</div>:
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+              {cpV2.decodedSecrets.map((d:any,i:number)=><div key={i} className="bg-black/30 rounded-lg p-3 border border-emerald-500/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">{d.encoding}</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted/20 text-muted-foreground">ثقة: {d.confidence}%</span>
+                  <span className="text-[10px] text-muted-foreground flex-1 text-left">{d.file}:{d.line}</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  <div className="bg-red-500/5 rounded-lg p-2 border border-red-500/20">
+                    <div className="text-[9px] text-red-300 mb-1">المشفر (الأصلي)</div>
+                    <div className="text-[11px] font-mono text-red-200 break-all select-all">{d.original}</div>
+                  </div>
+                  <div className="bg-emerald-500/5 rounded-lg p-2 border border-emerald-500/20">
+                    <div className="text-[9px] text-emerald-300 mb-1">المفكوك ✓</div>
+                    <div className="text-[11px] font-mono text-emerald-200 break-all select-all">{d.decoded}</div>
+                  </div>
+                </div>
+              </div>)}
+            </div>}
+          </div>}
+
+          {/* ═══ RESOURCES TAB ═══ */}
+          {cpViewTab==="resources"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-teal-300 flex items-center gap-2"><Database className="w-4 h-4"/>الموارد المحلية المكتشفة ({cpV2?.resources?.length||0})</div>
+            {(!cpV2?.resources||cpV2.resources.length===0)?<div className="text-sm text-muted-foreground bg-card/50 border border-border/50 rounded-xl p-6 text-center">لم يتم العثور على موارد محلية</div>:
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+              {cpV2.resources.map((r:any,i:number)=>{
+                const typeLabels:Record<string,string>={sqlite:"قاعدة بيانات SQLite",shared_prefs:"SharedPreferences",asset_json:"JSON في Assets",asset_xml:"XML في Assets",certificate:"شهادة/مفتاح",native_lib:"مكتبة أصلية (.so)",raw_resource:"مورد Raw"};
+                const typeColors:Record<string,string>={sqlite:"bg-blue-500/10 border-blue-500/30 text-blue-300",shared_prefs:"bg-amber-500/10 border-amber-500/30 text-amber-300",asset_json:"bg-green-500/10 border-green-500/30 text-green-300",certificate:"bg-red-500/10 border-red-500/30 text-red-300",native_lib:"bg-purple-500/10 border-purple-500/30 text-purple-300"};
+                return <div key={i} className="bg-black/30 rounded-lg p-3 border border-border/30">
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${typeColors[r.type]||"bg-muted/20 border-border text-muted-foreground"}`}>{typeLabels[r.type]||r.type}</span>
+                    <span className="text-xs font-mono text-cyan-300">{r.name}</span>
+                    <span className="text-[10px] text-muted-foreground ml-auto">{(r.size/1024).toFixed(1)} KB</span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground mb-1">{r.path}</div>
+                  {r.tables&&r.tables.length>0&&<div className="mb-2">
+                    <div className="text-[10px] text-blue-300 mb-1">الجداول ({r.tables.length}):</div>
+                    <div className="flex gap-1 flex-wrap">{r.tables.map((t:string,j:number)=><span key={j} className="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">{t}</span>)}</div>
+                  </div>}
+                  {r.keys&&r.keys.length>0&&<div className="mb-2">
+                    <div className="text-[10px] text-amber-300 mb-1">المفاتيح ({r.keys.length}):</div>
+                    <div className="flex gap-1 flex-wrap">{r.keys.slice(0,15).map((k:string,j:number)=><span key={j} className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">{k}</span>)}</div>
+                  </div>}
+                  {r.preview&&<div className="bg-black/40 rounded-lg p-2 mt-1 max-h-32 overflow-y-auto">
+                    <pre className="text-[10px] font-mono text-muted-foreground whitespace-pre-wrap">{r.preview}</pre>
+                  </div>}
+                </div>;
+              })}
+            </div>}
+          </div>}
+
+          {/* ═══ FIREBASE TAB ═══ */}
+          {cpViewTab==="firebase"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><Globe className="w-4 h-4"/>تدقيق Firebase / Cloud</div>
+            {!cpV2?.firebaseAudit?<div className="text-sm text-muted-foreground bg-card/50 border border-border/50 rounded-xl p-6 text-center">لم يتم العثور على إعدادات Firebase في التطبيق</div>:
+            <div className="space-y-3">
+              {/* Firebase Config */}
+              <div className="bg-card/50 border border-border/50 rounded-xl p-4 space-y-2">
+                <div className="text-xs font-semibold text-cyan-300">إعدادات Firebase المكتشفة</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                  {cpV2.firebaseAudit.projectId&&<div className="bg-black/30 rounded-lg p-2"><span className="text-muted-foreground">Project ID: </span><span className="text-cyan-300 font-mono select-all">{cpV2.firebaseAudit.projectId}</span></div>}
+                  {cpV2.firebaseAudit.apiKey&&<div className="bg-black/30 rounded-lg p-2"><span className="text-muted-foreground">API Key: </span><span className="text-cyan-300 font-mono select-all">{cpV2.firebaseAudit.apiKey}</span></div>}
+                  {cpV2.firebaseAudit.rtdbUrl&&<div className="bg-black/30 rounded-lg p-2 col-span-full"><span className="text-muted-foreground">RTDB URL: </span><span className="text-cyan-300 font-mono select-all">{cpV2.firebaseAudit.rtdbUrl}</span></div>}
+                </div>
+              </div>
+
+              {/* RTDB Result */}
+              <div className={`rounded-xl border p-4 ${cpV2.firebaseAudit.rtdbPublic?"bg-red-500/10 border-red-500/40":"bg-emerald-500/10 border-emerald-500/30"}`}>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  {cpV2.firebaseAudit.rtdbPublic?<span className="text-red-400">🔴 Firebase RTDB — مكشوفة للعامة!</span>:<span className="text-emerald-400">🟢 Firebase RTDB — محمية</span>}
+                </div>
+                {cpV2.firebaseAudit.rtdbPublic&&<>
+                  <div className="text-xs text-red-300 mt-2">المجموعات المكشوفة ({cpV2.firebaseAudit.rtdbCollections?.length||0}):</div>
+                  <div className="flex gap-1 flex-wrap mt-1">{(cpV2.firebaseAudit.rtdbCollections||[]).map((c:string,j:number)=><span key={j} className="text-[10px] px-2 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">{c}</span>)}</div>
+                  {cpV2.firebaseAudit.rtdbData&&<div className="mt-3 bg-black/40 rounded-lg p-3 max-h-64 overflow-y-auto border border-red-500/20">
+                    <pre className="text-[10px] font-mono text-red-200/80 whitespace-pre-wrap select-all">{JSON.stringify(cpV2.firebaseAudit.rtdbData,null,2)}</pre>
+                  </div>}
+                </>}
+              </div>
+
+              {/* Firestore Result */}
+              <div className={`rounded-xl border p-4 ${cpV2.firebaseAudit.firestorePublic?"bg-red-500/10 border-red-500/40":"bg-emerald-500/10 border-emerald-500/30"}`}>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  {cpV2.firebaseAudit.firestorePublic?<span className="text-red-400">🔴 Firestore — مكشوفة!</span>:<span className="text-emerald-400">🟢 Firestore — محمية</span>}
+                </div>
+                {cpV2.firebaseAudit.firestorePublic&&cpV2.firebaseAudit.firestoreData&&<div className="mt-3 bg-black/40 rounded-lg p-3 max-h-64 overflow-y-auto border border-red-500/20">
+                  <pre className="text-[10px] font-mono text-red-200/80 whitespace-pre-wrap select-all">{JSON.stringify(cpV2.firebaseAudit.firestoreData,null,2)}</pre>
+                </div>}
+              </div>
+
+              {/* Storage Result */}
+              <div className={`rounded-xl border p-4 ${cpV2.firebaseAudit.storagePublic?"bg-red-500/10 border-red-500/40":"bg-emerald-500/10 border-emerald-500/30"}`}>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  {cpV2.firebaseAudit.storagePublic?<span className="text-red-400">🔴 Firebase Storage — مكشوفة!</span>:<span className="text-emerald-400">🟢 Firebase Storage — محمية</span>}
+                </div>
+                {cpV2.firebaseAudit.storagePublic&&cpV2.firebaseAudit.storageFiles?.length>0&&<div className="mt-2 space-y-1">
+                  {cpV2.firebaseAudit.storageFiles.map((f:string,j:number)=><div key={j} className="text-[11px] font-mono text-red-300 bg-black/30 rounded px-2 py-1">{f}</div>)}
+                </div>}
+              </div>
+
+              {/* Auth Config */}
+              {cpV2.firebaseAudit.signUpEnabled&&<div className="rounded-xl border p-4 bg-orange-500/10 border-orange-500/40">
+                <div className="text-sm font-semibold text-orange-400">⚠️ Firebase Auth — التسجيل المجهول مفعّل</div>
+                <div className="text-[11px] text-muted-foreground mt-1">يمكن لأي شخص إنشاء حساب بدون قيود عبر Firebase Auth REST API</div>
+              </div>}
+
+              {/* Errors */}
+              {cpV2.firebaseAudit.errors?.length>0&&<div className="bg-card/50 border border-border/50 rounded-xl p-3">
+                <div className="text-[10px] text-muted-foreground">{cpV2.firebaseAudit.errors.map((e:string,j:number)=><div key={j}>{e}</div>)}</div>
+              </div>}
+            </div>}
+          </div>}
+
+          {/* ═══ OWASP TAB ═══ */}
+          {cpViewTab==="owasp"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-red-300 flex items-center gap-2"><Shield className="w-4 h-4"/>OWASP Mobile Top 10 — التفاصيل الكاملة ({cpV2?.securityFindings?.length||0} ثغرة)</div>
+            {(!cpV2?.securityFindings||cpV2.securityFindings.length===0)?<div className="text-sm text-muted-foreground bg-card/50 border border-border/50 rounded-xl p-6 text-center">لم يتم العثور على ثغرات OWASP</div>:
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+              {cpV2.securityFindings.map((f:any,i:number)=>{
+                const sevColors:Record<string,string>={critical:"border-red-500/40 bg-red-500/5",high:"border-orange-500/30 bg-orange-500/5",medium:"border-yellow-500/20 bg-yellow-500/5",low:"border-blue-500/20 bg-blue-500/5"};
+                return <div key={i} className={`rounded-xl border p-4 ${sevColors[f.severity]||"border-border"}`}>
+                  <div className="flex items-start gap-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 flex-wrap mb-1">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${f.severity==="critical"?"bg-red-500/20 text-red-300 border-red-500/40":f.severity==="high"?"bg-orange-500/20 text-orange-300 border-orange-500/40":f.severity==="medium"?"bg-yellow-500/20 text-yellow-300 border-yellow-500/40":"bg-blue-500/20 text-blue-300 border-blue-500/40"}`}>{f.severity.toUpperCase()}</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">{f.owaspId}</span>
+                        {f.cwe&&<span className="text-[10px] text-muted-foreground">{f.cwe}</span>}
+                      </div>
+                      <div className="text-sm font-semibold">{f.title}</div>
+                      <div className="text-[11px] text-muted-foreground mt-1">{f.description}</div>
+                      {f.evidence?.length>0&&<div className="mt-2 space-y-0.5">
+                        <div className="text-[10px] text-cyan-300 font-semibold">الأدلة:</div>
+                        {f.evidence.map((e:string,j:number)=><div key={j} className="text-[10px] font-mono text-muted-foreground bg-black/20 rounded px-2 py-0.5 select-all">{e}</div>)}
+                      </div>}
+                      <div className="mt-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-2">
+                        <div className="text-[10px] text-emerald-300 font-semibold">الإصلاح:</div>
+                        <div className="text-[10px] text-emerald-200/80">{f.remediation}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>;
+              })}
+            </div>}
+          </div>}
+
+          {/* ═══ CRYPTO TAB ═══ */}
+          {cpViewTab==="crypto"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-purple-300 flex items-center gap-2"><Lock className="w-4 h-4"/>تحليل التشفير ({cpV2?.cryptoAnalysis?.length||0} مشكلة)</div>
+            {(!cpV2?.cryptoAnalysis||cpV2.cryptoAnalysis.length===0)?<div className="text-sm text-muted-foreground bg-card/50 border border-border/50 rounded-xl p-6 text-center">لم يتم العثور على مشاكل في التشفير</div>:
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+              {cpV2.cryptoAnalysis.map((c:any,i:number)=><div key={i} className={`rounded-lg border p-3 ${c.severity==="critical"?"border-red-500/30 bg-red-500/5":c.severity==="high"?"border-orange-500/30 bg-orange-500/5":"border-yellow-500/20 bg-yellow-500/5"}`}>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${c.severity==="critical"?"bg-red-500/20 text-red-300 border-red-500/30":c.severity==="high"?"bg-orange-500/20 text-orange-300 border-orange-500/30":"bg-yellow-500/20 text-yellow-300 border-yellow-500/30"}`}>{c.type}</span>
+                  <span className="text-[10px] text-muted-foreground">{c.file}</span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">{c.description}</div>
+                <div className="text-[10px] font-mono text-cyan-300/70 bg-black/20 rounded px-2 py-1 mt-1 select-all">{c.evidence}</div>
+              </div>)}
+            </div>}
+          </div>}
+
+          {/* ═══ NETWORK TAB ═══ */}
+          {cpViewTab==="network"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-blue-300 flex items-center gap-2"><Network className="w-4 h-4"/>تحليل أمن الشبكة</div>
+            {!cpV2?.networkConfig?<div className="text-sm text-muted-foreground bg-card/50 border border-border/50 rounded-xl p-6 text-center">لا يوجد بيانات شبكة</div>:
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <div className={`p-3 rounded-xl border text-center ${cpV2.networkConfig.cleartextAllowed?"bg-red-500/10 border-red-500/30":"bg-emerald-500/10 border-emerald-500/30"}`}>
+                  <div className={`text-lg font-bold ${cpV2.networkConfig.cleartextAllowed?"text-red-400":"text-emerald-400"}`}>{cpV2.networkConfig.cleartextAllowed?"مسموح":"ممنوع"}</div>
+                  <div className="text-[9px] text-muted-foreground">Cleartext HTTP</div>
+                </div>
+                <div className={`p-3 rounded-xl border text-center ${cpV2.networkConfig.hasConfig?"bg-emerald-500/10 border-emerald-500/30":"bg-yellow-500/10 border-yellow-500/30"}`}>
+                  <div className={`text-lg font-bold ${cpV2.networkConfig.hasConfig?"text-emerald-400":"text-yellow-400"}`}>{cpV2.networkConfig.hasConfig?"موجود":"غير موجود"}</div>
+                  <div className="text-[9px] text-muted-foreground">network_security_config</div>
+                </div>
+                <div className={`p-3 rounded-xl border text-center ${cpV2.networkConfig.pinnedDomains?.length>0?"bg-emerald-500/10 border-emerald-500/30":"bg-yellow-500/10 border-yellow-500/30"}`}>
+                  <div className={`text-lg font-bold ${cpV2.networkConfig.pinnedDomains?.length>0?"text-emerald-400":"text-yellow-400"}`}>{cpV2.networkConfig.pinnedDomains?.length||0}</div>
+                  <div className="text-[9px] text-muted-foreground">Pinned Domains</div>
+                </div>
+                <div className={`p-3 rounded-xl border text-center ${cpV2.networkConfig.trustUserCAs?"bg-orange-500/10 border-orange-500/30":"bg-emerald-500/10 border-emerald-500/30"}`}>
+                  <div className={`text-lg font-bold ${cpV2.networkConfig.trustUserCAs?"text-orange-400":"text-emerald-400"}`}>{cpV2.networkConfig.trustUserCAs?"نعم":"لا"}</div>
+                  <div className="text-[9px] text-muted-foreground">Trust User CAs</div>
+                </div>
+              </div>
+              {cpV2.networkConfig.findings?.length>0&&<div className="bg-card/50 border border-border/50 rounded-xl p-3 space-y-1">
+                {cpV2.networkConfig.findings.map((f:string,j:number)=><div key={j} className="text-[11px] text-muted-foreground">{f}</div>)}
+              </div>}
+            </div>}
+          </div>}
+
+          {/* ═══ COMPONENTS TAB ═══ */}
+          {cpViewTab==="components"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-pink-300 flex items-center gap-2"><Layers className="w-4 h-4"/>المكونات المكشوفة (Exported) — {cpV2?.componentAnalysis?.totalExported||0} مكون</div>
+            {!cpV2?.componentAnalysis?<div className="text-sm text-muted-foreground bg-card/50 border border-border/50 rounded-xl p-6 text-center">لا يوجد بيانات مكونات</div>:
+            <div className="space-y-3">
+              {[{title:"Activities",items:cpV2.componentAnalysis.exportedActivities,color:"text-pink-300"},{title:"Services",items:cpV2.componentAnalysis.exportedServices,color:"text-blue-300"},{title:"Broadcast Receivers",items:cpV2.componentAnalysis.exportedReceivers,color:"text-amber-300"},{title:"Content Providers",items:cpV2.componentAnalysis.exportedProviders,color:"text-emerald-300"}].map((group,gi)=>
+                group.items?.length>0&&<div key={gi} className="bg-card/50 border border-border/50 rounded-xl p-3">
+                  <div className={`text-xs font-semibold ${group.color} mb-2`}>{group.title} ({group.items.length})</div>
+                  <div className="space-y-1">{group.items.map((item:string,j:number)=><div key={j} className="text-[11px] font-mono text-muted-foreground bg-black/20 rounded px-2 py-1 select-all">{item}</div>)}</div>
+                </div>
+              )}
+              {cpV2.componentAnalysis.deepLinks?.length>0&&<div className="bg-card/50 border border-border/50 rounded-xl p-3">
+                <div className="text-xs font-semibold text-violet-300 mb-2">Deep Links ({cpV2.componentAnalysis.deepLinks.length})</div>
+                <div className="space-y-1">{cpV2.componentAnalysis.deepLinks.map((dl:string,j:number)=><div key={j} className="text-[11px] font-mono text-violet-300 bg-black/20 rounded px-2 py-1 select-all">{dl}</div>)}</div>
+              </div>}
+            </div>}
+          </div>}
+
+          {/* ═══ DATAFLOW TAB ═══ */}
+          {cpViewTab==="dataflow"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-indigo-300 flex items-center gap-2"><Activity className="w-4 h-4"/>خريطة تدفق البيانات ({cpV2?.dataFlowMap?.length||0} تدفق)</div>
+            {(!cpV2?.dataFlowMap||cpV2.dataFlowMap.length===0)?<div className="text-sm text-muted-foreground bg-card/50 border border-border/50 rounded-xl p-6 text-center">لم يتم اكتشاف تدفقات بيانات حساسة</div>:
+            <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+              {cpV2.dataFlowMap.map((f:any,i:number)=><div key={i} className={`rounded-lg border p-3 ${f.risk==="critical"?"border-red-500/30 bg-red-500/5":f.risk==="high"?"border-orange-500/30 bg-orange-500/5":"border-yellow-500/20 bg-yellow-500/5"}`}>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${f.risk==="critical"?"bg-red-500/20 text-red-300 border-red-500/30":f.risk==="high"?"bg-orange-500/20 text-orange-300 border-orange-500/30":"bg-yellow-500/20 text-yellow-300 border-yellow-500/30"}`}>{f.risk}</span>
+                  <span className="text-cyan-300 font-mono">{f.sourceType}</span>
+                  <span className="text-muted-foreground">→</span>
+                  <span className="text-purple-300 font-mono">{f.sinkType}</span>
+                  <span className="text-muted-foreground/70 text-[10px]">({f.dataType})</span>
+                </div>
+                <div className="text-[10px] text-muted-foreground mt-1 font-mono">{f.source} → {f.sink}</div>
+              </div>)}
+            </div>}
+          </div>}
+
+          {/* ═══ V1 STEPS TAB ═══ */}
+          {cpViewTab==="v1steps"&&<div className="space-y-3">
+            <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Terminal className="w-4 h-4"/>الخطوات التنفيذية التفصيلية ({cpResult.steps?.length||0} خطوات)</div>
+            {cpResult.steps?.map((step:any)=>{
               const isOpen=cpExpanded.has(step.id);
               const statusColors:Record<string,string>={critical:"border-red-500/40 bg-red-500/5",warning:"border-orange-500/30 bg-orange-500/5",info:"border-blue-500/20 bg-blue-500/5",success:"border-emerald-500/30 bg-emerald-500/5"};
               const statusIcons:Record<string,string>={critical:"🔴",warning:"🟡",info:"🔵",success:"🟢"};
-              const statusLabels:Record<string,string>={critical:"حرج",warning:"تحذير",info:"معلومة",success:"آمن"};
               return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all ${statusColors[step.status]||"border-border"}`}>
-                <button onClick={()=>{const n=new Set(cpExpanded);if(n.has(step.id))n.delete(step.id);else n.add(step.id);setCpExpanded(n);}} className="w-full flex items-center gap-3 p-4 hover:bg-white/5 transition-all text-right">
-                  <span className="w-10 h-10 rounded-full bg-muted/30 flex items-center justify-center text-sm font-bold text-cyan-400 shrink-0">{step.id}</span>
+                <button onClick={()=>{const n=new Set(cpExpanded);if(n.has(step.id))n.delete(step.id);else n.add(step.id);setCpExpanded(n);}} className="w-full flex items-center gap-3 p-3 hover:bg-white/5 transition-all text-right">
+                  <span className="w-8 h-8 rounded-full bg-muted/30 flex items-center justify-center text-xs font-bold text-cyan-400 shrink-0">{step.id}</span>
                   <div className="flex-1 text-right">
-                    <div className="font-semibold text-sm">{step.title}</div>
-                    <div className="text-[11px] text-muted-foreground mt-0.5">{step.details}</div>
+                    <div className="font-semibold text-xs">{step.title}</div>
+                    <div className="text-[10px] text-muted-foreground">{step.details}</div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-[11px] px-2 py-1 rounded-full border bg-muted/20 font-medium">{statusIcons[step.status]} {statusLabels[step.status]}</span>
-                    <span className="text-[10px] text-muted-foreground bg-muted/10 px-2 py-0.5 rounded-full">{step.findings?.length||0} نتائج</span>
-                    {isOpen?<ChevronDown className="w-4 h-4 text-muted-foreground"/>:<ChevronRight className="w-4 h-4 text-muted-foreground"/>}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[10px] px-2 py-0.5 rounded-full border bg-muted/20">{statusIcons[step.status]}</span>
+                    <span className="text-[9px] text-muted-foreground">{step.findings?.length||0}</span>
+                    {isOpen?<ChevronDown className="w-3 h-3 text-muted-foreground"/>:<ChevronRight className="w-3 h-3 text-muted-foreground"/>}
                   </div>
                 </button>
-                {isOpen&&<div className="border-t border-border/30 p-4 space-y-3 bg-black/20">
-                  {step.findings?.length>0&&<div className="space-y-1">
-                    <div className="text-[11px] font-semibold text-cyan-300 flex items-center gap-1"><Search className="w-3 h-3"/>الاكتشافات ({step.findings.length})</div>
-                    <div className="bg-black/30 rounded-lg p-3 max-h-[400px] overflow-y-auto space-y-0.5">
-                      {step.findings.map((f:string,i:number)=><div key={i} className={`text-xs font-mono leading-relaxed ${f.includes("CRITICAL")?"text-red-400 font-bold":f.includes("✅")&&(f.includes("[200]")||f.includes("IDOR")||f.includes("نجح"))?"text-emerald-400 font-semibold":f.includes("✅")?"text-emerald-300":f.includes("⚠️")?"text-orange-400":f.includes("🔑")?"text-yellow-300":f.includes("🔥")||f.includes("🚨")?"text-red-300 font-semibold":f.includes("═══")?"text-cyan-300 font-bold border-b border-cyan-800/30 pb-1 mb-1":f.includes("📊")?"text-blue-300 font-semibold":f.includes("👤")?"text-pink-300":f.includes("💸")||f.includes("💳")||f.includes("📤")||f.includes("📥")?"text-amber-300":f.includes("❌")?"text-red-400":f.includes("→")?"text-cyan-300/80":"text-muted-foreground"}`}>{f}</div>)}
-                    </div>
+                {isOpen&&<div className="border-t border-border/30 p-3 space-y-2 bg-black/20">
+                  {step.findings?.length>0&&<div className="bg-black/30 rounded-lg p-2 max-h-[300px] overflow-y-auto space-y-0.5">
+                    {step.findings.map((f:string,i:number)=><div key={i} className={`text-[10px] font-mono leading-relaxed ${f.includes("CRITICAL")?"text-red-400 font-bold":f.includes("═══")?"text-cyan-300 font-bold":f.includes("🔥")||f.includes("🚨")?"text-red-300":f.includes("🔑")?"text-yellow-300":f.includes("✅")?"text-emerald-300":"text-muted-foreground"}`}>{f}</div>)}
                   </div>}
-                  {step.commands?.length>0&&<div className="space-y-1">
-                    <div className="text-[11px] font-semibold text-emerald-300 flex items-center gap-1"><Terminal className="w-3 h-3"/>أوامر التنفيذ ({step.commands.length})</div>
-                    <div className="bg-black/40 rounded-lg p-3 max-h-48 overflow-y-auto space-y-2">
-                      {step.commands.map((cmd:string,i:number)=><div key={i} className="flex items-start gap-2 group bg-black/30 rounded-lg px-3 py-2">
-                        <span className="text-emerald-500 text-xs mt-0.5 shrink-0">$</span>
-                        <code className="text-[11px] font-mono text-emerald-300 flex-1 break-all">{cmd}</code>
-                        <button onClick={()=>{navigator.clipboard.writeText(cmd);toast.success("تم نسخ الأمر");}} className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 bg-emerald-500/10 hover:bg-emerald-500/20 rounded p-1"><Copy className="w-3 h-3 text-emerald-400"/></button>
-                      </div>)}
-                    </div>
+                  {step.commands?.length>0&&<div className="bg-black/40 rounded-lg p-2 max-h-40 overflow-y-auto space-y-1">
+                    {step.commands.map((cmd:string,i:number)=><div key={i} className="flex items-start gap-1.5 group">
+                      <span className="text-emerald-500 text-[10px] shrink-0">$</span>
+                      <code className="text-[10px] font-mono text-emerald-300 flex-1 break-all">{cmd}</code>
+                      <button onClick={()=>{navigator.clipboard.writeText(cmd);toast.success("تم النسخ");}} className="opacity-0 group-hover:opacity-100 shrink-0"><Copy className="w-2.5 h-2.5 text-emerald-400"/></button>
+                    </div>)}
                   </div>}
-                  {step.pythonScript&&<div className="space-y-2">
+                  {step.pythonScript&&<div className="space-y-1">
                     <div className="flex items-center justify-between">
-                      <div className="text-[11px] font-semibold text-amber-300 flex items-center gap-1"><Code className="w-3 h-3"/>السكريبت المتكامل (Python)</div>
-                      <button onClick={()=>{navigator.clipboard.writeText(step.pythonScript);toast.success("تم نسخ السكريبت الكامل");}} className="text-[10px] px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 flex items-center gap-1"><Copy className="w-3 h-3"/>نسخ السكريبت الكامل</button>
+                      <span className="text-[10px] text-amber-300 font-semibold">Python Script</span>
+                      <button onClick={()=>{navigator.clipboard.writeText(step.pythonScript);toast.success("تم النسخ");}} className="text-[9px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30"><Copy className="w-2.5 h-2.5 inline mr-1"/>نسخ</button>
                     </div>
-                    <div className="bg-black/50 rounded-lg p-3 max-h-80 overflow-y-auto border border-amber-500/20">
-                      <pre className="text-[10px] font-mono text-amber-200/80 whitespace-pre-wrap leading-relaxed">{step.pythonScript}</pre>
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={()=>{const blob=new Blob([step.pythonScript],{type:"text/x-python"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="pentest_auto.py";a.click();URL.revokeObjectURL(url);}} className="text-[10px] px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 flex items-center gap-1"><Download className="w-3 h-3"/>تحميل pentest_auto.py</button>
-                    </div>
+                    <pre className="bg-black/50 rounded-lg p-2 max-h-60 overflow-y-auto text-[9px] font-mono text-amber-200/70 whitespace-pre-wrap border border-amber-500/20">{step.pythonScript}</pre>
+                    <button onClick={()=>{const blob=new Blob([step.pythonScript],{type:"text/x-python"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="pentest_auto.py";a.click();URL.revokeObjectURL(url);}} className="text-[9px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30"><Download className="w-2.5 h-2.5 inline mr-1"/>تحميل .py</button>
                   </div>}
                 </div>}
               </div>);
             })}
-          </div>
-
-          {/* Extracted Endpoints */}
-          {cpResult.summary?.extractedEndpoints?.length>0&&<div className="bg-card/70 border border-border rounded-xl p-4 space-y-2">
-            <div className="text-sm font-semibold flex items-center gap-2"><Globe className="w-4 h-4 text-violet-400"/>نقاط الدخول المكتشفة ({cpResult.summary.extractedEndpoints.length})</div>
-            <div className="max-h-48 overflow-y-auto space-y-1">
-              {cpResult.summary.extractedEndpoints.slice(0,30).map((url:string,i:number)=><div key={i} className="flex items-center gap-2 group bg-black/20 rounded-lg px-3 py-1.5">
-                <Globe className="w-3 h-3 text-violet-400 shrink-0"/>
-                <code className="text-[11px] font-mono text-violet-300 break-all flex-1">{url}</code>
-                <button onClick={()=>{navigator.clipboard.writeText(url);toast.success("تم النسخ");}} className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"><Copy className="w-3 h-3 text-muted-foreground hover:text-white"/></button>
-              </div>)}
-            </div>
-          </div>}
-
-          {/* AI Report */}
-          {cpResult.report&&<div className="space-y-2">
-            <button onClick={()=>setCpShowReport(r=>!r)} className="w-full flex items-center gap-2 text-sm font-semibold text-cyan-300 hover:text-cyan-200 transition-colors bg-card/50 border border-cyan-500/20 rounded-xl px-4 py-3">
-              <BookOpen className="w-5 h-5"/><span className="flex-1 text-right">التقرير الاحترافي بالذكاء الاصطناعي</span>
-              {cpShowReport?<ChevronDown className="w-4 h-4"/>:<ChevronRight className="w-4 h-4"/>}
-            </button>
-            {cpShowReport&&<div className="bg-card/70 backdrop-blur-sm border border-cyan-500/20 rounded-xl p-6 max-h-[500px] overflow-y-auto">
-              <div className="prose prose-invert prose-sm max-w-none text-sm leading-relaxed whitespace-pre-wrap">{cpResult.report}</div>
-              <div className="flex gap-2 mt-4 pt-3 border-t border-border/30">
-                <Button onClick={()=>{navigator.clipboard.writeText(cpResult.report);toast.success("تم نسخ التقرير");}} variant="outline" className="gap-2 text-xs"><Copy className="w-3 h-3"/>نسخ التقرير</Button>
-                <Button onClick={()=>{const blob=new Blob([cpResult.report],{type:"text/markdown"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`pentest-report-${Date.now()}.md`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 text-xs"><Download className="w-3 h-3"/>تحميل التقرير</Button>
-              </div>
-            </div>}
           </div>}
 
           <div className="text-center text-[10px] text-muted-foreground border-t border-border/30 pt-3 mt-2">
-            ⚠️ الاستخدام الأكاديمي فقط — اختبار الاختراق الأخلاقي ضمن بيئة مرخصة وبموافقة مسبقة
+            HAYO AI — تدقيق أمني أكاديمي ضمن بيئة اختبار مرخصة · OWASP Mobile Top 10 Methodology
           </div>
         </>}
       </div>}
