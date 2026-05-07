@@ -295,4 +295,26 @@ router.post('/cloud-pentest/live-audit', async (req: Request, res: Response) => 
     res.status(500).json({ success: false, error: e.message });
   }
 });
+// Live Firebase Audit
+router.post('/cloud-pentest/live-audit', async (req: Request, res: Response) => {
+  try {
+    const { project_id } = req.body;
+    if (!project_id) {
+      return res.status(400).json({ success: false, error: 'يجب توفير project_id' });
+    }
+    const ngrokUrl = 'https://gallinaceous-nonobediently-daleyza.ngrok-free.dev';
+    const response = await fetch(`${ngrokUrl}/firebase-audit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
+      },
+      body: JSON.stringify({ project_id })
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 export default router;
