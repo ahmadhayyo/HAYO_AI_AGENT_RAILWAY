@@ -726,6 +726,38 @@ async function sendPentestToTelegram(result: any) {
   } catch {}
 }
 
+// ═══════════════════════════════════════════════════════════════
+// CLOUD PENTEST V2 — Advanced Security Audit
+// ═══════════════════════════════════════════════════════════════
+
+router.post("/cloud-pentest-v2", upload.single("file"), async (req: Request, res: Response) => {
+  extendTimeout(req, res, 600_000);
+  if (!req.file) { res.status(400).json({ error: "ارفع ملف APK أولاً" }); return; }
+  try {
+    const { decompileFileForEdit } = await import("../hayo/services/reverse-engineer.js");
+    const { runCloudPentestV2 } = await import("../hayo/services/cloud-pentest-v2.js");
+    const editResult = await decompileFileForEdit(readUploadedFile(req.file), req.file.originalname);
+    const v2Result = await runCloudPentestV2(editResult.sessionId);
+    res.json({
+      ...v2Result,
+      sessionId: editResult.sessionId,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/cloud-pentest-v2-session", async (req: Request, res: Response) => {
+  extendTimeout(req, res, 600_000);
+  const { sessionId } = req.body as { sessionId: string };
+  if (!sessionId) { res.status(400).json({ error: "sessionId مطلوب" }); return; }
+  try {
+    const { runCloudPentestV2 } = await import("../hayo/services/cloud-pentest-v2.js");
+    const v2Result = await runCloudPentestV2(sessionId);
+    res.json(v2Result);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 const uploadStore = new Map<string, { filePath: string; fileName: string; uploadedAt: number }>();
 setInterval(() => {
   const now = Date.now();
