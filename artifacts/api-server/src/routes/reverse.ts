@@ -620,6 +620,22 @@ router.post("/cloud-pentest", async (req: Request, res: Response) => {
 });
 
 
+router.post("/deep-firebase-audit", upload.single("file"), async (req: Request, res: Response) => {
+  extendTimeout(req, res, 600_000);
+  if (!req.file) { res.status(400).json({ error: "ارفع ملف APK أولاً" }); return; }
+  try {
+    const { decompileFileForEdit, extractFirebaseConfigDeep } = await import("../hayo/services/reverse-engineer.js");
+    const editResult = await decompileFileForEdit(readUploadedFile(req.file), req.file.originalname);
+    const firebaseResult = await extractFirebaseConfigDeep(editResult.sessionId);
+    res.json({
+      ...firebaseResult,
+      sessionId: editResult.sessionId,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 router.post("/cloud-pentest-full", upload.single("file"), async (req: Request, res: Response) => {
   extendTimeout(req, res, 600_000);
   if (!req.file) { res.status(400).json({ error: "ارفع ملف APK أولاً" }); return; }

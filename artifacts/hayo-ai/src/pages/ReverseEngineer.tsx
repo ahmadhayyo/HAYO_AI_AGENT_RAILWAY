@@ -16,7 +16,7 @@ import {
   Search, Save, Hammer, Binary, AlertTriangle,
   Dot, CheckCheck, Undo2, Sparkles, Eye, Zap,
   GitBranch, Globe, Key, Terminal, Scan, Fingerprint,
-  ToggleLeft, ToggleRight, Rocket,
+  ToggleLeft, ToggleRight, Rocket, Flame,
   Keyboard, Database, Activity, TrendingUp, BarChart3, Code,
   Microscope, Network, FileSearch, Diff, Layers, FileOutput,
   ArrowUpDown, Braces, Hash, Link2, type LucideIcon,
@@ -514,6 +514,8 @@ export default function ReverseEngineer(){
   const[cpActiveStep,setCpActiveStep]=useState(0);
   const[cpStepsRevealed,setCpStepsRevealed]=useState<number[]>([]);
   const cpFileRef=useRef<HTMLInputElement>(null);
+  const[dfbResult,setDfbResult]=useState<any>(null);
+  const[dfbLoading,setDfbLoading]=useState(false);
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -761,6 +763,19 @@ export default function ReverseEngineer(){
       setCpResult(d);setCpExpanded(new Set([1,2,3,4,5,6,7,8]));
       toast.success(`اكتمل اختبار الاختراق — درجة الخطورة: ${d.summary?.riskScore}/100`);
     }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setCpLoading(false);}
+  };
+
+  const doDeepFirebaseAudit=async()=>{
+    if(!cpFile){toast.error("ارفع ملف APK أولاً");return;}
+    setDfbLoading(true);setDfbResult(null);
+    try{
+      const fd=new FormData();fd.append("file",cpFile);
+      const r=await fetchRE("/api/reverse/deep-firebase-audit",{method:"POST",body:fd});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.error);
+      setDfbResult(d);
+      toast.success(`تدقيق Firebase العميق — ${d.summary?.totalConfigs||0} إعدادات مكتشفة`);
+    }catch(e:any){toast.error(e.message);}finally{setDfbLoading(false);}
   };
 
   // ═══ RENDER ═══
@@ -1352,9 +1367,14 @@ export default function ReverseEngineer(){
               <div className="text-sm text-muted-foreground">اسحب ملف APK هنا أو اضغط للاختيار</div>
             </div>}
           </div>
-          <Button onClick={doCloudPentestFull} disabled={!cpFile} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
-            <Zap className="w-5 h-5"/>ابدأ الاختبار التلقائي
-          </Button>
+          <div className="flex items-center gap-3 flex-wrap justify-center">
+            <Button onClick={doCloudPentestFull} disabled={!cpFile} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
+              <Zap className="w-5 h-5"/>ابدأ الاختبار التلقائي
+            </Button>
+            <Button onClick={doDeepFirebaseAudit} disabled={!cpFile||dfbLoading} size="lg" className="gap-3 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-orange-900/30">
+              {dfbLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Flame className="w-5 h-5"/>}Deep Firebase Audit
+            </Button>
+          </div>
           <div className="grid grid-cols-8 gap-1.5 w-full max-w-xl">
             {["تفكيك","مصادقة","مفاتيح","IDOR","استغلال","سحب DB","Telegram","تقرير"].map((s,i)=><div key={i} className="text-center">
               <div className="w-7 h-7 mx-auto rounded-full bg-muted/20 border border-border/50 flex items-center justify-center text-[10px] font-bold text-muted-foreground">{i+1}</div>
@@ -1434,6 +1454,65 @@ export default function ReverseEngineer(){
           })}
         </div>}
 
+        {/* ── Deep Firebase Audit Standalone Results ── */}
+        {dfbResult&&!cpResult&&<div className="space-y-4">
+          <div className="bg-gradient-to-r from-orange-900/40 to-red-900/40 border border-orange-500/30 rounded-2xl p-5">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <Flame className="w-8 h-8 text-orange-400"/>
+                <div>
+                  <h2 className="text-xl font-bold text-orange-300">تقرير Deep Firebase Audit</h2>
+                  <p className="text-xs text-muted-foreground mt-1">الملف: <span className="text-orange-300 font-mono">{dfbResult.fileName}</span> · {new Date(dfbResult.generatedAt).toLocaleString("ar-EG")}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button onClick={()=>{setDfbResult(null);}} variant="outline" className="gap-2 border-orange-500/30 text-orange-300"><Undo2 className="w-4 h-4"/>تدقيق جديد</Button>
+                <Button onClick={()=>{const blob=new Blob([JSON.stringify(dfbResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`deep-firebase-audit-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-orange-500/30 text-orange-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className={`p-4 rounded-xl border text-center ${dfbResult.summary?.riskLevel==="critical"?"bg-red-500/10 border-red-500/40":dfbResult.summary?.riskLevel==="high"?"bg-orange-500/10 border-orange-500/40":"bg-cyan-500/10 border-cyan-500/30"}`}>
+              <div className={`text-2xl font-black ${dfbResult.summary?.riskLevel==="critical"?"text-red-400":dfbResult.summary?.riskLevel==="high"?"text-orange-400":"text-cyan-400"}`}>{dfbResult.summary?.riskLevel?.toUpperCase()}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">مستوى الخطورة</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-orange-500/10 border-orange-500/30 text-center">
+              <div className="text-3xl font-bold text-orange-400">{dfbResult.summary?.totalConfigs||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">إعدادات Firebase</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-red-500/10 border-red-500/30 text-center">
+              <div className="text-3xl font-bold text-red-400">{dfbResult.summary?.apiKeys?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">مفاتيح API</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-yellow-500/10 border-yellow-500/30 text-center">
+              <div className="text-3xl font-bold text-yellow-400">{dfbResult.summary?.databaseUrls?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">عناوين قواعد البيانات</div>
+            </div>
+          </div>
+          {dfbResult.summary?.projectIds?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-orange-500/20 rounded-xl px-4 py-3"><span className="text-xs text-orange-300 font-semibold">Firebase Project IDs:</span>{dfbResult.summary.projectIds.map((pid:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/30 text-orange-200 font-mono">{pid}</code>)}</div>}
+          {dfbResult.summary?.apiKeys?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-red-500/20 rounded-xl px-4 py-3"><span className="text-xs text-red-300 font-semibold">API Keys:</span>{dfbResult.summary.apiKeys.map((k:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-red-500/10 border border-red-500/30 text-red-200 font-mono">{k}</code>)}</div>}
+          {dfbResult.summary?.databaseUrls?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-yellow-500/20 rounded-xl px-4 py-3"><span className="text-xs text-yellow-300 font-semibold">Database URLs:</span>{dfbResult.summary.databaseUrls.map((u:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-yellow-500/10 border border-yellow-500/30 text-yellow-200 font-mono">{u}</code>)}</div>}
+          {dfbResult.summary?.riskDetails?.length>0&&<div className="bg-black/30 rounded-xl p-4 space-y-1">{dfbResult.summary.riskDetails.map((d:string,i:number)=><div key={i} className="text-[11px] text-orange-200/80">{d}</div>)}</div>}
+          <div className="space-y-3">
+            <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><Layers className="w-4 h-4"/>طبقات الاستخراج (4 طبقات)</div>
+            {dfbResult.layers?.map((layer:any)=><div key={layer.layer} className={`rounded-xl border p-4 ${layer.status==="found"?"border-orange-500/30 bg-orange-500/5":layer.status==="partial"?"border-yellow-500/20 bg-yellow-500/5":"border-border/20 bg-muted/5"}`}>
+              <div className="flex items-center justify-between"><span className="text-sm font-semibold text-orange-200">{layer.layer}. {layer.name}</span><span className={`text-[10px] px-2 py-0.5 rounded-full ${layer.status==="found"?"bg-orange-500/20 text-orange-300":layer.status==="partial"?"bg-yellow-500/20 text-yellow-300":"bg-muted/20 text-muted-foreground"}`}>{layer.status==="found"?"تم الاكتشاف":layer.status==="partial"?"جزئي":"فارغ"} ({layer.filesScanned} ملف)</span></div>
+              {layer.findings?.length>0&&<div className="mt-2 bg-black/20 rounded-lg p-3 max-h-48 overflow-y-auto space-y-0.5">{layer.findings.map((f:string,fi:number)=><div key={fi} className="text-[10px] font-mono text-muted-foreground">{f}</div>)}</div>}
+            </div>)}
+          </div>
+          {dfbResult.configs?.length>0&&<div className="space-y-2">
+            <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><Database className="w-4 h-4"/>جميع الإعدادات المكتشفة ({dfbResult.configs.length})</div>
+            <div className="space-y-2">{dfbResult.configs.map((cfg:any,i:number)=><div key={i} className="bg-black/30 rounded-lg p-3 border border-orange-500/10 space-y-1">
+              <div className="flex items-center gap-2"><span className={`text-[9px] px-2 py-0.5 rounded-full ${cfg.confidence==="high"?"bg-emerald-500/20 text-emerald-300":cfg.confidence==="medium"?"bg-yellow-500/20 text-yellow-300":"bg-red-500/20 text-red-300"}`}>Layer {cfg.layer} · {cfg.confidence}</span><span className="text-[10px] text-muted-foreground font-mono">{cfg.source}</span></div>
+              {cfg.projectId&&<div className="text-[11px]"><span className="text-orange-300">Project:</span> <code className="text-orange-200">{cfg.projectId}</code></div>}
+              {cfg.apiKey&&<div className="text-[11px]"><span className="text-red-300">API Key:</span> <code className="text-red-200">{cfg.apiKey}</code></div>}
+              {cfg.databaseUrl&&<div className="text-[11px]"><span className="text-yellow-300">DB URL:</span> <code className="text-yellow-200">{cfg.databaseUrl}</code></div>}
+              {cfg.storageBucket&&<div className="text-[11px]"><span className="text-blue-300">Storage:</span> <code className="text-blue-200">{cfg.storageBucket}</code></div>}
+              {cfg.appId&&<div className="text-[11px]"><span className="text-violet-300">App ID:</span> <code className="text-violet-200">{cfg.appId}</code></div>}
+            </div>)}</div>
+          </div>}
+        </div>}
+
         {/* ── PHASE 3: Results ── */}
         {cpResult&&<>
           {/* Header with file info */}
@@ -1478,7 +1557,23 @@ export default function ReverseEngineer(){
           {/* Cloud Providers */}
           {cpResult.summary?.cloudProviders?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-border/50 rounded-xl px-4 py-3">
             <span className="text-xs text-muted-foreground font-semibold">تقنيات مكتشفة:</span>
-            {cpResult.summary.cloudProviders.map((p:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-medium">{p}</span>)}
+            {cpResult.summary.cloudProviders.map((p:string,i:number)=><span key={i} className={`text-[11px] px-3 py-1 rounded-full font-medium ${p.startsWith("Firebase Project:")?"bg-orange-500/10 border border-orange-500/30 text-orange-300":"bg-cyan-500/10 border border-cyan-500/30 text-cyan-300"}`}>{p}</span>)}
+          </div>}
+
+          {/* Deep Firebase Audit Results */}
+          {cpResult.deepFirebase&&cpResult.deepFirebase.configs.length>0&&<div className="bg-gradient-to-r from-orange-900/30 to-red-900/30 border border-orange-500/30 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2"><Flame className="w-5 h-5 text-orange-400"/><span className="text-sm font-bold text-orange-300">Deep Firebase Audit</span><span className="text-[10px] px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300">{cpResult.deepFirebase.summary.riskLevel}</span></div>
+              <span className="text-[11px] text-muted-foreground">{cpResult.deepFirebase.summary.totalConfigs} إعدادات مكتشفة</span>
+            </div>
+            {cpResult.deepFirebase.summary.projectIds.length>0&&<div className="flex items-center gap-2 flex-wrap"><span className="text-[11px] text-orange-300 font-semibold">Project IDs:</span>{cpResult.deepFirebase.summary.projectIds.map((pid:string,i:number)=><code key={i} className="text-[11px] px-2 py-0.5 rounded bg-black/40 border border-orange-500/20 text-orange-200 font-mono">{pid}</code>)}</div>}
+            {cpResult.deepFirebase.summary.apiKeys.length>0&&<div className="flex items-center gap-2 flex-wrap"><span className="text-[11px] text-red-300 font-semibold">API Keys:</span>{cpResult.deepFirebase.summary.apiKeys.map((k:string,i:number)=><code key={i} className="text-[11px] px-2 py-0.5 rounded bg-black/40 border border-red-500/20 text-red-200 font-mono">{k}</code>)}</div>}
+            {cpResult.deepFirebase.summary.databaseUrls.length>0&&<div className="flex items-center gap-2 flex-wrap"><span className="text-[11px] text-yellow-300 font-semibold">Database URLs:</span>{cpResult.deepFirebase.summary.databaseUrls.map((u:string,i:number)=><code key={i} className="text-[11px] px-2 py-0.5 rounded bg-black/40 border border-yellow-500/20 text-yellow-200 font-mono">{u}</code>)}</div>}
+            {cpResult.deepFirebase.summary.riskDetails.length>0&&<div className="bg-black/30 rounded-lg p-3 space-y-1">{cpResult.deepFirebase.summary.riskDetails.map((d:string,i:number)=><div key={i} className="text-[11px] text-orange-200/80">{d}</div>)}</div>}
+            <div className="space-y-2">{cpResult.deepFirebase.layers.map((layer:any)=><div key={layer.layer} className={`rounded-lg border p-3 ${layer.status==="found"?"border-orange-500/30 bg-orange-500/5":layer.status==="partial"?"border-yellow-500/20 bg-yellow-500/5":"border-border/20 bg-muted/5"}`}>
+              <div className="flex items-center justify-between"><span className="text-[11px] font-semibold text-orange-200">{layer.layer}. {layer.name}</span><span className={`text-[10px] px-2 py-0.5 rounded-full ${layer.status==="found"?"bg-orange-500/20 text-orange-300":layer.status==="partial"?"bg-yellow-500/20 text-yellow-300":"bg-muted/20 text-muted-foreground"}`}>{layer.status==="found"?"تم الاكتشاف":layer.status==="partial"?"جزئي":"فارغ"} ({layer.filesScanned} ملف)</span></div>
+              {layer.findings.length>0&&<div className="mt-2 max-h-32 overflow-y-auto space-y-0.5">{layer.findings.map((f:string,fi:number)=><div key={fi} className="text-[10px] font-mono text-muted-foreground">{f}</div>)}</div>}
+            </div>)}</div>
           </div>}
 
           {/* 7 Steps with full details */}

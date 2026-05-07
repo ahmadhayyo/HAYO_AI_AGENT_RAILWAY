@@ -2532,11 +2532,585 @@ export function decodeStringsInFiles(sessionId: string): { decoded: Array<{ file
 }
 
 // ═══════════════════════════════════════════════════════════════
+// DEEP FIREBASE CONFIGURATION EXTRACTOR — Multi-Layer Engine
+// ═══════════════════════════════════════════════════════════════
+
+export interface FirebaseConfig {
+  projectId: string;
+  apiKey: string;
+  databaseUrl: string;
+  storageBucket: string;
+  appId: string;
+  gcmSenderId: string;
+  authDomain: string;
+  measurementId: string;
+  source: string;
+  layer: number;
+  confidence: "high" | "medium" | "low";
+}
+
+export interface DeepFirebaseResult {
+  configs: FirebaseConfig[];
+  layers: {
+    layer: number;
+    name: string;
+    status: "found" | "partial" | "empty";
+    findings: string[];
+    filesScanned: number;
+  }[];
+  summary: {
+    totalConfigs: number;
+    projectIds: string[];
+    apiKeys: string[];
+    databaseUrls: string[];
+    riskLevel: "critical" | "high" | "medium" | "low" | "none";
+    riskDetails: string[];
+  };
+  generatedAt: string;
+}
+
+export async function extractFirebaseConfigDeep(sessionId: string): Promise<DeepFirebaseResult> {
+  const sess = editSessions.get(sessionId);
+  if (!sess) throw new Error("الجلسة غير موجودة — أعد رفع الملف");
+
+  const decompDir = sess.decompDir;
+  const allFiles = readDirRecursive(decompDir);
+  const configs: FirebaseConfig[] = [];
+  const seenKeys = new Set<string>();
+
+  function addConfig(partial: Partial<FirebaseConfig> & { source: string; layer: number }) {
+    const key = `${partial.projectId || ""}:${partial.apiKey || ""}:${partial.databaseUrl || ""}`;
+    if (key === "::" || seenKeys.has(key)) return;
+    seenKeys.add(key);
+    configs.push({
+      projectId: partial.projectId || "",
+      apiKey: partial.apiKey || "",
+      databaseUrl: partial.databaseUrl || "",
+      storageBucket: partial.storageBucket || "",
+      appId: partial.appId || "",
+      gcmSenderId: partial.gcmSenderId || "",
+      authDomain: partial.authDomain || "",
+      measurementId: partial.measurementId || "",
+      source: partial.source,
+      layer: partial.layer,
+      confidence: partial.confidence || "medium",
+    });
+  }
+
+  function readText(fp: string, max = 500_000): string {
+    try { return fs.readFileSync(fp, "utf-8").slice(0, max); } catch { return ""; }
+  }
+  function relPath(fp: string) { return path.relative(decompDir, fp); }
+
+  // ─── LAYER 1: Manifest & Resource Scan ───────────────────────
+  const layer1Findings: string[] = [];
+  let layer1Files = 0;
+
+  // 1a. google-services.json in known locations
+  const gsPaths = [
+    path.join(decompDir, "google-services.json"),
+    path.join(decompDir, "assets", "google-services.json"),
+    path.join(decompDir, "res", "raw", "google-services.json"),
+    path.join(decompDir, "res", "raw", "google_services.json"),
+    path.join(decompDir, "assets", "firebase", "google-services.json"),
+  ];
+  // Also search for any google-services.json anywhere
+  const gsFound = allFiles.filter(f => path.basename(f).toLowerCase().replace(/_/g, "-") === "google-services.json");
+  const gsAll = [...new Set([...gsPaths.filter(p => fs.existsSync(p)), ...gsFound])];
+
+  for (const gsPath of gsAll) {
+    layer1Files++;
+    try {
+      const gs = JSON.parse(readText(gsPath));
+      const projId = gs?.project_info?.project_id || "";
+      const dbUrl = gs?.project_info?.firebase_url || "";
+      const storageBucket = gs?.project_info?.storage_bucket || "";
+      const projNumber = gs?.project_info?.project_number || "";
+      const client = gs?.client?.[0];
+      const apiKey = client?.api_key?.[0]?.current_key || "";
+      const appId = client?.client_info?.mobilesdk_app_id || "";
+
+      addConfig({
+        projectId: projId,
+        apiKey,
+        databaseUrl: dbUrl,
+        storageBucket,
+        appId,
+        gcmSenderId: projNumber,
+        authDomain: projId ? `${projId}.firebaseapp.com` : "",
+        source: relPath(gsPath),
+        layer: 1,
+        confidence: "high",
+      });
+      layer1Findings.push(`✅ google-services.json → ${relPath(gsPath)}`);
+      if (projId) layer1Findings.push(`   📦 Project ID: ${projId}`);
+      if (apiKey) layer1Findings.push(`   🔑 API Key: ${apiKey}`);
+      if (dbUrl) layer1Findings.push(`   🌐 Database URL: ${dbUrl}`);
+      if (appId) layer1Findings.push(`   📱 App ID: ${appId}`);
+      if (storageBucket) layer1Findings.push(`   📁 Storage: ${storageBucket}`);
+    } catch {
+      layer1Findings.push(`⚠️ google-services.json تالف أو غير قابل للقراءة: ${relPath(gsPath)}`);
+    }
+  }
+
+  // 1b. Scan all XML files for Firebase properties
+  const xmlFiles = allFiles.filter(f => f.endsWith(".xml"));
+  const xmlFirebaseProps: Record<string, RegExp> = {
+    "firebase_url": /firebase_url["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+    "firebase_database_url": /firebase_database_url["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+    "project_id": /(?:firebase_|google_app_|gcm_default|default_web_client).*?["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+    "google_api_key": /google_api_key["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+    "google_app_id": /google_app_id["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+    "google_storage_bucket": /google_storage_bucket["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+    "gcm_defaultSenderId": /gcm_defaultSenderId["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+    "google_crash_reporting_api_key": /google_crash_reporting_api_key["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+    "ga_trackingId": /ga_trackingId["']?\s*(?:>|=\s*["'])([^"'<]+)/gi,
+  };
+
+  const xmlParsedValues: Record<string, string> = {};
+  for (const xf of xmlFiles.slice(0, 500)) {
+    layer1Files++;
+    const content = readText(xf, 200_000);
+    if (!content) continue;
+    for (const [propName, regex] of Object.entries(xmlFirebaseProps)) {
+      regex.lastIndex = 0;
+      const m = regex.exec(content);
+      if (m?.[1] && m[1].length > 3 && !m[1].startsWith("@")) {
+        xmlParsedValues[propName] = m[1];
+        layer1Findings.push(`📄 XML [${relPath(xf)}] → ${propName}: ${m[1]}`);
+      }
+    }
+  }
+
+  if (Object.keys(xmlParsedValues).length > 0) {
+    const xmlProjectId = xmlParsedValues["project_id"] || "";
+    const xmlDbUrl = xmlParsedValues["firebase_url"] || xmlParsedValues["firebase_database_url"] || "";
+    const xmlApiKey = xmlParsedValues["google_api_key"] || "";
+    const xmlAppId = xmlParsedValues["google_app_id"] || "";
+    const xmlBucket = xmlParsedValues["google_storage_bucket"] || "";
+    const xmlSender = xmlParsedValues["gcm_defaultSenderId"] || "";
+
+    if (xmlProjectId || xmlDbUrl || xmlApiKey) {
+      addConfig({
+        projectId: xmlProjectId,
+        apiKey: xmlApiKey,
+        databaseUrl: xmlDbUrl,
+        storageBucket: xmlBucket,
+        appId: xmlAppId,
+        gcmSenderId: xmlSender,
+        authDomain: xmlProjectId ? `${xmlProjectId}.firebaseapp.com` : "",
+        source: "XML resources (merged)",
+        layer: 1,
+        confidence: "high",
+      });
+    }
+  }
+
+  // 1c. AndroidManifest.xml meta-data
+  const manifestPath = path.join(decompDir, "AndroidManifest.xml");
+  if (fs.existsSync(manifestPath)) {
+    layer1Files++;
+    const manifest = readText(manifestPath);
+    const metaDataRegex = /android:name=["']com\.google\.firebase[^"']*["']\s+android:value=["']([^"']+)["']/gi;
+    let mm: RegExpExecArray | null;
+    while ((mm = metaDataRegex.exec(manifest)) !== null) {
+      layer1Findings.push(`📋 Manifest meta-data: ${mm[0].slice(0, 80)}...`);
+    }
+    // Firebase default_notification_channel / crashlytics
+    const gcmSenderManifest = manifest.match(/com\.google\.android\.gms\.version.*?android:value=["'](\d+)["']/i);
+    if (gcmSenderManifest) {
+      layer1Findings.push(`📋 GMS Version: ${gcmSenderManifest[1]}`);
+    }
+  }
+
+  // ─── LAYER 2: Code-Level (Smali & DEX) Heuristics ───────────
+  const layer2Findings: string[] = [];
+  let layer2Files = 0;
+
+  const smaliAndCodeFiles = allFiles.filter(f =>
+    f.endsWith(".smali") || f.endsWith(".java") || f.endsWith(".kt") ||
+    f.endsWith(".json") || f.endsWith(".properties")
+  );
+
+  const firebaseUrlRegex = /https?:\/\/([a-z0-9][a-z0-9\-]*[a-z0-9])\.firebaseio\.com/gi;
+  const firebaseApiKeyRegex = /AIza[0-9A-Za-z\-_]{35}/g;
+  const firebaseAppIdRegex = /\d+:\d{10,}:(?:android|ios|web):[a-f0-9]+/g;
+  const firebaseStorageRegex = /([a-z0-9\-]+)\.appspot\.com/gi;
+  const firebaseAuthDomainRegex = /([a-z0-9\-]+)\.firebaseapp\.com/gi;
+  const firestoreRegex = /firestore\.googleapis\.com\/v1\/projects\/([a-z0-9\-]+)/gi;
+  const gcmSenderRegex = /(?:const-string[^"]*|["'=:])["']?(\d{10,13})["']?/g;
+  const measurementIdRegex = /G-[A-Z0-9]{8,12}/g;
+
+  const layer2ProjectIds = new Set<string>();
+  const layer2ApiKeys = new Set<string>();
+  const layer2DbUrls = new Set<string>();
+  const layer2AppIds = new Set<string>();
+  const layer2Buckets = new Set<string>();
+
+  for (const fp of smaliAndCodeFiles.slice(0, 2000)) {
+    layer2Files++;
+    const content = readText(fp, 300_000);
+    if (!content) continue;
+    const rel = relPath(fp);
+
+    // Firebase DB URLs → extract project_id from subdomain
+    firebaseUrlRegex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = firebaseUrlRegex.exec(content)) !== null) {
+      const fullUrl = m[0];
+      const projId = m[1].replace(/-default-rtdb$/, "");
+      layer2DbUrls.add(fullUrl);
+      layer2ProjectIds.add(projId);
+      layer2Findings.push(`🔥 Firebase DB URL في ${rel}: ${fullUrl} → project: ${projId}`);
+    }
+
+    // API Keys
+    firebaseApiKeyRegex.lastIndex = 0;
+    while ((m = firebaseApiKeyRegex.exec(content)) !== null) {
+      layer2ApiKeys.add(m[0]);
+      layer2Findings.push(`🔑 Firebase API Key في ${rel}: ${m[0]}`);
+    }
+
+    // App IDs
+    firebaseAppIdRegex.lastIndex = 0;
+    while ((m = firebaseAppIdRegex.exec(content)) !== null) {
+      layer2AppIds.add(m[0]);
+      layer2Findings.push(`📱 Firebase App ID في ${rel}: ${m[0]}`);
+    }
+
+    // Storage buckets
+    firebaseStorageRegex.lastIndex = 0;
+    while ((m = firebaseStorageRegex.exec(content)) !== null) {
+      layer2Buckets.add(m[1]);
+      layer2Findings.push(`📁 Firebase Storage في ${rel}: ${m[1]}.appspot.com`);
+    }
+
+    // Auth domains
+    firebaseAuthDomainRegex.lastIndex = 0;
+    while ((m = firebaseAuthDomainRegex.exec(content)) !== null) {
+      layer2ProjectIds.add(m[1]);
+      layer2Findings.push(`🌐 Firebase Auth Domain في ${rel}: ${m[1]}.firebaseapp.com`);
+    }
+
+    // Firestore project references
+    firestoreRegex.lastIndex = 0;
+    while ((m = firestoreRegex.exec(content)) !== null) {
+      layer2ProjectIds.add(m[1]);
+      layer2Findings.push(`📂 Firestore Project في ${rel}: ${m[1]}`);
+    }
+
+    // Measurement IDs
+    measurementIdRegex.lastIndex = 0;
+    while ((m = measurementIdRegex.exec(content)) !== null) {
+      layer2Findings.push(`📊 GA Measurement ID في ${rel}: ${m[0]}`);
+    }
+  }
+
+  // Merge Layer 2 findings into configs
+  if (layer2ProjectIds.size > 0 || layer2ApiKeys.size > 0 || layer2DbUrls.size > 0) {
+    const projArr = [...layer2ProjectIds];
+    const keyArr = [...layer2ApiKeys];
+    const dbArr = [...layer2DbUrls];
+    const appArr = [...layer2AppIds];
+    const bucketArr = [...layer2Buckets];
+    const maxLen = Math.max(projArr.length, keyArr.length, dbArr.length, 1);
+
+    for (let i = 0; i < maxLen; i++) {
+      const pid = projArr[i] || projArr[0] || "";
+      addConfig({
+        projectId: pid,
+        apiKey: keyArr[i] || keyArr[0] || "",
+        databaseUrl: dbArr[i] || dbArr[0] || "",
+        storageBucket: bucketArr[i] ? `${bucketArr[i]}.appspot.com` : "",
+        appId: appArr[i] || "",
+        authDomain: pid ? `${pid}.firebaseapp.com` : "",
+        source: "Smali/Code heuristics (Layer 2)",
+        layer: 2,
+        confidence: "medium",
+      });
+    }
+  }
+
+  // ─── LAYER 3: Binary Strings Analysis ────────────────────────
+  const layer3Findings: string[] = [];
+  let layer3Files = 0;
+
+  const binaryFiles = allFiles.filter(f => {
+    const ext = path.extname(f).toLowerCase();
+    return ext === ".dex" || ext === ".so" || ext === ".arsc" || ext === "" || ext === ".bin";
+  });
+
+  for (const bf of binaryFiles.slice(0, 20)) {
+    layer3Files++;
+    try {
+      const buf = fs.readFileSync(bf);
+      const printableStrings = extractPrintableStrings(buf, 12);
+      const rel = relPath(bf);
+
+      for (const str of printableStrings) {
+        // Firebase DB URL
+        const dbMatch = str.match(/https?:\/\/([a-z0-9\-]+)\.firebaseio\.com/i);
+        if (dbMatch) {
+          const projId = dbMatch[1].replace(/-default-rtdb$/, "");
+          layer3Findings.push(`🔍 Binary [${rel}] → Firebase DB: ${dbMatch[0]}`);
+          addConfig({
+            projectId: projId,
+            databaseUrl: dbMatch[0],
+            source: `Binary strings: ${rel}`,
+            layer: 3,
+            confidence: "medium",
+          });
+        }
+
+        // API Key
+        const keyMatch = str.match(/AIza[0-9A-Za-z\-_]{35}/);
+        if (keyMatch) {
+          layer3Findings.push(`🔍 Binary [${rel}] → API Key: ${keyMatch[0]}`);
+          addConfig({
+            apiKey: keyMatch[0],
+            source: `Binary strings: ${rel}`,
+            layer: 3,
+            confidence: "medium",
+          });
+        }
+
+        // App ID
+        const appIdMatch = str.match(/\d+:\d{10,}:(?:android|ios|web):[a-f0-9]+/);
+        if (appIdMatch) {
+          layer3Findings.push(`🔍 Binary [${rel}] → App ID: ${appIdMatch[0]}`);
+          addConfig({
+            appId: appIdMatch[0],
+            source: `Binary strings: ${rel}`,
+            layer: 3,
+            confidence: "low",
+          });
+        }
+
+        // Storage bucket
+        const bucketMatch = str.match(/([a-z0-9\-]+)\.appspot\.com/i);
+        if (bucketMatch) {
+          layer3Findings.push(`🔍 Binary [${rel}] → Storage: ${bucketMatch[0]}`);
+          addConfig({
+            storageBucket: bucketMatch[0],
+            projectId: bucketMatch[1],
+            source: `Binary strings: ${rel}`,
+            layer: 3,
+            confidence: "low",
+          });
+        }
+      }
+    } catch {
+      layer3Findings.push(`⚠️ فشل قراءة الملف الثنائي: ${relPath(bf)}`);
+    }
+  }
+
+  if (layer3Findings.length === 0) {
+    layer3Findings.push("ℹ️ لم يتم العثور على إعدادات Firebase في الملفات الثنائية");
+  }
+
+  // ─── LAYER 4: Decoding & Decryption Attempts ─────────────────
+  const layer4Findings: string[] = [];
+  let layer4Files = 0;
+
+  // 4a. Base64-encoded strings in code files
+  const base64Regex = /["']([A-Za-z0-9+/]{20,}={0,2})["']/g;
+  const codeFiles = allFiles.filter(f =>
+    f.endsWith(".smali") || f.endsWith(".java") || f.endsWith(".xml") || f.endsWith(".json")
+  );
+
+  for (const cf of codeFiles.slice(0, 500)) {
+    layer4Files++;
+    const content = readText(cf, 200_000);
+    if (!content) continue;
+
+    base64Regex.lastIndex = 0;
+    let bm: RegExpExecArray | null;
+    while ((bm = base64Regex.exec(content)) !== null) {
+      const encoded = bm[1];
+      if (encoded.length < 20 || encoded.length > 500) continue;
+      try {
+        const decoded = Buffer.from(encoded, "base64").toString("utf-8");
+        // Check if decoded content contains Firebase patterns
+        const fbUrlMatch = decoded.match(/https?:\/\/([a-z0-9\-]+)\.firebaseio\.com/i);
+        const fbKeyMatch = decoded.match(/AIza[0-9A-Za-z\-_]{35}/);
+        const fbBucketMatch = decoded.match(/([a-z0-9\-]+)\.appspot\.com/i);
+        const fbAppIdMatch = decoded.match(/\d+:\d{10,}:(?:android|ios|web):[a-f0-9]+/);
+
+        if (fbUrlMatch || fbKeyMatch || fbBucketMatch || fbAppIdMatch) {
+          layer4Findings.push(`🔓 Base64 مفكوك في ${relPath(cf)}: ${decoded.slice(0, 100)}`);
+          addConfig({
+            projectId: fbUrlMatch ? fbUrlMatch[1].replace(/-default-rtdb$/, "") : (fbBucketMatch?.[1] || ""),
+            apiKey: fbKeyMatch?.[0] || "",
+            databaseUrl: fbUrlMatch?.[0] || "",
+            storageBucket: fbBucketMatch?.[0] || "",
+            appId: fbAppIdMatch?.[0] || "",
+            source: `Base64 decoded: ${relPath(cf)}`,
+            layer: 4,
+            confidence: "low",
+          });
+        }
+
+        // Check if decoded string is a JSON with Firebase config
+        if (decoded.includes("firebase") || decoded.includes("project_id") || decoded.includes("api_key")) {
+          try {
+            const jsonObj = JSON.parse(decoded);
+            if (jsonObj.project_id || jsonObj.apiKey || jsonObj.firebase_url || jsonObj.databaseURL) {
+              layer4Findings.push(`🔓 JSON مشفر بـ Base64 في ${relPath(cf)}: Firebase config مكتشف!`);
+              addConfig({
+                projectId: jsonObj.project_id || jsonObj.projectId || "",
+                apiKey: jsonObj.api_key || jsonObj.apiKey || "",
+                databaseUrl: jsonObj.firebase_url || jsonObj.databaseURL || "",
+                storageBucket: jsonObj.storage_bucket || jsonObj.storageBucket || "",
+                appId: jsonObj.app_id || jsonObj.appId || "",
+                gcmSenderId: jsonObj.gcm_sender_id || jsonObj.messagingSenderId || "",
+                authDomain: jsonObj.auth_domain || jsonObj.authDomain || "",
+                measurementId: jsonObj.measurement_id || jsonObj.measurementId || "",
+                source: `Base64 JSON decoded: ${relPath(cf)}`,
+                layer: 4,
+                confidence: "medium",
+              });
+            }
+          } catch { /* not JSON */ }
+        }
+      } catch { /* not valid base64 */ }
+    }
+  }
+
+  // 4b. Hex-encoded strings
+  const hexRegex = /["']((?:[0-9a-fA-F]{2}){15,})["']/g;
+  for (const cf of codeFiles.slice(0, 200)) {
+    layer4Files++;
+    const content = readText(cf, 100_000);
+    if (!content) continue;
+
+    hexRegex.lastIndex = 0;
+    let hm: RegExpExecArray | null;
+    while ((hm = hexRegex.exec(content)) !== null) {
+      try {
+        const decoded = Buffer.from(hm[1], "hex").toString("utf-8");
+        if (decoded.includes("firebaseio.com") || decoded.match(/AIza[0-9A-Za-z\-_]{35}/)) {
+          layer4Findings.push(`🔓 Hex مفكوك في ${relPath(cf)}: ${decoded.slice(0, 80)}`);
+          const fbUrl = decoded.match(/https?:\/\/([a-z0-9\-]+)\.firebaseio\.com/i);
+          const fbKey = decoded.match(/AIza[0-9A-Za-z\-_]{35}/);
+          addConfig({
+            projectId: fbUrl ? fbUrl[1].replace(/-default-rtdb$/, "") : "",
+            apiKey: fbKey?.[0] || "",
+            databaseUrl: fbUrl?.[0] || "",
+            source: `Hex decoded: ${relPath(cf)}`,
+            layer: 4,
+            confidence: "low",
+          });
+        }
+      } catch { /* not valid hex */ }
+    }
+  }
+
+  if (layer4Findings.length === 0) {
+    layer4Findings.push("ℹ️ لم يتم العثور على إعدادات Firebase مشفرة بـ Base64/Hex");
+  }
+
+  // ─── Build summary ──────────────────────────────────────────
+  const projectIds = [...new Set(configs.map(c => c.projectId).filter(Boolean))];
+  const apiKeys = [...new Set(configs.map(c => c.apiKey).filter(Boolean))];
+  const databaseUrls = [...new Set(configs.map(c => c.databaseUrl).filter(Boolean))];
+
+  const riskDetails: string[] = [];
+  let riskLevel: "critical" | "high" | "medium" | "low" | "none" = "none";
+
+  if (apiKeys.length > 0 && databaseUrls.length > 0) {
+    riskLevel = "critical";
+    riskDetails.push("🔴 مفتاح API + عنوان قاعدة البيانات متوفران — يمكن الوصول للبيانات مباشرة");
+  } else if (apiKeys.length > 0) {
+    riskLevel = "high";
+    riskDetails.push("🟡 مفتاح API مكشوف — قد يسمح بالمصادقة مع Firebase");
+  } else if (projectIds.length > 0) {
+    riskLevel = "medium";
+    riskDetails.push("🟡 Project ID مكشوف — يمكن محاولة الوصول العام");
+  } else if (configs.length > 0) {
+    riskLevel = "low";
+    riskDetails.push("ℹ️ بيانات Firebase جزئية مكتشفة");
+  }
+
+  if (databaseUrls.some(u => u.includes("-default-rtdb"))) {
+    riskDetails.push("⚠️ قاعدة بيانات RTDB مكتشفة — اختبر قواعد الأمان: GET /.json");
+  }
+  if (configs.some(c => c.storageBucket)) {
+    riskDetails.push("⚠️ Storage Bucket مكشوف — اختبر الوصول العام للملفات");
+  }
+  if (configs.some(c => c.layer >= 3)) {
+    riskDetails.push("🔍 بعض الإعدادات اُستخرجت من طبقات عميقة (ثنائيات/تشفير) — قد تكون محمية");
+  }
+
+  const layers = [
+    {
+      layer: 1,
+      name: "فحص Manifest والموارد (XML + google-services.json)",
+      status: (layer1Findings.some(f => f.startsWith("✅") || f.startsWith("📄")) ? "found" : layer1Findings.length > 1 ? "partial" : "empty") as "found" | "partial" | "empty",
+      findings: layer1Findings,
+      filesScanned: layer1Files,
+    },
+    {
+      layer: 2,
+      name: "تحليل الكود (Smali/Java/Kotlin) — Heuristics",
+      status: (layer2Findings.length > 0 ? "found" : "empty") as "found" | "partial" | "empty",
+      findings: layer2Findings,
+      filesScanned: layer2Files,
+    },
+    {
+      layer: 3,
+      name: "تحليل السلاسل الثنائية (Binary Strings)",
+      status: (layer3Findings.some(f => f.startsWith("🔍")) ? "found" : "empty") as "found" | "partial" | "empty",
+      findings: layer3Findings,
+      filesScanned: layer3Files,
+    },
+    {
+      layer: 4,
+      name: "فك التشفير والترميز (Base64/Hex Decoding)",
+      status: (layer4Findings.some(f => f.startsWith("🔓")) ? "found" : "empty") as "found" | "partial" | "empty",
+      findings: layer4Findings,
+      filesScanned: layer4Files,
+    },
+  ];
+
+  return {
+    configs,
+    layers,
+    summary: {
+      totalConfigs: configs.length,
+      projectIds,
+      apiKeys,
+      databaseUrls,
+      riskLevel,
+      riskDetails,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// Helper: extract printable ASCII strings from a binary buffer (like Unix `strings`)
+function extractPrintableStrings(buf: Buffer, minLength = 8): string[] {
+  const results: string[] = [];
+  let current = "";
+  for (let i = 0; i < buf.length && i < 5_000_000; i++) {
+    const byte = buf[i];
+    if (byte >= 32 && byte <= 126) {
+      current += String.fromCharCode(byte);
+    } else {
+      if (current.length >= minLength) results.push(current);
+      current = "";
+    }
+  }
+  if (current.length >= minLength) results.push(current);
+  return results;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // RUN CLOUD PENTEST — Full 8-Phase Kill-Chain
 // ═══════════════════════════════════════════════════════════════
 export async function runCloudPentest(sessionId: string): Promise<{
   steps: any[];
   summary: any;
+  deepFirebase: DeepFirebaseResult | null;
   report: string;
   generatedAt: string;
 }> {
@@ -3355,6 +3929,36 @@ Exported Activities: ${exportedActivities}
     aiReport = `تقرير اختبار الاختراق\n\nالتطبيق: ${packageName}\nدرجة الخطورة: ${riskScore}/100\nالأسرار المكتشفة: ${allSecrets.length}\n\nملاحظة: فشل توليد التقرير التفصيلي — ${e.message}`;
   }
 
+  // ─── Deep Firebase Audit Integration ──────────────────────────
+  let deepFirebase: DeepFirebaseResult | null = null;
+  try {
+    deepFirebase = await extractFirebaseConfigDeep(sessionId);
+    // Merge deep Firebase project IDs into cloudProviders
+    if (deepFirebase.summary.projectIds.length > 0) {
+      for (const pid of deepFirebase.summary.projectIds) {
+        const label = `Firebase Project: ${pid}`;
+        if (!cloudProviders.includes(label)) cloudProviders.push(label);
+      }
+    }
+    // Merge any deep-discovered secrets into allSecrets
+    for (const cfg of deepFirebase.configs) {
+      if (cfg.apiKey && !seenSecrets.has(`Firebase API Key:${cfg.apiKey.slice(0, 20)}`)) {
+        seenSecrets.add(`Firebase API Key:${cfg.apiKey.slice(0, 20)}`);
+        allSecrets.push({ type: `Firebase API Key (Layer ${cfg.layer})`, value: cfg.apiKey, file: cfg.source, line: 0 });
+      }
+      if (cfg.databaseUrl && !seenSecrets.has(`Firebase DB URL:${cfg.databaseUrl.slice(0, 20)}`)) {
+        seenSecrets.add(`Firebase DB URL:${cfg.databaseUrl.slice(0, 20)}`);
+        allSecrets.push({ type: `Firebase DB URL (Layer ${cfg.layer})`, value: cfg.databaseUrl, file: cfg.source, line: 0 });
+      }
+      if (cfg.projectId && !seenSecrets.has(`Firebase Project ID:${cfg.projectId.slice(0, 20)}`)) {
+        seenSecrets.add(`Firebase Project ID:${cfg.projectId.slice(0, 20)}`);
+        allSecrets.push({ type: `Firebase Project ID (Layer ${cfg.layer})`, value: cfg.projectId, file: cfg.source, line: 0 });
+      }
+    }
+  } catch (dfErr: any) {
+    console.log("[DeepFirebase] Error:", dfErr.message);
+  }
+
   return {
     steps,
     summary: {
@@ -3368,6 +3972,7 @@ Exported Activities: ${exportedActivities}
       permissions: permissions.length,
       dangerousPermissions: dangerousPerms,
     },
+    deepFirebase,
     report: aiReport,
     generatedAt: new Date().toISOString(),
   };
