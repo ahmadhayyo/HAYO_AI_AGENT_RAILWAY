@@ -2532,6 +2532,527 @@ export function decodeStringsInFiles(sessionId: string): { decoded: Array<{ file
 }
 
 // ═══════════════════════════════════════════════════════════════
+// FULL AUTO CLONE — Unified 6-Phase Pipeline
+// (Deep Cloud Pentest + Smart Cloning + Rebuild + Sign + Verify)
+// ═══════════════════════════════════════════════════════════════
+
+export interface FullAutoCloneResult {
+  success: boolean;
+  apkBuffer?: Buffer;
+  phases: {
+    phase: number;
+    name: string;
+    status: "success" | "warning" | "failed" | "skipped";
+    details: string[];
+    duration: number;
+  }[];
+  pentest: {
+    firebaseConfigs: any[];
+    apiKeys: string[];
+    databaseUrls: string[];
+    projectIds: string[];
+    secrets: ExtractedSecret[];
+    endpoints: string[];
+    riskLevel: string;
+  };
+  cloneReport: {
+    packageName: string;
+    premiumMethodsPatched: number;
+    loginBypassed: boolean;
+    pointsUnlocked: boolean;
+    tamperNeutralized: boolean;
+    adsRemoved: boolean;
+    signatureVerified: boolean;
+    zipIntegrity: boolean;
+    modifications: string[];
+  };
+  error?: string;
+  generatedAt: string;
+}
+
+export type FullAutoProgressCallback = (phase: number, phaseName: string, message: string) => void;
+
+function memoryAwareDecompile(
+  apkPath: string,
+  decompDir: string,
+  workDir: string,
+  apkSizeMB: number,
+): { success: boolean; details: string[]; error?: string } {
+  const details: string[] = [];
+  const apkt = findApkTool();
+
+  if (apkSizeMB < 100) {
+    details.push(`APK < 100MB (${apkSizeMB.toFixed(1)} MB) — وضع عادي`);
+    const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 300_000);
+    if (!fs.existsSync(decompDir)) {
+      return { success: false, details, error: "فشل APKTool: " + r.stderr.slice(0, 300) };
+    }
+  } else if (apkSizeMB < 200) {
+    details.push(`APK 100-200MB (${apkSizeMB.toFixed(1)} MB) — 2 threads`);
+    const r = runCmd(apkt, ["d", "-j2", "-f", "-o", decompDir, apkPath], workDir, 420_000);
+    if (!fs.existsSync(decompDir)) {
+      const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 420_000);
+      if (!fs.existsSync(decompDir)) {
+        return { success: false, details, error: "فشل APKTool (j2 fallback): " + r2.stderr.slice(0, 300) };
+      }
+      details.push("تراجع إلى الوضع العادي بعد فشل j2");
+    }
+  } else if (apkSizeMB < 300) {
+    details.push(`APK 200-300MB (${apkSizeMB.toFixed(1)} MB) — Xmx4G, 1 thread`);
+    const javaAvail = isJavaAvailable();
+    if (javaAvail) {
+      const r = runCmd("java", ["-Xmx4G", "-jar", apkt, "d", "-j1", "-f", "-o", decompDir, apkPath], workDir, 600_000);
+      if (!fs.existsSync(decompDir)) {
+        const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 600_000);
+        if (!fs.existsSync(decompDir)) {
+          return { success: false, details, error: "فشل APKTool (Xmx4G): " + r2.stderr.slice(0, 300) };
+        }
+        details.push("تراجع إلى الوضع العادي");
+      }
+    } else {
+      const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 600_000);
+      if (!fs.existsSync(decompDir)) {
+        return { success: false, details, error: "فشل APKTool: " + r.stderr.slice(0, 300) };
+      }
+    }
+  } else {
+    details.push(`APK 300MB+ (${apkSizeMB.toFixed(1)} MB) — Xmx8G, 1 thread`);
+    const javaAvail = isJavaAvailable();
+    if (javaAvail) {
+      const r = runCmd("java", ["-Xmx8G", "-jar", apkt, "d", "-j1", "-f", "-o", decompDir, apkPath], workDir, 900_000);
+      if (!fs.existsSync(decompDir)) {
+        const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 900_000);
+        if (!fs.existsSync(decompDir)) {
+          return { success: false, details, error: "فشل APKTool (Xmx8G): " + r2.stderr.slice(0, 300) };
+        }
+        details.push("تراجع إلى الوضع العادي");
+      }
+    } else {
+      const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 900_000);
+      if (!fs.existsSync(decompDir)) {
+        return { success: false, details, error: "فشل APKTool: " + r.stderr.slice(0, 300) };
+      }
+    }
+  }
+  details.push("تم تفكيك APK بنجاح");
+  return { success: true, details };
+}
+
+export async function runFullAutoClone(
+  buffer: Buffer,
+  fileName: string,
+  onProgress?: FullAutoProgressCallback,
+): Promise<FullAutoCloneResult> {
+  const emit = onProgress || (() => {});
+  const phases: FullAutoCloneResult["phases"] = [];
+  const modifications: string[] = [];
+  const allSecrets: ExtractedSecret[] = [];
+  const allEndpoints: string[] = [];
+  const allApiKeys: string[] = [];
+  const allDbUrls: string[] = [];
+  const allProjectIds: string[] = [];
+  let firebaseConfigs: any[] = [];
+  let riskLevel = "none";
+
+  const workDir = path.join(os.tmpdir(), `fullautoclone_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`);
+  const inputPath = path.join(workDir, "input.apk");
+  const decompDir = path.join(workDir, "decompiled");
+  fs.mkdirSync(workDir, { recursive: true });
+  fs.writeFileSync(inputPath, buffer);
+
+  const apkSizeMB = buffer.length / (1024 * 1024);
+
+  let premiumCount = 0;
+  let coinsCount = 0;
+  let loginBypassed = false;
+  let tamperNeutralized = false;
+  let signatureVerified = false;
+  let zipIntegrity = false;
+  let packageName = "unknown";
+
+  try {
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 1: DEEP CLOUD PENTEST (4-Layer Firebase Analysis)
+    // ══════════════════════════════════════════════════════════════
+    const p1Start = Date.now();
+    emit(1, "اختبار اختراق سحابي عميق", "بدء التحليل بـ 4 طبقات...");
+    const p1Details: string[] = [];
+
+    try {
+      // Decompile temporarily for pentest analysis
+      const apkt = findApkTool();
+      const pentestDecompDir = path.join(workDir, "pentest_decompiled");
+      const tempDecompResult = runCmd(apkt, ["d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
+
+      if (fs.existsSync(pentestDecompDir)) {
+        // Create a temporary session for the deep firebase extractor
+        const tempSessId = `fullautoclone_${Date.now()}`;
+        editSessions.set(tempSessId, {
+          sessionId: tempSessId,
+          decompDir: pentestDecompDir,
+          origFile: inputPath,
+          structure: [],
+          fileCount: 0,
+          apkToolAvailable: true,
+          usedApkTool: true,
+          fileType: "apk",
+          fileBackups: new Map(),
+        } as EditSession);
+
+        try {
+          const deepResult = await extractFirebaseConfigDeep(tempSessId);
+          firebaseConfigs = deepResult.configs;
+          riskLevel = deepResult.summary.riskLevel;
+
+          for (const cfg of deepResult.configs) {
+            if (cfg.apiKey) allApiKeys.push(cfg.apiKey);
+            if (cfg.databaseUrl) allDbUrls.push(cfg.databaseUrl);
+            if (cfg.projectId) allProjectIds.push(cfg.projectId);
+            if (cfg.apiKey) allSecrets.push({ type: `Firebase API Key (Layer ${cfg.layer})`, value: cfg.apiKey, file: cfg.source, line: 0 });
+            if (cfg.databaseUrl) allSecrets.push({ type: `Firebase DB URL (Layer ${cfg.layer})`, value: cfg.databaseUrl, file: cfg.source, line: 0 });
+            if (cfg.projectId) allSecrets.push({ type: `Firebase Project ID (Layer ${cfg.layer})`, value: cfg.projectId, file: cfg.source, line: 0 });
+          }
+
+          p1Details.push(`Firebase: ${deepResult.summary.totalConfigs} إعدادات مكتشفة`);
+          p1Details.push(`مستوى الخطورة: ${riskLevel}`);
+          if (allApiKeys.length > 0) p1Details.push(`API Keys: ${allApiKeys.length}`);
+          if (allDbUrls.length > 0) p1Details.push(`Database URLs: ${allDbUrls.length}`);
+          if (allProjectIds.length > 0) p1Details.push(`Project IDs: ${allProjectIds.join(", ")}`);
+
+          for (const layer of deepResult.layers) {
+            p1Details.push(`Layer ${layer.layer} (${layer.name}): ${layer.status} — ${layer.filesScanned} ملف`);
+          }
+
+          emit(1, "اختبار اختراق سحابي عميق", `تم العثور على ${deepResult.summary.totalConfigs} إعداد Firebase`);
+        } catch (dfErr: any) {
+          p1Details.push(`خطأ Deep Firebase: ${dfErr.message}`);
+        }
+
+        // Also extract general secrets from decompiled APK
+        const generalSecrets = extractSecretsFromAPK(pentestDecompDir);
+        for (const s of generalSecrets) {
+          if (!allSecrets.some(es => es.value === s.value)) {
+            allSecrets.push(s);
+          }
+        }
+        if (generalSecrets.length > 0) p1Details.push(`أسرار عامة مكتشفة: ${generalSecrets.length}`);
+
+        // Extract endpoints
+        const pentestFiles = readDirRecursive(pentestDecompDir).filter(f => {
+          const e = path.extname(f).toLowerCase();
+          return [".smali", ".xml", ".json", ".txt", ".properties"].includes(e);
+        }).slice(0, 500);
+        const endpointSet = new Set<string>();
+        for (const fp of pentestFiles) {
+          try {
+            const content = fs.readFileSync(fp, "utf-8");
+            if (content.length > 500_000) continue;
+            const urlMatches = content.match(/https?:\/\/[^\s"'<>}{)]+/g);
+            if (urlMatches) urlMatches.forEach(u => endpointSet.add(u));
+          } catch {}
+        }
+        allEndpoints.push(...[...endpointSet].slice(0, 200));
+        if (allEndpoints.length > 0) p1Details.push(`نقاط نهاية API: ${allEndpoints.length}`);
+
+        // Extract package name
+        const manifestPath = path.join(pentestDecompDir, "AndroidManifest.xml");
+        if (fs.existsSync(manifestPath)) {
+          const manifest = fs.readFileSync(manifestPath, "utf-8");
+          const pkgMatch = manifest.match(/package="([^"]+)"/);
+          if (pkgMatch) packageName = pkgMatch[1];
+        }
+
+        editSessions.delete(tempSessId);
+        // Clean up pentest decompiled dir — we'll do a proper decompile in Phase 2
+        try { fs.rmSync(pentestDecompDir, { recursive: true, force: true }); } catch {}
+      } else {
+        p1Details.push("فشل التفكيك المبدئي للتحليل السحابي");
+      }
+    } catch (e: any) {
+      p1Details.push(`خطأ في المرحلة 1: ${e.message}`);
+    }
+
+    phases.push({ phase: 1, name: "اختبار اختراق سحابي عميق (4 طبقات)", status: allSecrets.length > 0 ? "success" : "warning", details: p1Details, duration: Date.now() - p1Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 2: MEMORY-AWARE DECOMPILATION
+    // ══════════════════════════════════════════════════════════════
+    const p2Start = Date.now();
+    emit(2, "تفكيك ذكي حسب الذاكرة", `حجم APK: ${apkSizeMB.toFixed(1)} MB`);
+    const decompResult = memoryAwareDecompile(inputPath, decompDir, workDir, apkSizeMB);
+
+    if (!decompResult.success) {
+      phases.push({ phase: 2, name: "تفكيك ذكي حسب الذاكرة", status: "failed", details: decompResult.details, duration: Date.now() - p2Start });
+      return {
+        success: false,
+        phases,
+        pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+        cloneReport: { packageName, premiumMethodsPatched: 0, loginBypassed: false, pointsUnlocked: false, tamperNeutralized: false, adsRemoved: false, signatureVerified: false, zipIntegrity: false, modifications },
+        error: decompResult.error,
+        generatedAt: new Date().toISOString(),
+      };
+    }
+
+    modifications.push("تم تفكيك APK بنجاح (Memory-Aware)");
+    phases.push({ phase: 2, name: "تفكيك ذكي حسب الذاكرة", status: "success", details: decompResult.details, duration: Date.now() - p2Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 2.5: PURGE OLD SIGNATURES
+    // ══════════════════════════════════════════════════════════════
+    const metaInfDir = path.join(decompDir, "original", "META-INF");
+    if (fs.existsSync(metaInfDir)) {
+      const sigExts = [".SF", ".RSA", ".DSA", ".EC"];
+      let purged = 0;
+      for (const f of fs.readdirSync(metaInfDir)) {
+        if (sigExts.some(e => f.toUpperCase().endsWith(e)) || f === "MANIFEST.MF") {
+          fs.unlinkSync(path.join(metaInfDir, f));
+          purged++;
+        }
+      }
+      if (purged > 0) modifications.push(`تم حذف ${purged} ملف توقيع قديم من META-INF`);
+    }
+    const metaInfDir2 = path.join(decompDir, "META-INF");
+    if (fs.existsSync(metaInfDir2)) {
+      try {
+        const sigExts = [".SF", ".RSA", ".DSA", ".EC"];
+        for (const f of fs.readdirSync(metaInfDir2)) {
+          if (sigExts.some(e => f.toUpperCase().endsWith(e)) || f === "MANIFEST.MF") {
+            fs.unlinkSync(path.join(metaInfDir2, f));
+          }
+        }
+      } catch {}
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 3: SMART SMALI PATCHING ENGINE
+    // ══════════════════════════════════════════════════════════════
+    const p3Start = Date.now();
+    emit(3, "محرك التعديل الذكي", "تطبيق التعديلات...");
+    const p3Details: string[] = [];
+
+    const manifestPath = path.join(decompDir, "AndroidManifest.xml");
+    let manifest = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, "utf-8") : "";
+
+    // Extract package name from decompiled manifest
+    const pkgMatch2 = manifest.match(/package="([^"]+)"/);
+    if (pkgMatch2) packageName = pkgMatch2[1];
+
+    // 3a. Remove Ads
+    emit(3, "محرك التعديل الذكي", "إزالة الإعلانات...");
+    const adMods = await patchAds(decompDir, manifest);
+    modifications.push(...adMods);
+    p3Details.push(...adMods);
+    if (fs.existsSync(manifestPath)) manifest = fs.readFileSync(manifestPath, "utf-8");
+
+    // 3b. Unlock Premium
+    emit(3, "محرك التعديل الذكي", "فتح Premium...");
+    const premMods = await patchPremium(decompDir);
+    modifications.push(...premMods);
+    p3Details.push(...premMods);
+    premiumCount = premMods.filter(m => m.includes("🔓")).length;
+    coinsCount = premMods.filter(m => m.includes("💰")).length;
+
+    // 3c. Remove License Check
+    emit(3, "محرك التعديل الذكي", "تجاوز License...");
+    const licMods = await patchLicense(decompDir);
+    modifications.push(...licMods);
+    p3Details.push(...licMods);
+
+    // 3d. Bypass Login
+    emit(3, "محرك التعديل الذكي", "تجاوز تسجيل الدخول...");
+    const loginMods = await patchLoginBypass(decompDir, manifestPath);
+    modifications.push(...loginMods);
+    p3Details.push(...loginMods);
+    loginBypassed = loginMods.some(m => m.includes("🚪") || m.includes("تجاوز"));
+
+    // 3e. Neutralize Tamper Detection
+    emit(3, "محرك التعديل الذكي", "تحييد الحماية...");
+    const tamperMods = await patchTamperDetection(decompDir);
+    modifications.push(...tamperMods);
+    p3Details.push(...tamperMods);
+    tamperNeutralized = tamperMods.some(m => m.includes("🛡️") || m.includes("حماية"));
+
+    // 3f. Remove Tracking
+    emit(3, "محرك التعديل الذكي", "إزالة التتبع...");
+    const trackMods = await patchTracking(decompDir);
+    modifications.push(...trackMods);
+    p3Details.push(...trackMods);
+
+    // 3g. Extract remaining secrets from decompiled source
+    const moreSecrets = extractSecretsFromAPK(decompDir);
+    for (const s of moreSecrets) {
+      if (!allSecrets.some(es => es.value === s.value)) allSecrets.push(s);
+    }
+    if (moreSecrets.length > 0) p3Details.push(`أسرار إضافية مكتشفة: ${moreSecrets.length}`);
+
+    phases.push({ phase: 3, name: "محرك التعديل الذكي (Smali Patching)", status: "success", details: p3Details, duration: Date.now() - p3Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 4: REBUILD, ALIGN, SIGN
+    // ══════════════════════════════════════════════════════════════
+    const p4Start = Date.now();
+    emit(4, "إعادة البناء والتوقيع", "إعادة بناء APK...");
+    const p4Details: string[] = [];
+    const outputApk = path.join(workDir, "cloned.apk");
+    const apkt = findApkTool();
+
+    // Step 4.2: Rebuild
+    let buildResult = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
+    if (!fs.existsSync(outputApk)) {
+      p4Details.push("فشل aapt2، إعادة محاولة بدون --use-aapt2...");
+      buildResult = runCmd(apkt, ["b", "-o", outputApk, decompDir], workDir, 300_000);
+      if (!fs.existsSync(outputApk)) {
+        p4Details.push("فشل إعادة البناء: " + buildResult.stderr.slice(0, 300));
+        phases.push({ phase: 4, name: "إعادة البناء والتوقيع", status: "failed", details: p4Details, duration: Date.now() - p4Start });
+        return {
+          success: false,
+          phases,
+          pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+          cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, signatureVerified: false, zipIntegrity: false, modifications },
+          error: "فشل إعادة بناء APK",
+          generatedAt: new Date().toISOString(),
+        };
+      }
+    }
+    p4Details.push("تم إعادة بناء APK بنجاح");
+    modifications.push("تم إعادة بناء APK بنجاح");
+
+    // Step 4.3-4.5: Sign (zipalign + apksigner)
+    emit(4, "إعادة البناء والتوقيع", "التوقيع الرقمي (V1+V2+V3)...");
+    const signedPath = await signAPKFile(outputApk, workDir);
+    if (signedPath) {
+      p4Details.push("تم التوقيع بـ zipalign + apksigner (V1+V2+V3)");
+      modifications.push("تم توقيع APK بـ V1+V2+V3 (متوافق مع Android 7-14+)");
+    } else {
+      p4Details.push("التوقيع فشل — يمكن التثبيت يدوياً");
+      modifications.push("التوقيع فشل — يمكن التثبيت على أجهزة Development");
+    }
+
+    phases.push({ phase: 4, name: "إعادة البناء والتوقيع", status: signedPath ? "success" : "warning", details: p4Details, duration: Date.now() - p4Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 5: PRE-DOWNLOAD VERIFICATION (QUALITY GATE)
+    // ══════════════════════════════════════════════════════════════
+    const p5Start = Date.now();
+    emit(5, "بوابة الجودة", "التحقق من سلامة APK...");
+    const p5Details: string[] = [];
+    const finalApk = signedPath || outputApk;
+
+    // Test A: Signature Verification
+    if (signedPath) {
+      const verifyResult = runCmd("apksigner", ["verify", "--verbose", signedPath], workDir, 30_000);
+      signatureVerified = verifyResult.code === 0;
+      if (signatureVerified) {
+        p5Details.push("التحقق من التوقيع: APK موقّع بشكل صحيح (V1+V2+V3)");
+        modifications.push("التحقق من التوقيع: ناجح");
+      } else {
+        p5Details.push("التحقق من التوقيع فشل: " + verifyResult.stderr.slice(0, 100));
+      }
+    }
+
+    // Test B: Zip Integrity
+    const zipCheckResult = runCmd("unzip", ["-t", finalApk], workDir, 30_000);
+    zipIntegrity = zipCheckResult.code === 0 && zipCheckResult.stdout.includes("No errors");
+    if (zipIntegrity) {
+      p5Details.push("سلامة ZIP: لا توجد أخطاء في البيانات المضغوطة");
+      modifications.push("سلامة ZIP: ناجح");
+    } else {
+      p5Details.push("تحذير سلامة ZIP: " + zipCheckResult.stderr.slice(0, 100));
+    }
+
+    // Test C: Manifest Validator
+    try {
+      const rebuiltManifest = path.join(decompDir, "AndroidManifest.xml");
+      if (fs.existsSync(rebuiltManifest)) {
+        const mContent = fs.readFileSync(rebuiltManifest, "utf-8");
+        const hasPkg = /package="[^"]+"/.test(mContent);
+        const hasMinSdk = /minSdkVersion/.test(mContent) || /android:minSdkVersion/.test(mContent);
+        if (hasPkg) p5Details.push(`Manifest: package="${packageName}" موجود`);
+        if (hasMinSdk) p5Details.push("Manifest: minSdkVersion موجود");
+        if (!hasPkg) p5Details.push("تحذير: package مفقود من Manifest");
+      }
+    } catch {}
+
+    // Test D: Dry-Run Install
+    try {
+      const adbResult = runCmd("adb", ["devices"], workDir, 5_000);
+      if (adbResult.code === 0 && adbResult.stdout.includes("device")) {
+        const installResult = runCmd("adb", ["install", "-r", finalApk], workDir, 60_000);
+        if (installResult.code === 0) {
+          p5Details.push("اختبار التثبيت: نجح على المحاكي/الجهاز المتصل");
+        } else {
+          p5Details.push("اختبار التثبيت: " + installResult.stderr.slice(0, 100));
+        }
+      } else {
+        p5Details.push("اختبار التثبيت: لا يوجد جهاز/محاكي متصل (تخطي)");
+      }
+    } catch {
+      p5Details.push("اختبار التثبيت: ADB غير متوفر (تخطي)");
+    }
+
+    const qualityPassed = signatureVerified && zipIntegrity;
+    phases.push({ phase: 5, name: "بوابة الجودة (التحقق)", status: qualityPassed ? "success" : (zipIntegrity ? "warning" : "failed"), details: p5Details, duration: Date.now() - p5Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 6: FINAL OUTPUT & REPORT
+    // ══════════════════════════════════════════════════════════════
+    const p6Start = Date.now();
+    emit(6, "التقرير النهائي والتحميل", "إعداد الملف النهائي...");
+    const p6Details: string[] = [];
+
+    const apkBuffer = fs.readFileSync(finalApk);
+    p6Details.push(`حجم APK النهائي: ${(apkBuffer.length / 1048576).toFixed(2)} MB`);
+    p6Details.push(`أسرار مكتشفة: ${allSecrets.length}`);
+    p6Details.push(`نقاط نهاية: ${allEndpoints.length}`);
+    p6Details.push(`Premium معدّل: ${premiumCount}`);
+    p6Details.push(`تجاوز تسجيل الدخول: ${loginBypassed ? "نعم" : "لا"}`);
+    p6Details.push(`نقاط/عملات: ${coinsCount > 0 ? "غير محدود" : "لا"}`);
+    p6Details.push(`توقيع صحيح: ${signatureVerified ? "نعم" : "لا"}`);
+    p6Details.push(`سلامة ZIP: ${zipIntegrity ? "نعم" : "لا"}`);
+
+    phases.push({ phase: 6, name: "التقرير النهائي والتحميل", status: "success", details: p6Details, duration: Date.now() - p6Start });
+
+    return {
+      success: true,
+      apkBuffer,
+      phases,
+      pentest: {
+        firebaseConfigs,
+        apiKeys: [...new Set(allApiKeys)],
+        databaseUrls: [...new Set(allDbUrls)],
+        projectIds: [...new Set(allProjectIds)],
+        secrets: allSecrets,
+        endpoints: allEndpoints,
+        riskLevel,
+      },
+      cloneReport: {
+        packageName,
+        premiumMethodsPatched: premiumCount,
+        loginBypassed,
+        pointsUnlocked: coinsCount > 0,
+        tamperNeutralized,
+        adsRemoved: true,
+        signatureVerified,
+        zipIntegrity,
+        modifications,
+      },
+      generatedAt: new Date().toISOString(),
+    };
+  } catch (e: any) {
+    return {
+      success: false,
+      phases,
+      pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+      cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: false, signatureVerified: false, zipIntegrity: false, modifications },
+      error: e.message,
+      generatedAt: new Date().toISOString(),
+    };
+  } finally {
+    setTimeout(() => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {} }, 60_000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // DEEP FIREBASE CONFIGURATION EXTRACTOR — Multi-Layer Engine
 // ═══════════════════════════════════════════════════════════════
 

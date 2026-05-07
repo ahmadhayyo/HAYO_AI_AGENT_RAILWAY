@@ -516,6 +516,11 @@ export default function ReverseEngineer(){
   const cpFileRef=useRef<HTMLInputElement>(null);
   const[dfbResult,setDfbResult]=useState<any>(null);
   const[dfbLoading,setDfbLoading]=useState(false);
+  // Full Auto Clone
+  const[facLoading,setFacLoading]=useState(false);
+  const[facResult,setFacResult]=useState<any>(null);
+  const[facLogs,setFacLogs]=useState<string[]>([]);
+  const[facActivePhase,setFacActivePhase]=useState(0);
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -776,6 +781,46 @@ export default function ReverseEngineer(){
       setDfbResult(d);
       toast.success(`تدقيق Firebase العميق — ${d.summary?.totalConfigs||0} إعدادات مكتشفة`);
     }catch(e:any){toast.error(e.message);}finally{setDfbLoading(false);}
+  };
+
+  const doFullAutoClone=async()=>{
+    if(!cpFile){toast.error("ارفع ملف APK أولاً");return;}
+    setFacLoading(true);setFacResult(null);setFacLogs([]);setFacActivePhase(0);setDfbResult(null);setCpResult(null);
+    try{
+      // Step 1: Upload APK
+      const fd=new FormData();fd.append("file",cpFile);
+      const upRes=await fetchRE("/api/reverse/upload",{method:"POST",body:fd});
+      const upData=await upRes.json();
+      if(!upRes.ok)throw new Error(upData.error||"فشل رفع الملف");
+      const uploadId=upData.uploadId;
+
+      // Step 2: SSE stream
+      const sseUrl=`/api/reverse/stream/full-auto-clone?uploadId=${uploadId}`;
+      const es=new EventSource(sseUrl);
+      es.onmessage=(e:MessageEvent)=>{
+        const msg=e.data as string;
+        setFacLogs(prev=>[...prev,msg]);
+        const phaseMatch=msg.match(/\[PHASE (\d)\/6\]/);
+        if(phaseMatch)setFacActivePhase(parseInt(phaseMatch[1]));
+      };
+      es.addEventListener("result",(e:any)=>{
+        try{
+          const data=JSON.parse(e.data);
+          setFacResult(data);
+          if(data.success&&data.downloadId){
+            toast.success("Full Auto Clone اكتمل بنجاح — جاري التحميل...");
+            const a=document.createElement("a");
+            a.href=`/api/reverse/stream/download/${data.downloadId}`;
+            a.download=`fullclone-${cpFile?.name||"app.apk"}`;
+            a.click();
+          }else if(!data.success){
+            toast.error(`فشل: ${data.error||"خطأ غير معروف"}`);
+          }
+        }catch{}
+        es.close();setFacLoading(false);setFacActivePhase(0);
+      });
+      es.onerror=()=>{es.close();setFacLoading(false);toast.error("انقطع الاتصال");};
+    }catch(e:any){toast.error(e.message);setFacLoading(false);}
   };
 
   // ═══ RENDER ═══
@@ -1374,6 +1419,9 @@ export default function ReverseEngineer(){
             <Button onClick={doDeepFirebaseAudit} disabled={!cpFile||dfbLoading} size="lg" className="gap-3 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-orange-900/30">
               {dfbLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Flame className="w-5 h-5"/>}Deep Firebase Audit
             </Button>
+            <Button onClick={doFullAutoClone} disabled={!cpFile||facLoading} size="lg" className="gap-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-emerald-900/30 animate-pulse">
+              {facLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Rocket className="w-5 h-5"/>}Full Auto Clone
+            </Button>
           </div>
           <div className="grid grid-cols-8 gap-1.5 w-full max-w-xl">
             {["تفكيك","مصادقة","مفاتيح","IDOR","استغلال","سحب DB","Telegram","تقرير"].map((s,i)=><div key={i} className="text-center">
@@ -1452,6 +1500,119 @@ export default function ReverseEngineer(){
               </div>
             </div>);
           })}
+        </div>}
+
+        {/* ── Full Auto Clone: Live Progress ── */}
+        {facLoading&&<div className="space-y-4">
+          <div className="bg-gradient-to-r from-emerald-900/40 to-teal-900/40 border border-emerald-500/30 rounded-2xl p-5">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-emerald-400"/>
+              <div>
+                <h2 className="text-lg font-bold text-emerald-300">جاري تنفيذ Full Auto Clone...</h2>
+                <p className="text-xs text-muted-foreground">المرحلة {facActivePhase}/6 — {cpFile?.name}</p>
+              </div>
+            </div>
+            <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full transition-all duration-1000" style={{width:`${(facActivePhase/6)*100}%`}}/>
+            </div>
+            <div className="grid grid-cols-6 gap-1 mt-3">
+              {["تحليل سحابي","تفكيك","تعديل Smali","بناء+توقيع","تحقق","تحميل"].map((s,i)=><div key={i} className={`text-center text-[9px] py-1 rounded ${facActivePhase>i+1?"text-emerald-300 bg-emerald-500/10":facActivePhase===i+1?"text-emerald-200 bg-emerald-500/20 animate-pulse":"text-muted-foreground"}`}>{s}</div>)}
+            </div>
+          </div>
+          <div className="bg-black/40 border border-emerald-500/20 rounded-xl p-3 max-h-60 overflow-y-auto font-mono text-[11px] text-emerald-300/80 space-y-0.5">
+            {facLogs.slice(-30).map((l,i)=><div key={i} className={l.includes("[ERROR]")?"text-red-400":l.includes("[SECRET]")?"text-yellow-300":l.includes("[DONE]")?"text-emerald-300 font-bold":""}>{l}</div>)}
+          </div>
+        </div>}
+
+        {/* ── Full Auto Clone: Results Panel ── */}
+        {facResult&&<div className="space-y-4">
+          <div className={`bg-gradient-to-r ${facResult.success?"from-emerald-900/40 to-teal-900/40 border-emerald-500/30":"from-red-900/40 to-orange-900/40 border-red-500/30"} border rounded-2xl p-5`}>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <Rocket className={`w-8 h-8 ${facResult.success?"text-emerald-400":"text-red-400"}`}/>
+                <div>
+                  <h2 className={`text-xl font-bold ${facResult.success?"text-emerald-300":"text-red-300"}`}>تقرير Full Auto Clone</h2>
+                  <p className="text-xs text-muted-foreground mt-1">{new Date(facResult.generatedAt).toLocaleString("ar-EG")}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button onClick={()=>setFacResult(null)} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300"><Undo2 className="w-4 h-4"/>استنساخ جديد</Button>
+                <Button onClick={()=>{const blob=new Blob([JSON.stringify(facResult,null,2)],{type:"application/json"});const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;a.download=`full-auto-clone-report-${Date.now()}.json`;a.click();URL.revokeObjectURL(u);}} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
+                {facResult.success&&facResult.downloadId&&<Button onClick={()=>{const a=document.createElement("a");a.href=`/api/reverse/stream/download/${facResult.downloadId}`;a.download=`fullclone-${cpFile?.name||"app.apk"}`;a.click();}} className="gap-2 bg-emerald-600 hover:bg-emerald-500"><Download className="w-4 h-4"/>تحميل APK</Button>}
+              </div>
+            </div>
+          </div>
+
+          {/* Clone Report Summary */}
+          {facResult.cloneReport&&<div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="p-4 rounded-xl border bg-emerald-500/10 border-emerald-500/30 text-center">
+              <div className="text-2xl font-bold text-emerald-300">{facResult.cloneReport.premiumMethodsPatched}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">Premium Patched</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.loginBypassed?"bg-green-500/10 border-green-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.loginBypassed?"تم":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">تجاوز تسجيل الدخول</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.signatureVerified?"bg-green-500/10 border-green-500/30":"bg-yellow-500/10 border-yellow-500/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.signatureVerified?"صحيح":"فشل"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">التوقيع</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.zipIntegrity?"bg-green-500/10 border-green-500/30":"bg-red-500/10 border-red-500/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.zipIntegrity?"سليم":"تالف"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">سلامة ZIP</div>
+            </div>
+          </div>}
+
+          {/* Phase Results */}
+          {facResult.phases&&<div className="space-y-2">
+            <h3 className="text-sm font-semibold text-emerald-300">مراحل التنفيذ</h3>
+            {facResult.phases.map((p:any)=><div key={p.phase} className={`rounded-xl border p-3 ${p.status==="success"?"border-green-500/30 bg-green-500/5":p.status==="warning"?"border-yellow-500/30 bg-yellow-500/5":"border-red-500/30 bg-red-500/5"}`}>
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold">{p.phase}. {p.name}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full ${p.status==="success"?"bg-green-500/20 text-green-300":p.status==="warning"?"bg-yellow-500/20 text-yellow-300":"bg-red-500/20 text-red-300"}`}>{p.status} ({p.duration}ms)</span>
+              </div>
+              {p.details.length>0&&<div className="mt-2 space-y-0.5">{p.details.map((d:string,i:number)=><div key={i} className="text-[11px] text-muted-foreground font-mono">{d}</div>)}</div>}
+            </div>)}
+          </div>}
+
+          {/* Secrets (FULL PLAIN TEXT) */}
+          {facResult.pentest?.secrets?.length>0&&<div className="space-y-2">
+            <h3 className="text-sm font-semibold text-yellow-300">الأسرار المكتشفة — نص كامل ({facResult.pentest.secrets.length})</h3>
+            <div className="bg-black/50 border border-yellow-500/20 rounded-xl p-3 max-h-72 overflow-y-auto">
+              <table className="w-full text-[11px]">
+                <thead><tr className="text-yellow-300/80 border-b border-yellow-500/20"><th className="text-right pb-2 pr-2">النوع</th><th className="text-right pb-2 pr-2">القيمة</th><th className="text-right pb-2">الملف</th></tr></thead>
+                <tbody>{facResult.pentest.secrets.map((s:any,i:number)=><tr key={i} className="border-b border-border/10 hover:bg-yellow-500/5">
+                  <td className="py-1.5 pr-2"><span className="px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-300 text-[9px]">{s.type}</span></td>
+                  <td className="py-1.5 pr-2 font-mono text-yellow-200 break-all select-all">{s.value}</td>
+                  <td className="py-1.5 text-muted-foreground truncate max-w-[150px]">{s.file}:{s.line??""}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+          </div>}
+
+          {/* Endpoints */}
+          {facResult.pentest?.endpoints?.length>0&&<div className="space-y-2">
+            <h3 className="text-sm font-semibold text-cyan-300">نقاط النهاية ({facResult.pentest.endpoints.length})</h3>
+            <div className="bg-black/40 border border-cyan-500/20 rounded-xl p-3 max-h-48 overflow-y-auto space-y-1">
+              {facResult.pentest.endpoints.map((ep:string,i:number)=><div key={i} className="text-[11px] font-mono text-cyan-300/80 hover:text-cyan-200 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(ep);toast.success("تم النسخ")}}>{ep}</div>)}
+            </div>
+          </div>}
+
+          {/* Modifications */}
+          {facResult.cloneReport?.modifications?.length>0&&<div className="space-y-2">
+            <h3 className="text-sm font-semibold text-purple-300">التعديلات المطبقة ({facResult.cloneReport.modifications.length})</h3>
+            <div className="bg-black/40 border border-purple-500/20 rounded-xl p-3 max-h-48 overflow-y-auto space-y-1">
+              {facResult.cloneReport.modifications.map((m:string,i:number)=><div key={i} className="text-[11px] font-mono text-purple-300/80">{m}</div>)}
+            </div>
+          </div>}
+
+          {/* Live Logs */}
+          {facLogs.length>0&&<details className="group">
+            <summary className="text-sm font-semibold text-muted-foreground cursor-pointer hover:text-foreground">سجل التنفيذ الكامل ({facLogs.length} سطر)</summary>
+            <div className="mt-2 bg-black/50 border border-border/30 rounded-xl p-3 max-h-60 overflow-y-auto font-mono text-[10px] text-muted-foreground space-y-0.5">
+              {facLogs.map((l,i)=><div key={i} className={l.includes("[ERROR]")?"text-red-400":l.includes("[SECRET]")?"text-yellow-300":l.includes("[DONE]")?"text-emerald-300 font-bold":""}>{l}</div>)}
+            </div>
+          </details>}
         </div>}
 
         {/* ── Deep Firebase Audit Standalone Results ── */}
