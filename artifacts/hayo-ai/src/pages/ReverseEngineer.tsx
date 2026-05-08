@@ -521,6 +521,11 @@ export default function ReverseEngineer(){
   const[facResult,setFacResult]=useState<any>(null);
   const[facLogs,setFacLogs]=useState<string[]>([]);
   const[facActivePhase,setFacActivePhase]=useState(0);
+  // Sequential Pipeline
+  const[seqRunning,setSeqRunning]=useState(false);
+  const[seqPhase,setSeqPhase]=useState(0); // 0=idle, 1=firebase, 2=pentest, 3=clone
+  const[seqLogs,setSeqLogs]=useState<string[]>([]);
+  const[seqDone,setSeqDone]=useState(false);
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -821,6 +826,76 @@ export default function ReverseEngineer(){
       });
       es.onerror=()=>{es.close();setFacLoading(false);toast.error("انقطع الاتصال");};
     }catch(e:any){toast.error(e.message);setFacLoading(false);}
+  };
+
+  // ═══ SEQUENTIAL PIPELINE ═══
+  const doSequentialPipeline=async()=>{
+    if(!cpFile){toast.error("ارفع ملف APK أولاً");return;}
+    setSeqRunning(true);setSeqPhase(0);setSeqLogs([]);setSeqDone(false);
+    setCpResult(null);setDfbResult(null);setFacResult(null);setFacLogs([]);setCpShowReport(false);
+    setCpActiveStep(0);setCpStepsRevealed([]);setFacActivePhase(0);
+    try{
+      // Upload APK once
+      const fd=new FormData();fd.append("file",cpFile);
+      setSeqLogs(prev=>[...prev,"[PIPELINE] جاري رفع الملف..."]);
+      const upRes=await fetchRE("/api/reverse/upload",{method:"POST",body:fd});
+      const upData=await upRes.json();
+      if(!upRes.ok)throw new Error(upData.error||"فشل رفع الملف");
+      const uploadId=upData.uploadId;
+      setSeqLogs(prev=>[...prev,`[PIPELINE] تم الرفع — uploadId: ${uploadId}`]);
+
+      // SSE stream for sequential pipeline
+      const sseUrl=`/api/reverse/stream/sequential-pipeline?uploadId=${uploadId}`;
+      const es=new EventSource(sseUrl);
+
+      es.onmessage=(e:MessageEvent)=>{
+        const msg=e.data as string;
+        setSeqLogs(prev=>[...prev,msg]);
+        // Track phase from PHASE A/B/C markers
+        if(msg.includes("[PHASE A]")&&!msg.includes("اكتمل"))setSeqPhase(1);
+        if(msg.includes("[PHASE B]")&&!msg.includes("اكتمل"))setSeqPhase(2);
+        if(msg.includes("[PHASE C]")&&!msg.includes("اكتمل"))setSeqPhase(3);
+      };
+
+      es.addEventListener("phase",(e:any)=>{
+        try{
+          const data=JSON.parse(e.data);
+          if(data.status==="running")setSeqPhase(data.phase);
+          if(data.name==="deep-firebase-audit"&&data.status==="done"&&data.result){
+            setDfbResult(data.result);
+            toast.success(`تدقيق Firebase — ${data.result?.summary?.totalConfigs||0} إعدادات`);
+          }
+          if(data.name==="cloud-pentest"&&data.status==="done"&&data.result){
+            setCpResult(data.result);setCpStepsRevealed([1,2,3,4,5,6,7,8]);setCpActiveStep(0);
+            setCpExpanded(new Set([1,2,3,4,5,6,7,8]));
+            toast.success(`اختبار الاختراق — خطورة: ${data.result?.summary?.riskScore||0}/100`);
+          }
+          if(data.name==="full-auto-clone"&&data.status==="done"&&data.result){
+            setFacResult(data.result);
+            if(data.result.success&&data.result.downloadId){
+              toast.success("Full Auto Clone اكتمل — جاري التحميل...");
+              const a=document.createElement("a");
+              a.href=`/api/reverse/stream/download/${data.result.downloadId}`;
+              a.download=`fullclone-${cpFile?.name||"app.apk"}`;
+              a.click();
+            }
+          }
+        }catch{}
+      });
+
+      es.addEventListener("result",(e:any)=>{
+        try{
+          const data=JSON.parse(e.data);
+          if(data.deepFirebase)setDfbResult(data.deepFirebase);
+          if(data.cloudPentest){setCpResult(data.cloudPentest);setCpStepsRevealed([1,2,3,4,5,6,7,8]);setCpExpanded(new Set([1,2,3,4,5,6,7,8]));}
+        }catch{}
+        setSeqDone(true);setSeqPhase(0);setSeqRunning(false);
+        toast.success("اكتمل الخط المتسلسل بالكامل!");
+        es.close();
+      });
+
+      es.onerror=()=>{es.close();setSeqRunning(false);setSeqPhase(0);toast.error("انقطع الاتصال بالخط المتسلسل");};
+    }catch(e:any){toast.error(e.message);setSeqRunning(false);setSeqPhase(0);}
   };
 
   // ═══ RENDER ═══
@@ -1412,14 +1487,21 @@ export default function ReverseEngineer(){
               <div className="text-sm text-muted-foreground">اسحب ملف APK هنا أو اضغط للاختيار</div>
             </div>}
           </div>
+          {/* Sequential Pipeline — Primary Action */}
+          <Button onClick={doSequentialPipeline} disabled={!cpFile||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-violet-600 via-cyan-600 to-emerald-600 hover:from-violet-500 hover:via-cyan-500 hover:to-emerald-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-violet-900/40 animate-pulse font-bold w-full max-w-xl">
+            {seqRunning?<Loader2 className="w-6 h-6 animate-spin"/>:<Rocket className="w-6 h-6"/>}
+            {seqRunning?"جاري تنفيذ الخط المتسلسل...":"ابدأ الخط المتسلسل الكامل"}
+          </Button>
+          {!seqRunning&&<div className="text-xs text-muted-foreground text-center max-w-lg">Firebase Audit → Cloud Pentest (8 مراحل) → Full Auto Clone (6 مراحل) — تلقائي بالكامل</div>}
+          {/* Individual buttons — secondary */}
           <div className="flex items-center gap-3 flex-wrap justify-center">
-            <Button onClick={doCloudPentestFull} disabled={!cpFile} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
+            <Button onClick={doCloudPentestFull} disabled={!cpFile||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
               <Zap className="w-5 h-5"/>ابدأ الاختبار التلقائي
             </Button>
-            <Button onClick={doDeepFirebaseAudit} disabled={!cpFile||dfbLoading} size="lg" className="gap-3 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-orange-900/30">
+            <Button onClick={doDeepFirebaseAudit} disabled={!cpFile||dfbLoading||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-orange-900/30">
               {dfbLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Flame className="w-5 h-5"/>}Deep Firebase Audit
             </Button>
-            <Button onClick={doFullAutoClone} disabled={!cpFile||facLoading} size="lg" className="gap-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-emerald-900/30 animate-pulse">
+            <Button onClick={doFullAutoClone} disabled={!cpFile||facLoading||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-emerald-900/30">
               {facLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Rocket className="w-5 h-5"/>}Full Auto Clone
             </Button>
           </div>
@@ -1430,6 +1512,44 @@ export default function ReverseEngineer(){
             </div>)}
           </div>
         </div>}
+
+        {/* ── Sequential Pipeline: Live Progress ── */}
+        {seqRunning&&<div className="space-y-4 w-full">
+          <div className="bg-gradient-to-r from-violet-900/40 via-cyan-900/40 to-emerald-900/40 border border-violet-500/30 rounded-2xl p-5">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-violet-400"/>
+              <div>
+                <h2 className="text-lg font-bold text-violet-300">جاري تنفيذ الخط المتسلسل الكامل...</h2>
+                <p className="text-xs text-muted-foreground">الملف: {cpFile?.name} ({cpFile?((cpFile.size/1024/1024).toFixed(1)+" MB"):""})</p>
+              </div>
+            </div>
+            <div className="mt-4 flex gap-2">
+              {[{n:1,label:"Firebase Audit",color:"from-orange-500 to-red-500"},{n:2,label:"Cloud Pentest",color:"from-cyan-500 to-blue-500"},{n:3,label:"Full Auto Clone",color:"from-emerald-500 to-teal-500"}].map(p=>(
+                <div key={p.n} className="flex-1">
+                  <div className={`h-2 rounded-full overflow-hidden ${seqPhase>p.n?"bg-green-500":seqPhase===p.n?`bg-gradient-to-r ${p.color} animate-pulse`:"bg-muted/20"}`}>
+                    {seqPhase===p.n&&<div className="h-full bg-white/20 animate-pulse rounded-full" style={{width:"60%"}}/>}
+                  </div>
+                  <div className={`text-[10px] mt-1 text-center ${seqPhase===p.n?"text-violet-300 font-bold":seqPhase>p.n?"text-green-400":"text-muted-foreground"}`}>{seqPhase>p.n?"✓ ":seqPhase===p.n?"▶ ":""}{p.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="bg-black/40 border border-border/30 rounded-xl p-3 max-h-60 overflow-y-auto font-mono text-[11px] text-green-400/80 space-y-0.5">
+            {seqLogs.slice(-40).map((log,i)=><div key={i} className={log.includes("[ERROR]")?"text-red-400":log.includes("[PHASE")?"text-cyan-300":log.includes("[SECRET]")?"text-yellow-400":log.includes("[PIPELINE]")?"text-violet-300 font-bold":""}>{log}</div>)}
+          </div>
+        </div>}
+
+        {/* ── Sequential Pipeline: Done ── */}
+        {seqDone&&!seqRunning&&<div className="bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-500/40 rounded-2xl p-5 w-full text-center space-y-2">
+          <div className="text-2xl font-bold text-green-400">اكتمل الخط المتسلسل بالكامل</div>
+          <div className="text-sm text-muted-foreground">Firebase Audit + Cloud Pentest + Full Auto Clone — تم تنفيذ جميع المراحل بنجاح</div>
+          <div className="flex gap-2 justify-center text-xs">
+            {dfbResult&&<span className="px-3 py-1 rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/30">Firebase: {dfbResult?.summary?.totalConfigs||0} إعدادات</span>}
+            {cpResult&&<span className="px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Pentest: {cpResult?.summary?.riskScore||0}/100</span>}
+            {facResult&&<span className="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Clone: {facResult?.success?"ناجح":"فشل"}</span>}
+          </div>
+        </div>}
+
 {/* الزر الجديد: Live Audit */}
 <Button 
   onClick={async () => {
