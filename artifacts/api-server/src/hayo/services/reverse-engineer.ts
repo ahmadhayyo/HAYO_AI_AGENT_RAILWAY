@@ -940,12 +940,13 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
     // ── 1. Resolve keystore ──────────────────────────────────
     const keystorePaths = [
       "/home/runner/debug.keystore",
+      path.join(workDir, "qa_debug.keystore"),
       path.join(workDir, "debug.keystore"),
     ];
     let keystorePath = keystorePaths.find(p => fs.existsSync(p)) ?? null;
 
     if (!keystorePath) {
-      const newKeystore = path.join(workDir, "debug.keystore");
+      const newKeystore = path.join(workDir, "qa_debug.keystore");
       runCmd("keytool", [
         "-genkeypair", "-v",
         "-keystore", newKeystore,
@@ -954,8 +955,8 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
         "-keypass", "android",
         "-keyalg", "RSA",
         "-keysize", "2048",
-        "-validity", "36500",
-        "-dname", "CN=Android Debug,O=Android,C=US",
+        "-validity", "10000",
+        "-dname", "CN=QA,O=Security,C=US",
       ], workDir, 30_000);
       keystorePath = fs.existsSync(newKeystore) ? newKeystore : null;
     }
@@ -2580,52 +2581,60 @@ function memoryAwareDecompile(
 ): { success: boolean; details: string[]; error?: string } {
   const details: string[] = [];
   const apkt = findApkTool();
+  const javaAvail = isJavaAvailable();
+
+  // Railway PaaS: Strict -Xmx2G cap to prevent OOM container crashes
+  const RAILWAY_HEAP = "-Xmx2G";
 
   if (apkSizeMB < 100) {
-    details.push(`APK < 100MB (${apkSizeMB.toFixed(1)} MB) — وضع عادي`);
-    const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 300_000);
-    if (!fs.existsSync(decompDir)) {
-      return { success: false, details, error: "فشل APKTool: " + r.stderr.slice(0, 300) };
-    }
-  } else if (apkSizeMB < 200) {
-    details.push(`APK 100-200MB (${apkSizeMB.toFixed(1)} MB) — 2 threads`);
-    const r = runCmd(apkt, ["d", "-j2", "-f", "-o", decompDir, apkPath], workDir, 420_000);
-    if (!fs.existsSync(decompDir)) {
-      const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 420_000);
-      if (!fs.existsSync(decompDir)) {
-        return { success: false, details, error: "فشل APKTool (j2 fallback): " + r2.stderr.slice(0, 300) };
-      }
-      details.push("تراجع إلى الوضع العادي بعد فشل j2");
-    }
-  } else if (apkSizeMB < 300) {
-    details.push(`APK 200-300MB (${apkSizeMB.toFixed(1)} MB) — Xmx4G, 1 thread`);
-    const javaAvail = isJavaAvailable();
+    details.push(`APK < 100MB (${apkSizeMB.toFixed(1)} MB) — Railway safe mode`);
     if (javaAvail) {
-      const r = runCmd("java", ["-Xmx4G", "-jar", apkt, "d", "-j1", "-f", "-o", decompDir, apkPath], workDir, 600_000);
+      const r = runCmd("java", [RAILWAY_HEAP, "-jar", apkt, "d", "-f", "-o", decompDir, apkPath], workDir, 300_000);
       if (!fs.existsSync(decompDir)) {
-        const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 600_000);
+        const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 300_000);
         if (!fs.existsSync(decompDir)) {
-          return { success: false, details, error: "فشل APKTool (Xmx4G): " + r2.stderr.slice(0, 300) };
+          return { success: false, details, error: "فشل APKTool: " + (r2.stderr || r.stderr).slice(0, 300) };
         }
-        details.push("تراجع إلى الوضع العادي");
+        details.push("تراجع إلى الوضع المباشر");
       }
     } else {
-      const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 600_000);
+      const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 300_000);
       if (!fs.existsSync(decompDir)) {
         return { success: false, details, error: "فشل APKTool: " + r.stderr.slice(0, 300) };
       }
     }
-  } else {
-    details.push(`APK 300MB+ (${apkSizeMB.toFixed(1)} MB) — Xmx8G, 1 thread`);
-    const javaAvail = isJavaAvailable();
+  } else if (apkSizeMB < 200) {
+    details.push(`APK 100-200MB (${apkSizeMB.toFixed(1)} MB) — Railway Xmx2G, 2 threads`);
     if (javaAvail) {
-      const r = runCmd("java", ["-Xmx8G", "-jar", apkt, "d", "-j1", "-f", "-o", decompDir, apkPath], workDir, 900_000);
+      const r = runCmd("java", [RAILWAY_HEAP, "-jar", apkt, "d", "-j2", "-f", "-o", decompDir, apkPath], workDir, 420_000);
+      if (!fs.existsSync(decompDir)) {
+        const r2 = runCmd("java", [RAILWAY_HEAP, "-jar", apkt, "d", "-f", "-o", decompDir, apkPath], workDir, 420_000);
+        if (!fs.existsSync(decompDir)) {
+          return { success: false, details, error: "فشل APKTool (j2 fallback): " + (r2.stderr || r.stderr).slice(0, 300) };
+        }
+        details.push("تراجع إلى thread واحد");
+      }
+    } else {
+      const r = runCmd(apkt, ["d", "-j2", "-f", "-o", decompDir, apkPath], workDir, 420_000);
+      if (!fs.existsSync(decompDir)) {
+        const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 420_000);
+        if (!fs.existsSync(decompDir)) {
+          return { success: false, details, error: "فشل APKTool (j2 fallback): " + (r2.stderr || r.stderr).slice(0, 300) };
+        }
+        details.push("تراجع إلى الوضع العادي بعد فشل j2");
+      }
+    }
+  } else {
+    // 200MB+ APKs: Railway strict single-thread + Xmx2G
+    details.push(`APK ${apkSizeMB >= 300 ? "300MB+" : "200-300MB"} (${apkSizeMB.toFixed(1)} MB) — Railway Xmx2G, 1 thread`);
+    if (javaAvail) {
+      const r = runCmd("java", [RAILWAY_HEAP, "-jar", apkt, "d", "-j1", "-f", "-o", decompDir, apkPath], workDir, 900_000);
       if (!fs.existsSync(decompDir)) {
         const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 900_000);
         if (!fs.existsSync(decompDir)) {
-          return { success: false, details, error: "فشل APKTool (Xmx8G): " + r2.stderr.slice(0, 300) };
+          return { success: false, details, error: `فشل APKTool (Xmx2G Railway): ` + (r2.stderr || r.stderr).slice(0, 300) };
         }
-        details.push("تراجع إلى الوضع العادي");
+        details.push("تراجع إلى الوضع المباشر");
       }
     } else {
       const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 900_000);
@@ -2634,7 +2643,7 @@ function memoryAwareDecompile(
       }
     }
   }
-  details.push("تم تفكيك APK بنجاح");
+  details.push("تم تفكيك APK بنجاح (Railway PaaS optimized)");
   return { success: true, details };
 }
 
@@ -2679,10 +2688,16 @@ export async function runFullAutoClone(
     const p1Details: string[] = [];
 
     try {
-      // Decompile temporarily for pentest analysis
+      // Decompile temporarily for pentest analysis (Railway-safe Xmx2G)
       const apkt = findApkTool();
       const pentestDecompDir = path.join(workDir, "pentest_decompiled");
-      const tempDecompResult = runCmd(apkt, ["d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
+      const javaAvail = isJavaAvailable();
+      if (javaAvail) {
+        runCmd("java", ["-Xmx2G", "-jar", apkt, "d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
+      }
+      if (!javaAvail || !fs.existsSync(pentestDecompDir)) {
+        runCmd(apkt, ["d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
+      }
 
       if (fs.existsSync(pentestDecompDir)) {
         // Create a temporary session for the deep firebase extractor
@@ -2797,31 +2812,22 @@ export async function runFullAutoClone(
     phases.push({ phase: 2, name: "تفكيك ذكي حسب الذاكرة", status: "success", details: decompResult.details, duration: Date.now() - p2Start });
 
     // ══════════════════════════════════════════════════════════════
-    // PHASE 2.5: PURGE OLD SIGNATURES
+    // PHASE 2.5: PURGE OLD SIGNATURES (Recursive META-INF delete)
     // ══════════════════════════════════════════════════════════════
-    const metaInfDir = path.join(decompDir, "original", "META-INF");
-    if (fs.existsSync(metaInfDir)) {
-      const sigExts = [".SF", ".RSA", ".DSA", ".EC"];
-      let purged = 0;
-      for (const f of fs.readdirSync(metaInfDir)) {
-        if (sigExts.some(e => f.toUpperCase().endsWith(e)) || f === "MANIFEST.MF") {
-          fs.unlinkSync(path.join(metaInfDir, f));
-          purged++;
-        }
+    const metaInfPaths = [
+      path.join(decompDir, "original", "META-INF"),
+      path.join(decompDir, "META-INF"),
+    ];
+    let totalPurged = 0;
+    for (const metaDir of metaInfPaths) {
+      if (fs.existsSync(metaDir)) {
+        try {
+          fs.rmSync(metaDir, { recursive: true, force: true });
+          totalPurged++;
+        } catch {}
       }
-      if (purged > 0) modifications.push(`تم حذف ${purged} ملف توقيع قديم من META-INF`);
     }
-    const metaInfDir2 = path.join(decompDir, "META-INF");
-    if (fs.existsSync(metaInfDir2)) {
-      try {
-        const sigExts = [".SF", ".RSA", ".DSA", ".EC"];
-        for (const f of fs.readdirSync(metaInfDir2)) {
-          if (sigExts.some(e => f.toUpperCase().endsWith(e)) || f === "MANIFEST.MF") {
-            fs.unlinkSync(path.join(metaInfDir2, f));
-          }
-        }
-      } catch {}
-    }
+    if (totalPurged > 0) modifications.push(`تم حذف ${totalPurged} مجلد META-INF بالكامل (منع Parse Error)`);
 
     // ══════════════════════════════════════════════════════════════
     // PHASE 3: SMART SMALI PATCHING ENGINE
@@ -2896,11 +2902,21 @@ export async function runFullAutoClone(
     const outputApk = path.join(workDir, "cloned.apk");
     const apkt = findApkTool();
 
-    // Step 4.2: Rebuild
-    let buildResult = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
+    // Step 4.2: Rebuild (Railway-safe Xmx2G)
+    const rebuildJava = isJavaAvailable();
+    let buildResult;
+    if (rebuildJava) {
+      buildResult = runCmd("java", ["-Xmx2G", "-jar", apkt, "b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
+    } else {
+      buildResult = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
+    }
     if (!fs.existsSync(outputApk)) {
       p4Details.push("فشل aapt2، إعادة محاولة بدون --use-aapt2...");
-      buildResult = runCmd(apkt, ["b", "-o", outputApk, decompDir], workDir, 300_000);
+      if (rebuildJava) {
+        buildResult = runCmd("java", ["-Xmx2G", "-jar", apkt, "b", "-o", outputApk, decompDir], workDir, 300_000);
+      } else {
+        buildResult = runCmd(apkt, ["b", "-o", outputApk, decompDir], workDir, 300_000);
+      }
       if (!fs.existsSync(outputApk)) {
         p4Details.push("فشل إعادة البناء: " + buildResult.stderr.slice(0, 300));
         phases.push({ phase: 4, name: "إعادة البناء والتوقيع", status: "failed", details: p4Details, duration: Date.now() - p4Start });
@@ -2993,6 +3009,20 @@ export async function runFullAutoClone(
     const qualityPassed = signatureVerified && zipIntegrity;
     phases.push({ phase: 5, name: "بوابة الجودة (التحقق)", status: qualityPassed ? "success" : (zipIntegrity ? "warning" : "failed"), details: p5Details, duration: Date.now() - p5Start });
 
+    // FATAL HALT: If apksigner verify does NOT contain "Verifies", abort pipeline
+    if (signedPath && !signatureVerified) {
+      const fatalMsg = "FATAL: apksigner verify failed — APK signature is invalid. Pipeline halted.";
+      p5Details.push(fatalMsg);
+      return {
+        success: false,
+        phases,
+        pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+        cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, signatureVerified: false, zipIntegrity, modifications },
+        error: fatalMsg,
+        generatedAt: new Date().toISOString(),
+      };
+    }
+
     // ══════════════════════════════════════════════════════════════
     // PHASE 6: FINAL OUTPUT & REPORT
     // ══════════════════════════════════════════════════════════════
@@ -3048,7 +3078,8 @@ export async function runFullAutoClone(
       generatedAt: new Date().toISOString(),
     };
   } finally {
-    setTimeout(() => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {} }, 60_000);
+    // Railway stateless execution: immediate cleanup of workspace
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
   }
 }
 
