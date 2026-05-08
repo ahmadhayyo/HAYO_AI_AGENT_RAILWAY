@@ -620,6 +620,28 @@ router.post("/cloud-pentest", async (req: Request, res: Response) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+router.post("/cloud-pentest/live-audit", async (req: Request, res: Response) => {
+  try {
+    const { project_id } = req.body as { project_id: string };
+    if (!project_id) {
+      res.status(400).json({ success: false, error: "يجب توفير project_id" });
+      return;
+    }
+    const ngrokUrl = process.env.NGROK_LIVE_AUDIT_URL || "https://gallinaceous-nonobediently-daleyza.ngrok-free.dev";
+    const response = await fetch(`${ngrokUrl}/firebase-audit`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
+      },
+      body: JSON.stringify({ project_id }),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 router.post("/deep-firebase-audit", upload.single("file"), async (req: Request, res: Response) => {
   extendTimeout(req, res, 600_000);
