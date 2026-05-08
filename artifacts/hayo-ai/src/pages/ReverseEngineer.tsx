@@ -1429,39 +1429,37 @@ export default function ReverseEngineer(){
               <div className="text-[8px] text-muted-foreground mt-1">{s}</div>
             </div>)}
           </div>
+          <Button
+            onClick={async () => {
+              const projectIdInput = prompt("أدخل Firebase Project ID (أو استخدم المُستخرج من التقرير):");
+              if (!projectIdInput) return;
+              toast.info("جاري التدقيق الحي...");
+              try {
+                const response = await fetchRE('/api/reverse/cloud-pentest/live-audit', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ project_id: projectIdInput })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "فشل التدقيق");
+                if (data.success) {
+                  console.log("Live Audit Results:", data);
+                  toast.success("تم العثور على بيانات!");
+                } else {
+                  toast.error(`فشل: ${data.error}`);
+                }
+              } catch (e: any) {
+                toast.error(e.message || "فشل الاتصال بالجندي المحلي.");
+              }
+            }}
+            disabled={cpLoading}
+            size="lg"
+            className="gap-3 bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-500 hover:to-orange-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-red-900/30"
+          >
+            <Zap className="w-5 h-5"/> Live Audit (فحص السحابة مباشرة)
+          </Button>
         </div>}
-{/* الزر الجديد: Live Audit */}
-<Button 
-  onClick={async () => {
-    const projectIdInput = prompt("أدخل Firebase Project ID (أو استخدم المُستخرج من التقرير):");
-    if (!projectIdInput) return;
-    
-    toast.info("جاري التدقيق الحي...");
-    try {
-      const response = await fetch('/api/reverse/cloud-pentest/live-audit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: projectIdInput })
-      });
-      const data = await response.json();
-      
-      if (data.success) {
-        // إظهار النتائج للمستخدم (سنعرضها في console أو alert حالياً)
-        console.log("Live Audit Results:", data);
-        alert("✅ تم العثور على بيانات! شاهد الـ console أو استخدم البيانات المعروضة.");
-        toast.success("تم العثور على بيانات!");
-      } else {
-        toast.error(`فشل: ${data.error}`);
-      }
-    } catch (e) {
-      toast.error("فشل الاتصال بالجندي المحلي.");
-    }
-  }}
-  className="gap-3 bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-500 hover:to-orange-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-red-900/30"
-  style={{ marginTop: '10px' }}
->
-  <Zap className="w-5 h-5"/> Live Audit (فحص السحابة مباشرة)
-</Button>
+
         {/* ── PHASE 2: Live Execution (Steps Revealing) ── */}
         {cpLoading&&<div className="space-y-4">
           <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-5">
