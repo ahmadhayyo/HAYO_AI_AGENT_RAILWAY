@@ -63,6 +63,20 @@ export function findApkTool(): string {
   return "apktool"; // fallback
 }
 
+/** Find the apktool .jar file for use with `java -jar`. Prefers newer versions. */
+export function findApkToolJar(): string | null {
+  const candidates = [
+    "/usr/local/lib/apktool.jar",
+    path.join(os.homedir(), "apktool.jar"),
+    "/usr/share/apktool/apktool.jar",
+    "/home/runner/apktool/apktool.jar",
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
 export function isApkToolAvailable(): boolean {
   try { execSync(`${findApkTool()} --version 2>&1`, { stdio: "pipe", timeout: 8000 }); return true; } catch { return false; }
 }
@@ -915,11 +929,17 @@ export async function rebuildAPK(sessionId: string): Promise<{ success: boolean;
 
   try {
     const apkt = findApkTool();
-    // --use-aapt2 is required for modern APKs (Android 9+) to preserve resource IDs correctly
-    const r = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, sess.decompDir], workDir, 180_000);
+    const apktJar = findApkToolJar();
+    const javaAvail = isJavaAvailable();
+    const rebuildHelper = (args: string[]) => {
+      if (javaAvail && apktJar) {
+        return runCmd("java", ["-Xmx2G", "-jar", apktJar, ...args], workDir, 300_000);
+      }
+      return runCmd(apkt, args, workDir, 180_000);
+    };
+    const r = rebuildHelper(["b", "--use-aapt2", "-o", outputApk, sess.decompDir]);
     if (!fs.existsSync(outputApk)) {
-      // Retry without --use-aapt2 for older APKs that don't need it
-      const r2 = runCmd(apkt, ["b", "-o", outputApk, sess.decompDir], workDir, 180_000);
+      const r2 = rebuildHelper(["b", "-o", outputApk, sess.decompDir]);
       if (!fs.existsSync(outputApk)) {
         return { success: false, error: "فشل إعادة البناء: " + r2.stderr.slice(0, 300) };
       }
@@ -1123,9 +1143,21 @@ export async function cloneApp(
 
     // ── PHASE 1: Decompile with APKTool ──
     const apkt = findApkTool();
-    const decompResult = runCmd(apkt, ["d", "-f", "-o", decompDir, inputPath], workDir, 180_000);
+    const apktJar = findApkToolJar();
+    const javaAvail = isJavaAvailable();
+    let decompResult;
+    if (javaAvail && apktJar) {
+      decompResult = runCmd("java", ["-Xmx2G", "-jar", apktJar, "d", "-f", "-o", decompDir, inputPath], workDir, 300_000);
+    } else {
+      decompResult = runCmd(apkt, ["d", "-f", "-o", decompDir, inputPath], workDir, 180_000);
+    }
     if (!fs.existsSync(decompDir)) {
-      return { success: false, modifications, error: "فشل APKTool في تفكيك الملف: " + decompResult.stderr.slice(0, 200) };
+      if (javaAvail && apktJar) {
+        decompResult = runCmd(apkt, ["d", "-f", "-o", decompDir, inputPath], workDir, 180_000);
+      }
+      if (!fs.existsSync(decompDir)) {
+        return { success: false, modifications, error: "فشل APKTool في تفكيك الملف: " + decompResult.stderr.slice(0, 200) };
+      }
     }
     modifications.push("✅ تم تفكيك APK بنجاح باستخدام APKTool");
 
@@ -1238,10 +1270,16 @@ export async function cloneApp(
     }
 
     // ── PHASE 3: Rebuild ──
-    let buildResult = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 180_000);
+    const cloneBuildHelper = (args: string[]) => {
+      if (javaAvail && apktJar) {
+        return runCmd("java", ["-Xmx2G", "-jar", apktJar, ...args], workDir, 300_000);
+      }
+      return runCmd(apkt, args, workDir, 180_000);
+    };
+    let buildResult = cloneBuildHelper(["b", "--use-aapt2", "-o", outputApk, decompDir]);
     if (!fs.existsSync(outputApk)) {
       console.warn("[CloneApp] aapt2 build failed, retrying without --use-aapt2...");
-      buildResult = runCmd(apkt, ["b", "-o", outputApk, decompDir], workDir, 180_000);
+      buildResult = cloneBuildHelper(["b", "-o", outputApk, decompDir]);
       if (!fs.existsSync(outputApk)) {
         return { success: false, modifications, error: "فشل إعادة البناء (APKTool b): " + buildResult.stderr.slice(0, 300) };
       }
@@ -2581,66 +2619,43 @@ function memoryAwareDecompile(
 ): { success: boolean; details: string[]; error?: string } {
   const details: string[] = [];
   const apkt = findApkTool();
+  const apktJar = findApkToolJar();
   const javaAvail = isJavaAvailable();
 
   // Railway PaaS: Strict -Xmx2G cap to prevent OOM container crashes
   const RAILWAY_HEAP = "-Xmx2G";
 
+  // Helper: run apktool with java -jar (preferred for heap control) or fallback to wrapper
+  const runApktool = (extraArgs: string[], timeout: number) => {
+    if (javaAvail && apktJar) {
+      const r = runCmd("java", [RAILWAY_HEAP, "-jar", apktJar, ...extraArgs], workDir, timeout);
+      if (fs.existsSync(decompDir)) return r;
+      details.push("java -jar فشل، تراجع إلى wrapper...");
+    }
+    return runCmd(apkt, extraArgs, workDir, timeout);
+  };
+
   if (apkSizeMB < 100) {
     details.push(`APK < 100MB (${apkSizeMB.toFixed(1)} MB) — Railway safe mode`);
-    if (javaAvail) {
-      const r = runCmd("java", [RAILWAY_HEAP, "-jar", apkt, "d", "-f", "-o", decompDir, apkPath], workDir, 300_000);
-      if (!fs.existsSync(decompDir)) {
-        const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 300_000);
-        if (!fs.existsSync(decompDir)) {
-          return { success: false, details, error: "فشل APKTool: " + (r2.stderr || r.stderr).slice(0, 300) };
-        }
-        details.push("تراجع إلى الوضع المباشر");
-      }
-    } else {
-      const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 300_000);
-      if (!fs.existsSync(decompDir)) {
-        return { success: false, details, error: "فشل APKTool: " + r.stderr.slice(0, 300) };
-      }
+    const r = runApktool(["d", "-f", "-o", decompDir, apkPath], 300_000);
+    if (!fs.existsSync(decompDir)) {
+      return { success: false, details, error: "فشل APKTool: " + r.stderr.slice(0, 300) };
     }
   } else if (apkSizeMB < 200) {
     details.push(`APK 100-200MB (${apkSizeMB.toFixed(1)} MB) — Railway Xmx2G, 2 threads`);
-    if (javaAvail) {
-      const r = runCmd("java", [RAILWAY_HEAP, "-jar", apkt, "d", "-j2", "-f", "-o", decompDir, apkPath], workDir, 420_000);
+    const r = runApktool(["d", "-j2", "-f", "-o", decompDir, apkPath], 420_000);
+    if (!fs.existsSync(decompDir)) {
+      details.push("فشل j2، إعادة محاولة بـ thread واحد...");
+      const r2 = runApktool(["d", "-f", "-o", decompDir, apkPath], 420_000);
       if (!fs.existsSync(decompDir)) {
-        const r2 = runCmd("java", [RAILWAY_HEAP, "-jar", apkt, "d", "-f", "-o", decompDir, apkPath], workDir, 420_000);
-        if (!fs.existsSync(decompDir)) {
-          return { success: false, details, error: "فشل APKTool (j2 fallback): " + (r2.stderr || r.stderr).slice(0, 300) };
-        }
-        details.push("تراجع إلى thread واحد");
-      }
-    } else {
-      const r = runCmd(apkt, ["d", "-j2", "-f", "-o", decompDir, apkPath], workDir, 420_000);
-      if (!fs.existsSync(decompDir)) {
-        const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 420_000);
-        if (!fs.existsSync(decompDir)) {
-          return { success: false, details, error: "فشل APKTool (j2 fallback): " + (r2.stderr || r.stderr).slice(0, 300) };
-        }
-        details.push("تراجع إلى الوضع العادي بعد فشل j2");
+        return { success: false, details, error: "فشل APKTool (j2 fallback): " + (r2.stderr || r.stderr).slice(0, 300) };
       }
     }
   } else {
-    // 200MB+ APKs: Railway strict single-thread + Xmx2G
     details.push(`APK ${apkSizeMB >= 300 ? "300MB+" : "200-300MB"} (${apkSizeMB.toFixed(1)} MB) — Railway Xmx2G, 1 thread`);
-    if (javaAvail) {
-      const r = runCmd("java", [RAILWAY_HEAP, "-jar", apkt, "d", "-j1", "-f", "-o", decompDir, apkPath], workDir, 900_000);
-      if (!fs.existsSync(decompDir)) {
-        const r2 = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 900_000);
-        if (!fs.existsSync(decompDir)) {
-          return { success: false, details, error: `فشل APKTool (Xmx2G Railway): ` + (r2.stderr || r.stderr).slice(0, 300) };
-        }
-        details.push("تراجع إلى الوضع المباشر");
-      }
-    } else {
-      const r = runCmd(apkt, ["d", "-f", "-o", decompDir, apkPath], workDir, 900_000);
-      if (!fs.existsSync(decompDir)) {
-        return { success: false, details, error: "فشل APKTool: " + r.stderr.slice(0, 300) };
-      }
+    const r = runApktool(["d", "-j1", "-f", "-o", decompDir, apkPath], 900_000);
+    if (!fs.existsSync(decompDir)) {
+      return { success: false, details, error: "فشل APKTool (Xmx2G Railway): " + r.stderr.slice(0, 300) };
     }
   }
   details.push("تم تفكيك APK بنجاح (Railway PaaS optimized)");
@@ -2690,12 +2705,13 @@ export async function runFullAutoClone(
     try {
       // Decompile temporarily for pentest analysis (Railway-safe Xmx2G)
       const apkt = findApkTool();
+      const apktJar = findApkToolJar();
       const pentestDecompDir = path.join(workDir, "pentest_decompiled");
       const javaAvail = isJavaAvailable();
-      if (javaAvail) {
-        runCmd("java", ["-Xmx2G", "-jar", apkt, "d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
+      if (javaAvail && apktJar) {
+        runCmd("java", ["-Xmx2G", "-jar", apktJar, "d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
       }
-      if (!javaAvail || !fs.existsSync(pentestDecompDir)) {
+      if (!fs.existsSync(pentestDecompDir)) {
         runCmd(apkt, ["d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
       }
 
@@ -2904,19 +2920,21 @@ export async function runFullAutoClone(
 
     // Step 4.2: Rebuild (Railway-safe Xmx2G)
     const rebuildJava = isJavaAvailable();
+    const rebuildJar = findApkToolJar();
     let buildResult;
-    if (rebuildJava) {
-      buildResult = runCmd("java", ["-Xmx2G", "-jar", apkt, "b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
-    } else {
-      buildResult = runCmd(apkt, ["b", "--use-aapt2", "-o", outputApk, decompDir], workDir, 300_000);
-    }
+
+    // Helper to run apktool build with java -jar (preferred) or wrapper fallback
+    const runBuild = (args: string[]) => {
+      if (rebuildJava && rebuildJar) {
+        return runCmd("java", ["-Xmx2G", "-jar", rebuildJar, ...args], workDir, 300_000);
+      }
+      return runCmd(apkt, args, workDir, 300_000);
+    };
+
+    buildResult = runBuild(["b", "--use-aapt2", "-o", outputApk, decompDir]);
     if (!fs.existsSync(outputApk)) {
       p4Details.push("فشل aapt2، إعادة محاولة بدون --use-aapt2...");
-      if (rebuildJava) {
-        buildResult = runCmd("java", ["-Xmx2G", "-jar", apkt, "b", "-o", outputApk, decompDir], workDir, 300_000);
-      } else {
-        buildResult = runCmd(apkt, ["b", "-o", outputApk, decompDir], workDir, 300_000);
-      }
+      buildResult = runBuild(["b", "-o", outputApk, decompDir]);
       if (!fs.existsSync(outputApk)) {
         p4Details.push("فشل إعادة البناء: " + buildResult.stderr.slice(0, 300));
         phases.push({ phase: 4, name: "إعادة البناء والتوقيع", status: "failed", details: p4Details, duration: Date.now() - p4Start });
