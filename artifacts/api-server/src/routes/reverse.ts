@@ -463,8 +463,8 @@ router.get("/tools-status", async (_req: Request, res: Response) => {
     }
 
     let zipalign = false;
-    try { const { execSync } = require("child_process"); execSync("zipalign --version 2>&1", { timeout: 5000, stdio: "pipe" }); zipalign = true; } catch {
-      try { const fs = require("fs"); if (fs.existsSync("/home/runner/zipalign") || fs.existsSync("/usr/bin/zipalign")) zipalign = true; } catch {}
+    try { const { execSync } = require("child_process"); execSync("which zipalign", { timeout: 3000, stdio: "pipe" }); zipalign = true; } catch {
+      try { const fs = require("fs"); if (fs.existsSync("/usr/local/bin/zipalign") || fs.existsSync("/opt/android-sdk/build-tools/34.0.0/zipalign") || fs.existsSync("/home/runner/zipalign") || fs.existsSync("/usr/bin/zipalign")) zipalign = true; } catch {}
     }
 
     res.json({

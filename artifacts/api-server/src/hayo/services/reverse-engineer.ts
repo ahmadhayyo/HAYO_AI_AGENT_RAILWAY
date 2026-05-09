@@ -155,6 +155,11 @@ export function getToolStatusFlat(): Record<string, boolean | string | null> {
   const check = (cmd: string): boolean => {
     try { execSync(`${cmd} 2>&1`, { timeout: 5000, stdio: "pipe" }); return true; } catch { return false; }
   };
+  // Some tools (zipalign, aapt2) exit non-zero even for --version/help.
+  // Use 'which' to reliably detect if the binary exists on PATH.
+  const exists = (bin: string): boolean => {
+    try { execSync(`which ${bin}`, { timeout: 3000, stdio: "pipe" }); return true; } catch { return false; }
+  };
   const ver = (cmd: string): string | null => {
     try { return execSync(`${cmd} 2>&1`, { timeout: 5000, stdio: "pipe" }).toString().trim().split("\n")[0]; } catch { return null; }
   };
@@ -171,8 +176,8 @@ export function getToolStatusFlat(): Record<string, boolean | string | null> {
     jarsignerAvailable: check("jarsigner"),
     keytoolAvailable: check("keytool -help"),
     keystoreExists: fs.existsSync("/home/runner/debug.keystore"),
-    zipalignAvailable: check("zipalign --version"),
-    apksignerAvailable: check("apksigner --version"),
+    zipalignAvailable: exists("zipalign"),
+    apksignerAvailable: exists("apksigner") && check("apksigner --version"),
     wasm2watAvailable: check("wasm2wat --version"),
     readelfAvailable: check("readelf --version"),
     objdumpAvailable: check("objdump --version"),
