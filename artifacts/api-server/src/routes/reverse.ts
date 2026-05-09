@@ -1131,7 +1131,7 @@ router.get("/stream/sequential-pipeline", async (req: Request, res: Response) =>
   let cpResultData: any = null;
 
   // ════════════════════════════════════════════════════════════
-  // PHASE A: Deep Firebase Audit (4 layers)
+  // PHASE A: Deep Firebase Audit (12 layers + LIVE probes)
   // ════════════════════════════════════════════════════════════
   try {
     sseJSON(res, "phase", { phase: 1, name: "deep-firebase-audit", status: "running" });
@@ -1142,12 +1142,14 @@ router.get("/stream/sequential-pipeline", async (req: Request, res: Response) =>
     const editResult = await decompileFileForEdit(buf, fileName);
     sessionId = editResult.sessionId;
     sseSend(res, `[PHASE A] تم التفكيك — الجلسة: ${sessionId}`);
-    sseSend(res, "[PHASE A] تشغيل التدقيق العميق (4 طبقات)...");
+    sseSend(res, "[PHASE A] تشغيل التدقيق العميق (12 طبقة + فحص مباشر LIVE)...");
 
     dfbResultData = await extractFirebaseConfigDeep(sessionId);
     const cfgCount = dfbResultData?.summary?.totalConfigs || 0;
     const riskLevel = dfbResultData?.summary?.riskLevel || "none";
-    sseSend(res, `[PHASE A] اكتمل — ${cfgCount} إعدادات مكتشفة — مستوى الخطورة: ${riskLevel}`);
+    const liveVulns = dfbResultData?.summary?.liveVulnerabilities || 0;
+    const liveProbes = dfbResultData?.summary?.liveProbesRun || 0;
+    sseSend(res, `[PHASE A] اكتمل — ${cfgCount} إعدادات · ${liveProbes} فحص مباشر · ${liveVulns} ثغرات LIVE · مستوى الخطورة: ${riskLevel}`);
 
     if (dfbResultData?.layers) {
       for (const layer of dfbResultData.layers) {

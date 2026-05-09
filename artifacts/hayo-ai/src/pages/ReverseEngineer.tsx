@@ -1815,7 +1815,7 @@ export default function ReverseEngineer(){
               </div>
             </div>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
             <div className={`p-4 rounded-xl border text-center ${dfbResult.summary?.riskLevel==="critical"?"bg-red-500/10 border-red-500/40":dfbResult.summary?.riskLevel==="high"?"bg-orange-500/10 border-orange-500/40":"bg-cyan-500/10 border-cyan-500/30"}`}>
               <div className={`text-2xl font-black ${dfbResult.summary?.riskLevel==="critical"?"text-red-400":dfbResult.summary?.riskLevel==="high"?"text-orange-400":"text-cyan-400"}`}>{dfbResult.summary?.riskLevel?.toUpperCase()}</div>
               <div className="text-[10px] text-muted-foreground mt-1">مستوى الخطورة</div>
@@ -1832,16 +1832,44 @@ export default function ReverseEngineer(){
               <div className="text-3xl font-bold text-yellow-400">{dfbResult.summary?.databaseUrls?.length||0}</div>
               <div className="text-[10px] text-muted-foreground mt-1">عناوين قواعد البيانات</div>
             </div>
+            <div className="p-4 rounded-xl border bg-blue-500/10 border-blue-500/30 text-center">
+              <div className="text-3xl font-bold text-blue-400">{dfbResult.summary?.storageBuckets?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">Storage Buckets</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-purple-500/10 border-purple-500/30 text-center">
+              <div className="text-3xl font-bold text-purple-400">{dfbResult.summary?.serviceAccounts||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">Service Accounts</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-cyan-500/10 border-cyan-500/30 text-center">
+              <div className="text-3xl font-bold text-cyan-400">{dfbResult.summary?.liveProbesRun||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">فحوصات LIVE</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${(dfbResult.summary?.liveVulnerabilities||0)>0?"bg-red-500/10 border-red-500/40":"bg-emerald-500/10 border-emerald-500/30"}`}>
+              <div className={`text-3xl font-bold ${(dfbResult.summary?.liveVulnerabilities||0)>0?"text-red-400":"text-emerald-400"}`}>{dfbResult.summary?.liveVulnerabilities||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">ثغرات مباشرة</div>
+            </div>
           </div>
           {dfbResult.summary?.projectIds?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-orange-500/20 rounded-xl px-4 py-3"><span className="text-xs text-orange-300 font-semibold">Firebase Project IDs:</span>{dfbResult.summary.projectIds.map((pid:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/30 text-orange-200 font-mono">{pid}</code>)}</div>}
           {dfbResult.summary?.apiKeys?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-red-500/20 rounded-xl px-4 py-3"><span className="text-xs text-red-300 font-semibold">API Keys:</span>{dfbResult.summary.apiKeys.map((k:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-red-500/10 border border-red-500/30 text-red-200 font-mono">{k}</code>)}</div>}
           {dfbResult.summary?.databaseUrls?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-yellow-500/20 rounded-xl px-4 py-3"><span className="text-xs text-yellow-300 font-semibold">Database URLs:</span>{dfbResult.summary.databaseUrls.map((u:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-yellow-500/10 border border-yellow-500/30 text-yellow-200 font-mono">{u}</code>)}</div>}
           {dfbResult.summary?.riskDetails?.length>0&&<div className="bg-black/30 rounded-xl p-4 space-y-1">{dfbResult.summary.riskDetails.map((d:string,i:number)=><div key={i} className="text-[11px] text-orange-200/80">{d}</div>)}</div>}
+          {/* Live Probes Section */}
+          {dfbResult.liveProbes?.length>0&&<div className="bg-gradient-to-r from-red-900/30 to-purple-900/30 border border-red-500/30 rounded-xl p-4 space-y-3">
+            <div className="text-sm font-bold text-red-300 flex items-center gap-2"><Shield className="w-4 h-4"/>نتائج الفحص المباشر (LIVE Probes) — {dfbResult.liveProbes.length} اختبار</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{dfbResult.liveProbes.map((probe:any,i:number)=><div key={i} className={`rounded-lg border p-3 ${probe.accessible?"border-red-500/40 bg-red-500/10":"border-emerald-500/20 bg-emerald-500/5"}`}>
+              <div className="flex items-center justify-between"><span className="text-[11px] font-semibold text-white">{probe.service}</span><span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${probe.accessible?"bg-red-500/30 text-red-300":"bg-emerald-500/20 text-emerald-300"}`}>{probe.accessible?"مكشوف":"محمي"}</span></div>
+              <div className="text-[10px] text-muted-foreground mt-1 font-mono">{probe.url}</div>
+              <div className="text-[10px] mt-1 text-orange-200/80">{probe.details}</div>
+              {probe.data?.keys&&<div className="mt-1 flex flex-wrap gap-1">{probe.data.keys.slice(0,8).map((k:string,ki:number)=><code key={ki} className="text-[9px] px-1.5 py-0.5 rounded bg-black/40 border border-red-500/20 text-red-200">{k}</code>)}</div>}
+              {probe.data?.files&&<div className="mt-1 flex flex-wrap gap-1">{probe.data.files.slice(0,5).map((f:string,fi:number)=><code key={fi} className="text-[9px] px-1.5 py-0.5 rounded bg-black/40 border border-blue-500/20 text-blue-200">{f}</code>)}</div>}
+            </div>)}</div>
+          </div>}
+
           <div className="space-y-3">
-            <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><Layers className="w-4 h-4"/>طبقات الاستخراج (4 طبقات)</div>
-            {dfbResult.layers?.map((layer:any)=><div key={layer.layer} className={`rounded-xl border p-4 ${layer.status==="found"?"border-orange-500/30 bg-orange-500/5":layer.status==="partial"?"border-yellow-500/20 bg-yellow-500/5":"border-border/20 bg-muted/5"}`}>
-              <div className="flex items-center justify-between"><span className="text-sm font-semibold text-orange-200">{layer.layer}. {layer.name}</span><span className={`text-[10px] px-2 py-0.5 rounded-full ${layer.status==="found"?"bg-orange-500/20 text-orange-300":layer.status==="partial"?"bg-yellow-500/20 text-yellow-300":"bg-muted/20 text-muted-foreground"}`}>{layer.status==="found"?"تم الاكتشاف":layer.status==="partial"?"جزئي":"فارغ"} ({layer.filesScanned} ملف)</span></div>
-              {layer.findings?.length>0&&<div className="mt-2 bg-black/20 rounded-lg p-3 max-h-48 overflow-y-auto space-y-0.5">{layer.findings.map((f:string,fi:number)=><div key={fi} className="text-[10px] font-mono text-muted-foreground">{f}</div>)}</div>}
+            <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><Layers className="w-4 h-4"/>طبقات الاستخراج والفحص ({dfbResult.layers?.length||12} طبقة)</div>
+            {dfbResult.layers?.map((layer:any)=><div key={layer.layer} className={`rounded-xl border p-4 ${layer.status==="found"?(layer.layer>=8?"border-red-500/30 bg-red-500/5":"border-orange-500/30 bg-orange-500/5"):layer.status==="partial"?"border-yellow-500/20 bg-yellow-500/5":"border-border/20 bg-muted/5"}`}>
+              <div className="flex items-center justify-between"><span className={`text-sm font-semibold ${layer.layer>=8?"text-red-200":"text-orange-200"}`}>{layer.layer}. {layer.name}</span><span className={`text-[10px] px-2 py-0.5 rounded-full ${layer.status==="found"?(layer.layer>=8?"bg-red-500/20 text-red-300":"bg-orange-500/20 text-orange-300"):layer.status==="partial"?"bg-yellow-500/20 text-yellow-300":"bg-muted/20 text-muted-foreground"}`}>{layer.status==="found"?"تم الاكتشاف":layer.status==="partial"?"جزئي":"فارغ"} ({layer.filesScanned} ملف)</span></div>
+              {layer.findings?.length>0&&<div className="mt-2 bg-black/20 rounded-lg p-3 max-h-48 overflow-y-auto space-y-0.5">{layer.findings.map((f:string,fi:number)=><div key={fi} className={`text-[10px] font-mono ${f.includes("🔴")||f.includes("💀")?"text-red-300":f.includes("✅")||f.includes("🛡️")?"text-emerald-300":f.includes("⛓️")?"text-yellow-300":"text-muted-foreground"}`}>{f}</div>)}</div>}
             </div>)}
           </div>
           {dfbResult.configs?.length>0&&<div className="space-y-2">

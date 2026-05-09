@@ -3212,6 +3212,14 @@ export interface FirebaseConfig {
   confidence: "high" | "medium" | "low";
 }
 
+export interface LiveProbeResult {
+  service: string;
+  url: string;
+  accessible: boolean;
+  details: string;
+  data?: any;
+}
+
 export interface DeepFirebaseResult {
   configs: FirebaseConfig[];
   layers: {
@@ -3221,11 +3229,16 @@ export interface DeepFirebaseResult {
     findings: string[];
     filesScanned: number;
   }[];
+  liveProbes?: LiveProbeResult[];
   summary: {
     totalConfigs: number;
     projectIds: string[];
     apiKeys: string[];
     databaseUrls: string[];
+    storageBuckets: string[];
+    serviceAccounts: number;
+    liveProbesRun: number;
+    liveVulnerabilities: number;
     riskLevel: "critical" | "high" | "medium" | "low" | "none";
     riskDetails: string[];
   };
@@ -3672,37 +3685,648 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     layer4Findings.push("ℹ️ لم يتم العثور على إعدادات Firebase مشفرة بـ Base64/Hex");
   }
 
+  // ─── LAYER 5: Service Account & OAuth Credential Detection ──
+  const layer5Findings: string[] = [];
+  let layer5Files = 0;
+  let serviceAccountCount = 0;
+
+  const jsonFiles = allFiles.filter(f => f.endsWith(".json") || f.endsWith(".credentials") || f.endsWith(".keystore"));
+  for (const jf of jsonFiles.slice(0, 300)) {
+    layer5Files++;
+    const content = readText(jf, 300_000);
+    if (!content) continue;
+    const rel = relPath(jf);
+
+    // GCP Service Account JSON (admin-level access!)
+    if (content.includes('"type"') && content.includes("service_account")) {
+      try {
+        const sa = JSON.parse(content);
+        if (sa.type === "service_account" && sa.project_id) {
+          serviceAccountCount++;
+          layer5Findings.push(`🔴 SERVICE ACCOUNT مكتشف في ${rel} — وصول admin كامل!`);
+          layer5Findings.push(`   📦 Project: ${sa.project_id}`);
+          layer5Findings.push(`   📧 Email: ${sa.client_email || "?"}`);
+          layer5Findings.push(`   🔑 Key ID: ${(sa.private_key_id || "").slice(0, 12)}...`);
+          addConfig({
+            projectId: sa.project_id,
+            source: `Service Account: ${rel}`,
+            layer: 5,
+            confidence: "high",
+          });
+        }
+      } catch { /* not valid JSON */ }
+    }
+
+    // OAuth client secrets
+    const oauthSecretMatch = content.match(/"client_secret"\s*:\s*"([^"]+)"/);
+    if (oauthSecretMatch) {
+      layer5Findings.push(`🟡 OAuth Client Secret في ${rel}: ${oauthSecretMatch[1].slice(0, 12)}...`);
+    }
+
+    // Refresh tokens
+    const refreshMatch = content.match(/"refresh_token"\s*:\s*"([^"]{20,})"/);
+    if (refreshMatch) {
+      layer5Findings.push(`🔴 Refresh Token في ${rel}: ${refreshMatch[1].slice(0, 20)}...`);
+    }
+  }
+
+  // Scan for .p12 / .pfx / .pem certificate files
+  const certFiles = allFiles.filter(f => {
+    const ext = path.extname(f).toLowerCase();
+    return ext === ".p12" || ext === ".pfx" || ext === ".pem" || ext === ".key";
+  });
+  for (const cf of certFiles) {
+    layer5Files++;
+    layer5Findings.push(`🔴 ملف شهادة مكتشف: ${relPath(cf)} (${path.extname(cf)})`);
+  }
+
+  // Scan smali/code for OAuth tokens and GCP credentials patterns
+  const oauthPatterns = [
+    { name: "OAuth Access Token", regex: /ya29\.[A-Za-z0-9\-_]{30,}/g },
+    { name: "GCP Private Key", regex: /-----BEGIN (?:RSA )?PRIVATE KEY-----/g },
+    { name: "Firebase Admin SDK", regex: /firebase-adminsdk[^"']{0,60}/g },
+  ];
+  for (const fp of smaliAndCodeFiles.slice(0, 500)) {
+    layer5Files++;
+    const content = readText(fp, 200_000);
+    if (!content) continue;
+    for (const pat of oauthPatterns) {
+      pat.regex.lastIndex = 0;
+      const m = pat.regex.exec(content);
+      if (m) {
+        layer5Findings.push(`🔑 ${pat.name} في ${relPath(fp)}: ${m[0].slice(0, 40)}...`);
+      }
+    }
+  }
+
+  if (layer5Findings.length === 0) {
+    layer5Findings.push("ℹ️ لم يتم العثور على Service Accounts أو OAuth credentials");
+  }
+
+  // ─── LAYER 6: SharedPreferences & Cache Analysis ────────────
+  const layer6Findings: string[] = [];
+  let layer6Files = 0;
+
+  // Scan shared_prefs XML files
+  const sharedPrefFiles = allFiles.filter(f =>
+    f.includes("shared_prefs") || f.includes("SharedPreferences") ||
+    (f.endsWith(".xml") && (f.includes("prefs") || f.includes("config") || f.includes("settings")))
+  );
+  const tokenPatterns = [
+    { name: "Auth Token", regex: /(?:auth_token|access_token|jwt_token|bearer_token|session_token|user_token|id_token|firebase_token)["']?\s*(?:>|value=["'])([^"'<]{10,})/gi },
+    { name: "Refresh Token", regex: /(?:refresh_token|refresh)["']?\s*(?:>|value=["'])([^"'<]{10,})/gi },
+    { name: "Firebase UID", regex: /(?:firebase_uid|user_id|uid)["']?\s*(?:>|value=["'])([A-Za-z0-9]{20,})/gi },
+    { name: "API Key (cached)", regex: /(?:api_key|apikey|api\.key)["']?\s*(?:>|value=["'])([^"'<]{10,})/gi },
+    { name: "Session Cookie", regex: /(?:session_id|cookie|csrf|xsrf)["']?\s*(?:>|value=["'])([^"'<]{10,})/gi },
+  ];
+
+  for (const spf of sharedPrefFiles.slice(0, 200)) {
+    layer6Files++;
+    const content = readText(spf, 100_000);
+    if (!content) continue;
+    const rel = relPath(spf);
+    for (const pat of tokenPatterns) {
+      pat.regex.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = pat.regex.exec(content)) !== null) {
+        layer6Findings.push(`🔓 ${pat.name} في ${rel}: ${(m[1] || m[0]).slice(0, 30)}...`);
+      }
+    }
+  }
+
+  // Scan for SQLite database files
+  const dbFiles = allFiles.filter(f => {
+    const ext = path.extname(f).toLowerCase();
+    return ext === ".db" || ext === ".sqlite" || ext === ".sqlite3";
+  });
+  for (const dbf of dbFiles.slice(0, 20)) {
+    layer6Files++;
+    try {
+      const buf = fs.readFileSync(dbf);
+      const strings = extractPrintableStrings(buf, 15);
+      const rel = relPath(dbf);
+      let foundSensitive = false;
+      for (const s of strings) {
+        if (s.match(/AIza[0-9A-Za-z\-_]{35}/) || s.match(/eyJ[A-Za-z0-9\-_=]+\.eyJ/) ||
+            s.match(/https?:\/\/[a-z0-9\-]+\.firebaseio\.com/i)) {
+          layer6Findings.push(`🔓 بيانات حساسة في DB [${rel}]: ${s.slice(0, 60)}...`);
+          foundSensitive = true;
+        }
+      }
+      if (!foundSensitive && strings.length > 0) {
+        layer6Findings.push(`📂 قاعدة بيانات محلية: ${rel} (${strings.length} سلسلة نصية)`);
+      }
+    } catch { /* can't read DB */ }
+  }
+
+  // Scan for WebView cache / cookies
+  const cacheFiles = allFiles.filter(f =>
+    f.includes("cache") || f.includes("webview") || f.includes("cookies") || f.includes("localStorage")
+  );
+  for (const cf of cacheFiles.slice(0, 30)) {
+    layer6Files++;
+    layer6Findings.push(`📁 ملف cache/cookies: ${relPath(cf)}`);
+  }
+
+  if (layer6Findings.length === 0) {
+    layer6Findings.push("ℹ️ لم يتم العثور على بيانات حساسة في SharedPreferences/Cache");
+  }
+
+  // ─── LAYER 7: Native Library Deep Scan (.so) ───────────────
+  const layer7Findings: string[] = [];
+  let layer7Files = 0;
+
+  const soFiles = allFiles.filter(f => path.extname(f).toLowerCase() === ".so");
+  for (const sof of soFiles.slice(0, 40)) {
+    layer7Files++;
+    try {
+      const buf = fs.readFileSync(sof);
+      const rel = relPath(sof);
+      // Extended string extraction with lower threshold for deeper coverage
+      const strings = extractPrintableStrings(buf, 8);
+
+      // Firebase patterns in native code
+      for (const s of strings) {
+        const fbUrl = s.match(/https?:\/\/([a-z0-9\-]+)\.firebaseio\.com/i);
+        if (fbUrl) {
+          layer7Findings.push(`🔥 Firebase URL في native [${rel}]: ${fbUrl[0]}`);
+          addConfig({
+            projectId: fbUrl[1].replace(/-default-rtdb$/, ""),
+            databaseUrl: fbUrl[0],
+            source: `Native library: ${rel}`,
+            layer: 7,
+            confidence: "medium",
+          });
+        }
+        const apiKey = s.match(/AIza[0-9A-Za-z\-_]{35}/);
+        if (apiKey) {
+          layer7Findings.push(`🔑 API Key في native [${rel}]: ${apiKey[0]}`);
+          addConfig({ apiKey: apiKey[0], source: `Native library: ${rel}`, layer: 7, confidence: "medium" });
+        }
+        const bucket = s.match(/([a-z0-9\-]+)\.appspot\.com/i);
+        if (bucket) {
+          layer7Findings.push(`📁 Storage Bucket في native [${rel}]: ${bucket[0]}`);
+        }
+      }
+
+      // XOR-encoded string detection (common obfuscation)
+      const xorKeys = [0x5A, 0xAA, 0xFF, 0x42, 0x13, 0x37];
+      for (const xorKey of xorKeys) {
+        const decoded = Buffer.alloc(Math.min(buf.length, 2_000_000));
+        for (let i = 0; i < decoded.length; i++) decoded[i] = buf[i] ^ xorKey;
+        const xorStrings = extractPrintableStrings(decoded, 15);
+        for (const s of xorStrings) {
+          if (s.match(/firebaseio\.com|appspot\.com|AIza[0-9A-Za-z]{10}/i)) {
+            layer7Findings.push(`🔓 XOR-decoded (key=0x${xorKey.toString(16)}) في [${rel}]: ${s.slice(0, 60)}`);
+            const xorFbUrl = s.match(/https?:\/\/([a-z0-9\-]+)\.firebaseio\.com/i);
+            if (xorFbUrl) {
+              addConfig({
+                projectId: xorFbUrl[1].replace(/-default-rtdb$/, ""),
+                databaseUrl: xorFbUrl[0],
+                source: `XOR-decoded native: ${rel}`,
+                layer: 7,
+                confidence: "low",
+              });
+            }
+          }
+        }
+      }
+
+      // Detect JNI bridge patterns
+      const jniPatterns = strings.filter(s =>
+        s.includes("getFirebaseConfig") || s.includes("getApiKey") ||
+        s.includes("getDatabaseUrl") || s.includes("Firebase") ||
+        s.includes("google_app_id") || s.includes("project_info")
+      );
+      for (const jp of jniPatterns.slice(0, 5)) {
+        layer7Findings.push(`🔗 JNI/Native bridge pattern في [${rel}]: ${jp.slice(0, 50)}`);
+      }
+
+      // Certificate pinning detection
+      const pinPatterns = strings.filter(s =>
+        s.includes("sha256/") || s.includes("CertificatePinner") ||
+        s.includes("TrustManager") || s.includes("X509") ||
+        s.includes("ssl_pinning") || s.includes("certificate_transparency")
+      );
+      if (pinPatterns.length > 0) {
+        layer7Findings.push(`🛡️ Certificate Pinning مكتشف في [${rel}] (${pinPatterns.length} أنماط)`);
+      }
+    } catch {
+      layer7Findings.push(`⚠️ فشل قراءة المكتبة: ${relPath(sof)}`);
+    }
+  }
+
+  if (layer7Findings.length === 0) {
+    layer7Findings.push("ℹ️ لم يتم العثور على إعدادات Firebase في المكتبات الأصلية (.so)");
+  }
+
+  // ─── LAYER 8-11: LIVE Firebase Probes ─────────────────────────
+  // These layers perform actual HTTP requests to test Firebase service security
+  const liveProbes: LiveProbeResult[] = [];
+  const layer8Findings: string[] = [];
+  let layer8Files = 0;
+  const layer9Findings: string[] = [];
+  let layer9Files = 0;
+  const layer10Findings: string[] = [];
+  let layer10Files = 0;
+  const layer11Findings: string[] = [];
+  let layer11Files = 0;
+
+  // Collect all unique Firebase resources for live probing
+  const allProjectIds = [...new Set(configs.map(c => c.projectId).filter(Boolean))];
+  const allApiKeysArr = [...new Set(configs.map(c => c.apiKey).filter(Boolean))];
+  const allDbUrls = [...new Set(configs.map(c => c.databaseUrl).filter(Boolean))];
+  const allBuckets = [...new Set(configs.map(c => c.storageBucket).filter(Boolean))];
+  // Also derive potential DB URLs from project IDs
+  for (const pid of allProjectIds) {
+    const derivedUrl = `https://${pid}-default-rtdb.firebaseio.com`;
+    if (!allDbUrls.includes(derivedUrl)) allDbUrls.push(derivedUrl);
+  }
+  // Derive buckets from project IDs
+  for (const pid of allProjectIds) {
+    const derivedBucket = `${pid}.appspot.com`;
+    if (!allBuckets.includes(derivedBucket) && !allBuckets.some(b => b.includes(pid))) {
+      allBuckets.push(derivedBucket);
+    }
+  }
+
+  async function safeFetch(url: string, options?: RequestInit & { timeout?: number }): Promise<{ ok: boolean; status: number; text: string; json?: any }> {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), options?.timeout || 8000);
+      const resp = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timeout);
+      const text = await resp.text();
+      let json: any;
+      try { json = JSON.parse(text); } catch { /* not JSON */ }
+      return { ok: resp.ok, status: resp.status, text: text.slice(0, 5000), json };
+    } catch (e: any) {
+      return { ok: false, status: 0, text: e.message || "timeout/network error" };
+    }
+  }
+
+  // ─── LAYER 8: Firebase RTDB Security Rules Probe ────────────
+  for (const dbUrl of allDbUrls.slice(0, 5)) {
+    layer8Files++;
+    // Test open read access
+    const readResult = await safeFetch(`${dbUrl}/.json?shallow=true`);
+    if (readResult.ok && readResult.json && typeof readResult.json === "object" && readResult.json !== null) {
+      const keyCount = Object.keys(readResult.json).length;
+      layer8Findings.push(`🔴 RTDB قابلة للقراءة بدون مصادقة! ${dbUrl} — ${keyCount} مفتاح رئيسي`);
+      liveProbes.push({ service: "RTDB Read", url: dbUrl, accessible: true, details: `${keyCount} root keys exposed`, data: { keys: Object.keys(readResult.json).slice(0, 20) } });
+
+      // Try full read (limited)
+      const fullRead = await safeFetch(`${dbUrl}/.json?limitToFirst=5`);
+      if (fullRead.ok && fullRead.json) {
+        const sampleStr = JSON.stringify(fullRead.json).slice(0, 200);
+        layer8Findings.push(`   📥 عينة بيانات: ${sampleStr}...`);
+      }
+    } else if (readResult.status === 401 || readResult.text.includes("Permission denied")) {
+      layer8Findings.push(`✅ RTDB محمية (قراءة مرفوضة): ${dbUrl}`);
+      liveProbes.push({ service: "RTDB Read", url: dbUrl, accessible: false, details: "Permission denied — properly secured" });
+    } else if (readResult.status === 404) {
+      layer8Findings.push(`ℹ️ RTDB غير موجودة: ${dbUrl}`);
+      liveProbes.push({ service: "RTDB Read", url: dbUrl, accessible: false, details: "Database not found (404)" });
+    } else {
+      layer8Findings.push(`⚠️ RTDB استجابة غير متوقعة (${readResult.status}): ${dbUrl}`);
+      liveProbes.push({ service: "RTDB Read", url: dbUrl, accessible: false, details: `Status ${readResult.status}: ${readResult.text.slice(0, 100)}` });
+    }
+
+    // Test write access (safe: write then delete)
+    const testPath = `${dbUrl}/_hayo_security_probe_${Date.now()}.json`;
+    const writeResult = await safeFetch(testPath, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _probe: true, ts: Date.now() }),
+    });
+    if (writeResult.ok) {
+      layer8Findings.push(`🔴 RTDB قابلة للكتابة بدون مصادقة! ${dbUrl}`);
+      liveProbes.push({ service: "RTDB Write", url: dbUrl, accessible: true, details: "CRITICAL — unauthenticated write access" });
+      // Clean up immediately
+      await safeFetch(testPath, { method: "DELETE" });
+    } else {
+      layer8Findings.push(`✅ RTDB محمية (كتابة مرفوضة): ${dbUrl}`);
+      liveProbes.push({ service: "RTDB Write", url: dbUrl, accessible: false, details: "Write denied — properly secured" });
+    }
+  }
+
+  if (allDbUrls.length === 0) {
+    layer8Findings.push("ℹ️ لا توجد عناوين RTDB لاختبارها");
+  }
+
+  // ─── LAYER 9: Cloud Storage Bucket Access Test ──────────────
+  for (const bucket of allBuckets.slice(0, 5)) {
+    layer9Files++;
+    const bucketClean = bucket.replace(/^gs:\/\//, "");
+    const listUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketClean}/o?maxResults=20`;
+    const listResult = await safeFetch(listUrl);
+
+    if (listResult.ok && listResult.json) {
+      const items = listResult.json.items || [];
+      const fileCount = items.length;
+      const totalItems = listResult.json.prefixes?.length || 0;
+      layer9Findings.push(`🔴 Storage Bucket مفتوح! ${bucketClean} — ${fileCount} ملف مكشوف`);
+      liveProbes.push({ service: "Storage List", url: bucketClean, accessible: true, details: `${fileCount} files exposed`, data: { files: items.slice(0, 10).map((i: any) => i.name) } });
+
+      // List some file names
+      for (const item of items.slice(0, 5)) {
+        const name = item.name || "?";
+        const size = item.size ? `${(parseInt(item.size) / 1024).toFixed(1)} KB` : "?";
+        layer9Findings.push(`   📄 ${name} (${size})`);
+      }
+      if (fileCount > 5) layer9Findings.push(`   ... و ${fileCount - 5} ملفات أخرى`);
+    } else if (listResult.status === 403 || listResult.status === 401) {
+      layer9Findings.push(`✅ Storage Bucket محمي: ${bucketClean}`);
+      liveProbes.push({ service: "Storage List", url: bucketClean, accessible: false, details: "Access denied — properly secured" });
+    } else if (listResult.status === 404) {
+      layer9Findings.push(`ℹ️ Storage Bucket غير موجود: ${bucketClean}`);
+      liveProbes.push({ service: "Storage List", url: bucketClean, accessible: false, details: "Bucket not found (404)" });
+    } else {
+      layer9Findings.push(`⚠️ Storage استجابة (${listResult.status}): ${bucketClean} — ${listResult.text.slice(0, 80)}`);
+      liveProbes.push({ service: "Storage List", url: bucketClean, accessible: false, details: `Status ${listResult.status}` });
+    }
+  }
+
+  if (allBuckets.length === 0) {
+    layer9Findings.push("ℹ️ لا توجد Storage Buckets لاختبارها");
+  }
+
+  // ─── LAYER 10: Firebase Auth Configuration Probe ────────────
+  for (const apiKey of allApiKeysArr.slice(0, 3)) {
+    layer10Files++;
+
+    // Test anonymous auth signup
+    const anonResult = await safeFetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ returnSecureToken: true }) },
+    );
+    if (anonResult.ok && anonResult.json?.idToken) {
+      layer10Findings.push(`🔴 Anonymous Auth مفعّل! يمكن إنشاء حسابات مجهولة بـ API Key: ${apiKey.slice(0, 15)}...`);
+      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: true, details: "Anonymous signup enabled — tokens can be generated" });
+    } else if (anonResult.json?.error?.message === "ADMIN_ONLY_OPERATION") {
+      layer10Findings.push(`✅ Anonymous Auth معطّل: ${apiKey.slice(0, 15)}...`);
+      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: false, details: "Anonymous auth disabled" });
+    } else {
+      const errMsg = anonResult.json?.error?.message || anonResult.text.slice(0, 80);
+      layer10Findings.push(`⚠️ Anonymous Auth رد: ${errMsg}`);
+      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: false, details: errMsg });
+    }
+
+    // Test email enumeration (check if createAuthUri reveals registered emails)
+    const emailProbe = await safeFetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ identifier: "test@probe-firebase-audit.com", continueUri: "https://localhost" }) },
+    );
+    if (emailProbe.ok && emailProbe.json) {
+      const providers = emailProbe.json.allProviders || emailProbe.json.signinMethods || [];
+      if (emailProbe.json.registered !== undefined) {
+        layer10Findings.push(`🟡 Email Enumeration ممكن — يمكن معرفة إذا كان البريد مسجلاً`);
+        liveProbes.push({ service: "Email Enumeration", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: true, details: "Email enumeration possible" });
+      } else {
+        layer10Findings.push(`✅ Email Enumeration محمي`);
+        liveProbes.push({ service: "Email Enumeration", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: false, details: "Email enumeration protected" });
+      }
+      if (providers.length > 0) {
+        layer10Findings.push(`📋 Auth Providers مكتشفة: ${providers.join(", ")}`);
+      }
+    }
+
+    // Test unauthorized email/password signup
+    const signupProbe = await safeFetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: `probe-${Date.now()}@firebase-audit.test`, password: "ProbeTest123!", returnSecureToken: true }) },
+    );
+    if (signupProbe.ok && signupProbe.json?.idToken) {
+      layer10Findings.push(`🔴 تسجيل حسابات بريد إلكتروني مفتوح بدون قيود!`);
+      liveProbes.push({ service: "Email Signup", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: true, details: "CRITICAL — open email/password signup" });
+    } else {
+      const errMsg = signupProbe.json?.error?.message || "";
+      if (errMsg.includes("EMAIL_EXISTS") || errMsg.includes("OPERATION_NOT_ALLOWED")) {
+        layer10Findings.push(`✅ تسجيل البريد الإلكتروني محمي: ${errMsg}`);
+      } else {
+        layer10Findings.push(`⚠️ Signup probe: ${errMsg || signupProbe.text.slice(0, 60)}`);
+      }
+      liveProbes.push({ service: "Email Signup", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: false, details: errMsg || "signup restricted" });
+    }
+  }
+
+  if (allApiKeysArr.length === 0) {
+    layer10Findings.push("ℹ️ لا توجد API Keys لاختبار المصادقة");
+  }
+
+  // ─── LAYER 11: Remote Config & Cloud Functions Discovery ────
+  for (const pid of allProjectIds.slice(0, 3)) {
+    layer11Files++;
+
+    // Test Remote Config access (requires OAuth, but some misconfigs expose it)
+    // Use the client-side fetch endpoint instead
+    for (const apiKey of allApiKeysArr.slice(0, 1)) {
+      const rcUrl = `https://firebaseremoteconfig.googleapis.com/v1/projects/${pid}/namespaces/firebase:fetch?key=${apiKey}`;
+      const rcResult = await safeFetch(rcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ appId: configs.find(c => c.appId)?.appId || "", appInstanceId: "audit-probe" }),
+      });
+      if (rcResult.ok && rcResult.json) {
+        const entries = rcResult.json.entries ? Object.keys(rcResult.json.entries) : [];
+        if (entries.length > 0) {
+          layer11Findings.push(`🔴 Remote Config مكشوف! ${pid} — ${entries.length} مفتاح`);
+          for (const key of entries.slice(0, 10)) {
+            const val = rcResult.json.entries[key];
+            const preview = typeof val === "string" ? val.slice(0, 60) : JSON.stringify(val).slice(0, 60);
+            layer11Findings.push(`   🔧 ${key}: ${preview}`);
+          }
+          liveProbes.push({ service: "Remote Config", url: pid, accessible: true, details: `${entries.length} config entries exposed`, data: { keys: entries.slice(0, 20) } });
+        } else {
+          layer11Findings.push(`✅ Remote Config فارغ أو محمي: ${pid}`);
+          liveProbes.push({ service: "Remote Config", url: pid, accessible: false, details: "No entries or access denied" });
+        }
+      } else {
+        layer11Findings.push(`ℹ️ Remote Config غير متاح: ${pid} (${rcResult.status})`);
+        liveProbes.push({ service: "Remote Config", url: pid, accessible: false, details: `Status ${rcResult.status}` });
+      }
+    }
+  }
+
+  // Discover Cloud Functions URLs from code
+  const cfUrlRegex = /https:\/\/(?:us-central1|europe-west1|asia-east1|us-east1|us-west1)-([a-z0-9\-]+)\.cloudfunctions\.net\/([a-zA-Z0-9_\-]+)/g;
+  const discoveredFunctions: Array<{ project: string; name: string; url: string }> = [];
+  for (const fp of smaliAndCodeFiles.slice(0, 500)) {
+    const content = readText(fp, 200_000);
+    if (!content) continue;
+    cfUrlRegex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = cfUrlRegex.exec(content)) !== null) {
+      const fn = { project: m[1], name: m[2], url: m[0] };
+      if (!discoveredFunctions.some(f => f.url === fn.url)) {
+        discoveredFunctions.push(fn);
+        layer11Findings.push(`☁️ Cloud Function مكتشفة: ${fn.url}`);
+      }
+    }
+  }
+
+  // Probe discovered Cloud Functions for unauthenticated access
+  for (const fn of discoveredFunctions.slice(0, 10)) {
+    layer11Files++;
+    const fnResult = await safeFetch(fn.url, { timeout: 5000 });
+    if (fnResult.ok || (fnResult.status >= 200 && fnResult.status < 400)) {
+      layer11Findings.push(`🔴 Cloud Function مفتوحة بدون مصادقة! ${fn.name} → ${fnResult.status}`);
+      liveProbes.push({ service: "Cloud Function", url: fn.url, accessible: true, details: `Status ${fnResult.status} — unauthenticated access` });
+    } else if (fnResult.status === 403 || fnResult.status === 401) {
+      layer11Findings.push(`✅ Cloud Function محمية: ${fn.name}`);
+      liveProbes.push({ service: "Cloud Function", url: fn.url, accessible: false, details: "Auth required" });
+    } else {
+      layer11Findings.push(`⚠️ Cloud Function (${fnResult.status}): ${fn.name}`);
+      liveProbes.push({ service: "Cloud Function", url: fn.url, accessible: false, details: `Status ${fnResult.status}` });
+    }
+  }
+
+  // Detect Firebase Hosting URLs
+  const hostingRegex = /https:\/\/([a-z0-9\-]+)\.web\.app/gi;
+  const hostingRegex2 = /https:\/\/([a-z0-9\-]+)\.firebaseapp\.com/gi;
+  for (const fp of smaliAndCodeFiles.slice(0, 200)) {
+    const content = readText(fp, 100_000);
+    if (!content) continue;
+    hostingRegex.lastIndex = 0;
+    hostingRegex2.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = hostingRegex.exec(content)) !== null) {
+      layer11Findings.push(`🌐 Firebase Hosting: ${m[0]}`);
+    }
+    while ((m = hostingRegex2.exec(content)) !== null) {
+      if (!m[0].includes("firebaseapp.com/")) {
+        layer11Findings.push(`🌐 Firebase App URL: ${m[0]}`);
+      }
+    }
+  }
+
+  if (layer11Findings.length === 0) {
+    layer11Findings.push("ℹ️ لم يتم العثور على Remote Config أو Cloud Functions");
+  }
+
+  // ─── LAYER 12: Cross-Reference & Risk Correlation Engine ────
+  const layer12Findings: string[] = [];
+  let layer12Files = 0;
+  layer12Files = configs.length + liveProbes.length;
+
+  // Build vulnerability chains
+  const vulnerableRtdb = liveProbes.filter(p => p.service.startsWith("RTDB") && p.accessible);
+  const vulnerableStorage = liveProbes.filter(p => p.service === "Storage List" && p.accessible);
+  const vulnerableAuth = liveProbes.filter(p => (p.service === "Anonymous Auth" || p.service === "Email Signup") && p.accessible);
+  const vulnerableConfig = liveProbes.filter(p => p.service === "Remote Config" && p.accessible);
+  const vulnerableFunctions = liveProbes.filter(p => p.service === "Cloud Function" && p.accessible);
+
+  if (vulnerableRtdb.length > 0 && vulnerableAuth.length > 0) {
+    layer12Findings.push(`⛓️ سلسلة حرجة: Auth مفتوح + RTDB مكشوفة → يمكن لأي شخص إنشاء حساب وقراءة/كتابة البيانات`);
+  }
+  if (vulnerableStorage.length > 0 && allApiKeysArr.length > 0) {
+    layer12Findings.push(`⛓️ سلسلة عالية: Storage مفتوح + API Key مكشوف → يمكن تحميل/تنزيل الملفات`);
+  }
+  if (serviceAccountCount > 0) {
+    layer12Findings.push(`💀 خطر حرج: Service Account مُضمّن في APK — وصول admin كامل لجميع خدمات Firebase!`);
+  }
+  if (vulnerableConfig.length > 0) {
+    layer12Findings.push(`⛓️ Remote Config مكشوف — قد يحتوي على أسرار أو feature flags حساسة`);
+  }
+  if (vulnerableFunctions.length > 0) {
+    layer12Findings.push(`⛓️ Cloud Functions مفتوحة — ${vulnerableFunctions.length} دالة بدون مصادقة`);
+  }
+
+  // Cross-reference: configs found in deep layers vs surface layers
+  const deepLayerConfigs = configs.filter(c => c.layer >= 3);
+  const surfaceConfigs = configs.filter(c => c.layer <= 2);
+  if (deepLayerConfigs.length > 0 && surfaceConfigs.length === 0) {
+    layer12Findings.push(`🔍 الإعدادات مخفية فقط في طبقات عميقة — محاولة إخفاء متعمدة`);
+  }
+  if (deepLayerConfigs.length > 0 && surfaceConfigs.length > 0) {
+    layer12Findings.push(`📊 إعدادات مكشوفة في ${surfaceConfigs.length} مكان سطحي + ${deepLayerConfigs.length} مكان عميق`);
+  }
+
+  // Confidence scoring
+  const highConfCount = configs.filter(c => c.confidence === "high").length;
+  const medConfCount = configs.filter(c => c.confidence === "medium").length;
+  const lowConfCount = configs.filter(c => c.confidence === "low").length;
+  layer12Findings.push(`📈 مصداقية النتائج: ${highConfCount} عالية · ${medConfCount} متوسطة · ${lowConfCount} منخفضة`);
+
+  // Total live vulnerabilities
+  const l12LiveVulns = liveProbes.filter(p => p.accessible).length;
+  layer12Findings.push(`🎯 إجمالي الثغرات المباشرة: ${l12LiveVulns} من أصل ${liveProbes.length} اختبار`);
+
+  // Security recommendations
+  layer12Findings.push("─── توصيات أمنية ───");
+  if (vulnerableRtdb.length > 0) layer12Findings.push("🛡️ أغلق قواعد أمان RTDB: `\".read\": false, \".write\": false` ثم أضف قواعد مخصصة");
+  if (vulnerableStorage.length > 0) layer12Findings.push("🛡️ عدّل قواعد Storage: `allow read, write: if request.auth != null;`");
+  if (vulnerableAuth.length > 0) layer12Findings.push("🛡️ عطّل Anonymous Auth إذا غير مطلوب. فعّل App Check لمنع إساءة الاستخدام");
+  if (serviceAccountCount > 0) layer12Findings.push("🛡️ أزل Service Account من APK فوراً! استخدم Cloud Functions كوسيط");
+  if (allApiKeysArr.length > 0) layer12Findings.push("🛡️ قيّد API Keys باستخدام App Restrictions في Google Cloud Console");
+  if (vulnerableFunctions.length > 0) layer12Findings.push("🛡️ أضف التحقق من الهوية لـ Cloud Functions: `context.auth` check");
+  if (vulnerableConfig.length > 0) layer12Findings.push("🛡️ لا تخزّن أسراراً في Remote Config — استخدم Secret Manager بدلاً من ذلك");
+
+  if (layer12Findings.length <= 2) {
+    layer12Findings.push("✅ لم يتم اكتشاف سلاسل ثغرات أو مخاطر مترابطة");
+  }
+
   // ─── Build summary ──────────────────────────────────────────
   const projectIds = [...new Set(configs.map(c => c.projectId).filter(Boolean))];
   const apiKeys = [...new Set(configs.map(c => c.apiKey).filter(Boolean))];
   const databaseUrls = [...new Set(configs.map(c => c.databaseUrl).filter(Boolean))];
+  const storageBuckets = [...new Set(configs.map(c => c.storageBucket).filter(Boolean))];
+  const totalLiveVulns = liveProbes.filter(p => p.accessible).length;
 
   const riskDetails: string[] = [];
   let riskLevel: "critical" | "high" | "medium" | "low" | "none" = "none";
 
-  if (apiKeys.length > 0 && databaseUrls.length > 0) {
-    riskLevel = "critical";
+  // Enhanced risk assessment incorporating live probes
+  const escalate = (target: typeof riskLevel) => {
+    const order = ["none", "low", "medium", "high", "critical"] as const;
+    if (order.indexOf(target) > order.indexOf(riskLevel)) riskLevel = target;
+  };
+
+  if (serviceAccountCount > 0) {
+    escalate("critical");
+    riskDetails.push("💀 Service Account مُضمّن في APK — وصول admin كامل لكل Firebase!");
+  }
+  if (totalLiveVulns >= 3) {
+    escalate("critical");
+    riskDetails.push(`🔴 ${totalLiveVulns} ثغرات مباشرة مؤكدة عبر الفحص المباشر (LIVE)`);
+  } else if (apiKeys.length > 0 && databaseUrls.length > 0) {
+    escalate("critical");
     riskDetails.push("🔴 مفتاح API + عنوان قاعدة البيانات متوفران — يمكن الوصول للبيانات مباشرة");
   } else if (apiKeys.length > 0) {
-    riskLevel = "high";
+    escalate("high");
     riskDetails.push("🟡 مفتاح API مكشوف — قد يسمح بالمصادقة مع Firebase");
   } else if (projectIds.length > 0) {
-    riskLevel = "medium";
+    escalate("medium");
     riskDetails.push("🟡 Project ID مكشوف — يمكن محاولة الوصول العام");
   } else if (configs.length > 0) {
-    riskLevel = "low";
+    escalate("low");
     riskDetails.push("ℹ️ بيانات Firebase جزئية مكتشفة");
   }
 
-  if (databaseUrls.some(u => u.includes("-default-rtdb"))) {
+  // Live probe risk details
+  const vulnerableRtdbFinal = liveProbes.filter(p => p.service.startsWith("RTDB") && p.accessible);
+  const vulnerableStorageFinal = liveProbes.filter(p => p.service === "Storage List" && p.accessible);
+  const vulnerableAuthFinal = liveProbes.filter(p => (p.service === "Anonymous Auth" || p.service === "Email Signup") && p.accessible);
+  if (vulnerableRtdbFinal.length > 0) riskDetails.push("🔴 RTDB مكشوفة — قراءة/كتابة بدون مصادقة مؤكدة!");
+  if (vulnerableStorageFinal.length > 0) riskDetails.push("🔴 Storage Bucket مفتوح — ملفات قابلة للتحميل بدون مصادقة!");
+  if (vulnerableAuthFinal.length > 0) riskDetails.push("🔴 Auth مفتوح — يمكن إنشاء حسابات بدون قيود!");
+
+  if (databaseUrls.some(u => u.includes("-default-rtdb")) && vulnerableRtdbFinal.length === 0) {
     riskDetails.push("⚠️ قاعدة بيانات RTDB مكتشفة — اختبر قواعد الأمان: GET /.json");
   }
-  if (configs.some(c => c.storageBucket)) {
+  if (configs.some(c => c.storageBucket) && vulnerableStorageFinal.length === 0) {
     riskDetails.push("⚠️ Storage Bucket مكشوف — اختبر الوصول العام للملفات");
   }
   if (configs.some(c => c.layer >= 3)) {
     riskDetails.push("🔍 بعض الإعدادات اُستخرجت من طبقات عميقة (ثنائيات/تشفير) — قد تكون محمية");
   }
+  if (liveProbes.length > 0) {
+    riskDetails.push(`📡 تم إجراء ${liveProbes.length} فحص مباشر (LIVE) — ${totalLiveVulns} ثغرة مؤكدة`);
+  }
+
+  const hasFindings = (findings: string[]) => findings.some(f => !f.startsWith("ℹ️"));
+  const layerStatus = (findings: string[], emptyCheck: (f: string) => boolean): "found" | "partial" | "empty" =>
+    findings.some(emptyCheck) ? "found" : hasFindings(findings) ? "partial" : "empty";
 
   const layers = [
     {
@@ -3733,16 +4357,77 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
       findings: layer4Findings,
       filesScanned: layer4Files,
     },
+    {
+      layer: 5,
+      name: "كشف Service Account و OAuth Credentials",
+      status: layerStatus(layer5Findings, f => f.startsWith("🔴") || f.startsWith("🔑")),
+      findings: layer5Findings,
+      filesScanned: layer5Files,
+    },
+    {
+      layer: 6,
+      name: "تحليل SharedPreferences والذاكرة المخبأة (Cache)",
+      status: layerStatus(layer6Findings, f => f.startsWith("🔓")),
+      findings: layer6Findings,
+      filesScanned: layer6Files,
+    },
+    {
+      layer: 7,
+      name: "فحص عميق للمكتبات الأصلية (.so) + كشف XOR/التشويش",
+      status: layerStatus(layer7Findings, f => f.startsWith("🔥") || f.startsWith("🔑") || f.startsWith("🔓")),
+      findings: layer7Findings,
+      filesScanned: layer7Files,
+    },
+    {
+      layer: 8,
+      name: "🔴 فحص مباشر: قواعد أمان RTDB (LIVE Probe)",
+      status: layerStatus(layer8Findings, f => f.includes("قابلة للقراءة") || f.includes("قابلة للكتابة")),
+      findings: layer8Findings,
+      filesScanned: layer8Files,
+    },
+    {
+      layer: 9,
+      name: "🔴 فحص مباشر: Cloud Storage Bucket (LIVE Probe)",
+      status: layerStatus(layer9Findings, f => f.includes("مفتوح")),
+      findings: layer9Findings,
+      filesScanned: layer9Files,
+    },
+    {
+      layer: 10,
+      name: "🔴 فحص مباشر: Firebase Auth Configuration (LIVE Probe)",
+      status: layerStatus(layer10Findings, f => f.includes("مفعّل") || f.includes("مفتوح")),
+      findings: layer10Findings,
+      filesScanned: layer10Files,
+    },
+    {
+      layer: 11,
+      name: "🔴 فحص مباشر: Remote Config & Cloud Functions (LIVE Probe)",
+      status: layerStatus(layer11Findings, f => f.includes("مكشوف") || f.includes("مفتوحة") || f.startsWith("☁️")),
+      findings: layer11Findings,
+      filesScanned: layer11Files,
+    },
+    {
+      layer: 12,
+      name: "محرك الربط المتقاطع وتحليل المخاطر (Correlation Engine)",
+      status: layerStatus(layer12Findings, f => f.startsWith("⛓️") || f.startsWith("💀")),
+      findings: layer12Findings,
+      filesScanned: layer12Files,
+    },
   ];
 
   return {
     configs,
     layers,
+    liveProbes: liveProbes.length > 0 ? liveProbes : undefined,
     summary: {
       totalConfigs: configs.length,
       projectIds,
       apiKeys,
       databaseUrls,
+      storageBuckets,
+      serviceAccounts: serviceAccountCount,
+      liveProbesRun: liveProbes.length,
+      liveVulnerabilities: totalLiveVulns,
       riskLevel,
       riskDetails,
     },
