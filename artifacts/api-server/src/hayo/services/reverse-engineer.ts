@@ -286,6 +286,57 @@ function runCmd(cmd: string, args: string[], cwd: string, timeoutMs = 180_000): 
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SAFE SMALI PATCHING — properly neutralize invoke calls
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Safely neutralize a smali invoke instruction and any following move-result.
+ * Replaces the invoke with nop and patches move-result with a zero/null default
+ * so the DEX verifier never sees an orphaned move-result.
+ */
+function safeNeutralizeInvoke(content: string, invokeRegex: RegExp, tag: string): { content: string; count: number } {
+  let count = 0;
+  // Split into lines so we can handle move-result on the next line
+  const lines = content.split("\n");
+  const result: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (invokeRegex.test(line)) {
+      count++;
+      result.push(`    nop    # [HAYO CLONER] ${tag}`);
+      // Check if a following line (skipping blanks/comments/.line) is move-result
+      let j = i + 1;
+      while (j < lines.length && /^\s*($|\.line\s|#)/.test(lines[j])) {
+        result.push(lines[j]);
+        j++;
+      }
+      if (j < lines.length) {
+        const nextLine = lines[j].trim();
+        if (nextLine.startsWith("move-result-wide ")) {
+          const reg = nextLine.split(/\s+/)[1];
+          result.push(`    const-wide/16 ${reg}, 0x0    # [HAYO CLONER] ${tag} default`);
+          i = j; // skip the move-result line
+        } else if (nextLine.startsWith("move-result-object ")) {
+          const reg = nextLine.split(/\s+/)[1];
+          result.push(`    const/4 ${reg}, 0x0    # [HAYO CLONER] ${tag} null`);
+          i = j;
+        } else if (nextLine.startsWith("move-result ")) {
+          const reg = nextLine.split(/\s+/)[1];
+          result.push(`    const/4 ${reg}, 0x0    # [HAYO CLONER] ${tag} default`);
+          i = j;
+        }
+        // else: no move-result, just nop the invoke
+      }
+      // Reset regex lastIndex for global patterns
+      invokeRegex.lastIndex = 0;
+    } else {
+      result.push(line);
+    }
+  }
+  return { content: result.join("\n"), count };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // APK DECOMPILE (JADX — Java source code)
 // ═══════════════════════════════════════════════════════════════
 export async function decompileAPK(buffer: Buffer, fileName: string): Promise<DecompileResult> {
@@ -994,20 +1045,20 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
     // ── 2. Strip old V1 signature files — CRITICAL for modern Android ──
     // APKTool rebuild keeps META-INF from original. If the old CERT.RSA claims
     // V2-signed but no valid V2 block exists, Android 7+ throws INSTALL_PARSE_FAILED.
-    // We must remove all old signature files BEFORE zipalign + apksigner.
-    console.log("[SignAPK] Stripping old META-INF signature files...");
-    const stripResult = runCmd("zip", [
-      "-d", apkPath,
-      "META-INF/CERT.RSA",
-      "META-INF/CERT.SF",
-      "META-INF/MANIFEST.MF",
-      "META-INF/*.RSA",
-      "META-INF/*.SF",
-      "META-INF/*.DSA",
-      "META-INF/*.EC",
-    ], workDir, 15_000);
-    // zip -d exits with code 12 if no files matched — that's OK
-    console.log(`[SignAPK] META-INF strip exit code: ${stripResult.code} (0 or 12 = OK)`);
+    // We list actual META-INF entries first to avoid corrupting the ZIP with zip -d on non-existent entries.
+    console.log("[SignAPK] Checking for old META-INF signature files...");
+    const listResult = runCmd("unzip", ["-l", apkPath], workDir, 10_000);
+    const sigExts = [".RSA", ".SF", ".DSA", ".EC"];
+    const metaEntries = (listResult.stdout || "").split("\n")
+      .map(l => l.trim().split(/\s+/).pop() || "")
+      .filter(e => e.startsWith("META-INF/") && (e === "META-INF/MANIFEST.MF" || sigExts.some(x => e.toUpperCase().endsWith(x))));
+    if (metaEntries.length > 0) {
+      console.log(`[SignAPK] Stripping ${metaEntries.length} old signature files: ${metaEntries.join(", ")}`);
+      const stripResult = runCmd("zip", ["-d", apkPath, ...metaEntries], workDir, 15_000);
+      console.log(`[SignAPK] META-INF strip exit code: ${stripResult.code}`);
+    } else {
+      console.log("[SignAPK] No old signature files found — skipping strip");
+    }
 
     // ── 3. zipalign -f 4 (required for Android 11+) ─────────
     const alignedPath = apkPath.replace(/\.apk$/, "-aligned.apk");
@@ -1432,27 +1483,30 @@ async function patchAds(decompDir: string, manifest: string): Promise<string[]> 
   }
 
   // Patch smali files that contain ad initialization
-  const adInitPatterns = ["AdRequest", "AdView", "loadAd", "showAd", "initializeSdk", "MobileAds.initialize"];
+  const adInitPatterns = ["AdRequest", "AdView", "loadAd", "showAd", "initializeSdk", "MobileAds\\.initialize"];
   const smaliFiles = readDirRecursive(decompDir).filter(f => f.endsWith(".smali")).slice(0, 2000);
   let patchedFiles = 0;
+  let adCallsNeutralized = 0;
   for (const fp of smaliFiles) {
     try {
       let content = fs.readFileSync(fp, "utf-8");
       let changed = false;
       for (const pattern of adInitPatterns) {
-        if (content.includes(pattern)) {
-          // Comment out the smali invoke lines that call ad methods
-          content = content.replace(
-            new RegExp(`(\\s*invoke-[a-z/]+\\s+\\{[^}]*\\},\\s*L[^;]*;->${pattern}\\([^)]*\\)[^\\n]*)`, "g"),
-            `\n    # [HAYO CLONER] AD REMOVED$1\n    return-void`
-          );
-          changed = true;
+        if (content.includes(pattern.replace("\\", ""))) {
+          // Safely neutralize ad invoke calls using nop + move-result handling
+          const invokeRe = new RegExp(`\\s*invoke-[a-z/]+\\s+\\{[^}]*\\},\\s*L[^;]*;->${pattern}\\([^)]*\\)[^\\n]*`, "g");
+          const r = safeNeutralizeInvoke(content, invokeRe, "AD REMOVED");
+          if (r.count > 0) {
+            content = r.content;
+            adCallsNeutralized += r.count;
+            changed = true;
+          }
         }
       }
       if (changed) { fs.writeFileSync(fp, content, "utf-8"); patchedFiles++; }
     } catch {}
   }
-  if (patchedFiles > 0) mods.push(`🔧 تم تعطيل مكالمات الإعلانات في ${patchedFiles} ملف smali`);
+  if (patchedFiles > 0) mods.push(`🔧 تم تعطيل ${adCallsNeutralized} مكالمة إعلانات في ${patchedFiles} ملف smali`);
 
   return mods;
 }
@@ -1605,11 +1659,12 @@ async function patchLicense(decompDir: string): Promise<string[]> {
       }
 
       // Also patch check() methods that might throw license exceptions
-      const checkMethodRe = /(\s*invoke-[a-z/]+\s+\{[^}]*\},\s*Landroid\/content\/pm\/[^;]*;->checkSignatures[^\n]*)/g;
-      content = content.replace(checkMethodRe, (match) => {
+      const checkSigRe = /\s*invoke-[a-z/]+\s+\{[^}]*\},\s*Landroid\/content\/pm\/[^;]*;->checkSignatures[^\n]*/g;
+      const sigResult = safeNeutralizeInvoke(content, checkSigRe, "SIGNATURE CHECK SKIPPED");
+      if (sigResult.count > 0) {
+        content = sigResult.content;
         changed = true;
-        return `\n    # [HAYO CLONER] SIGNATURE CHECK SKIPPED`;
-      });
+      }
 
       if (changed) { fs.writeFileSync(fp, content, "utf-8"); }
     } catch {}
@@ -1699,12 +1754,13 @@ async function patchLoginBypass(decompDir: string, manifestPath: string): Promis
       }
 
       // Neutralize startActivity calls that launch login/auth activities
-      const loginActivityPattern = /(\s*invoke-[a-z/]+\s+\{[^}]*\},\s*L[^;]*(?:Login|Auth|SignIn|Register|Welcome|Splash)[^;]*;->startActivity[^\n]*)/gi;
-      content = content.replace(loginActivityPattern, (match) => {
-        patchedActivities++;
+      const loginActivityRe = /\s*invoke-[a-z/]+\s+\{[^}]*\},\s*L[^;]*(?:Login|Auth|SignIn|Register|Welcome|Splash)[^;]*;->startActivity[^\n]*/gi;
+      const loginActResult = safeNeutralizeInvoke(content, loginActivityRe, "LOGIN ACTIVITY SKIPPED");
+      if (loginActResult.count > 0) {
+        content = loginActResult.content;
+        patchedActivities += loginActResult.count;
         changed = true;
-        return `\n    # [HAYO CLONER] LOGIN ACTIVITY SKIPPED`;
-      });
+      }
 
       if (changed) fs.writeFileSync(fp, content, "utf-8");
     } catch {}
@@ -1801,12 +1857,12 @@ async function patchTamperDetection(decompDir: string): Promise<string[]> {
       // Neutralize signature/integrity invoke calls
       for (const pattern of TAMPER_INVOKE_PATTERNS) {
         pattern.lastIndex = 0;
-        const beforeLen = content.length;
-        content = content.replace(pattern, (match) => {
-          patchedChecks++;
+        const tamperResult = safeNeutralizeInvoke(content, pattern, "TAMPER CHECK NEUTRALIZED");
+        if (tamperResult.count > 0) {
+          content = tamperResult.content;
+          patchedChecks += tamperResult.count;
           changed = true;
-          return `\n    # [HAYO CLONER] TAMPER CHECK NEUTRALIZED`;
-        });
+        }
       }
 
       if (changed) fs.writeFileSync(fp, content, "utf-8");
