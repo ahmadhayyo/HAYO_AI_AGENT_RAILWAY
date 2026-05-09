@@ -1111,6 +1111,13 @@ router.get("/stream/sequential-pipeline", async (req: Request, res: Response) =>
     return;
   }
 
+  // Parse granular clone options from query string
+  let pipelineCloneOpts: Record<string, any> | undefined;
+  try {
+    const optsStr = req.query.opts as string;
+    if (optsStr) pipelineCloneOpts = JSON.parse(decodeURIComponent(optsStr));
+  } catch { /* use defaults */ }
+
   req.on("close", () => {});
 
   const buf = fs.readFileSync(filePath);
@@ -1201,7 +1208,7 @@ router.get("/stream/sequential-pipeline", async (req: Request, res: Response) =>
 
     const cloneResult = await runFullAutoClone(buf, fileName, (phase, phaseName, message) => {
       sseSend(res, `[PHASE C] [${phase}/6] ${phaseName}: ${message}`);
-    });
+    }, pipelineCloneOpts as any);
 
     for (const phase of cloneResult.phases) {
       sseSend(res, `[PHASE C] المرحلة ${phase.phase}/6: ${phase.name} [${phase.status}] (${phase.duration}ms)`);
@@ -1227,7 +1234,7 @@ router.get("/stream/sequential-pipeline", async (req: Request, res: Response) =>
     sseSend(res, `[PHASE C] ════ ملخص التقرير ════`);
     sseSend(res, `[PHASE C] 📦 Package: ${cloneResult.cloneReport.packageName}`);
     sseSend(res, `[PHASE C] 🔓 Premium: ${cloneResult.cloneReport.premiumMethodsPatched} | 🚪 Login: ${cloneResult.cloneReport.loginBypassed ? "تم التجاوز" : "لا"} | 💰 Points: ${cloneResult.cloneReport.pointsUnlocked ? "MAX" : "لا"}`);
-    sseSend(res, `[PHASE C] 🛡️ Tamper: ${cloneResult.cloneReport.tamperNeutralized ? "محيّد" : "لا"} | ✍️ Signature: ${cloneResult.cloneReport.signatureVerified ? "صحيح" : "لا"} | 📂 ZIP: ${cloneResult.cloneReport.zipIntegrity ? "سليم" : "لا"}`);
+    sseSend(res, `[PHASE C] 🛡️ Tamper: ${cloneResult.cloneReport.tamperNeutralized ? "محيّد" : "لا"} | 🔫 Frida: ${cloneResult.cloneReport.fridaInjected ? "تم الحقن" : "لا"} | ✍️ Signature: ${cloneResult.cloneReport.signatureVerified ? "صحيح" : "لا"} | 📂 ZIP: ${cloneResult.cloneReport.zipIntegrity ? "سليم" : "لا"}`);
 
     let downloadId: string | undefined;
     if (cloneResult.success && cloneResult.apkBuffer) {
@@ -1245,6 +1252,7 @@ router.get("/stream/sequential-pipeline", async (req: Request, res: Response) =>
       phases: cloneResult.phases,
       pentest: cloneResult.pentest,
       cloneReport: cloneResult.cloneReport,
+      auditReport: cloneResult.auditReport,
     }});
     sseSend(res, "[PHASE C] ════ اكتمل Full Auto Clone ════");
   } catch (e: any) {
@@ -1284,6 +1292,13 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
     return;
   }
 
+  // Parse granular clone options from query string (matches Clone section's cOpts)
+  let cloneOpts: Record<string, any> | undefined;
+  try {
+    const optsStr = req.query.opts as string;
+    if (optsStr) cloneOpts = JSON.parse(decodeURIComponent(optsStr));
+  } catch { /* use defaults */ }
+
   req.on("close", () => {});
 
   try {
@@ -1292,7 +1307,7 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
 
     const result = await runFullAutoClone(buf, fileName, (phase, phaseName, message) => {
       sseSend(res, `[PHASE ${phase}/6] ${phaseName}: ${message}`);
-    });
+    }, cloneOpts as any);
 
     // Stream phase results
     for (const phase of result.phases) {
@@ -1322,7 +1337,14 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
     sseSend(res, `[STEP] ════ ملخص التقرير النهائي ════`);
     sseSend(res, `[INFO] 📦 Package: ${result.cloneReport.packageName}`);
     sseSend(res, `[INFO] 🔓 Premium: ${result.cloneReport.premiumMethodsPatched} | 🚪 Login: ${result.cloneReport.loginBypassed ? "تم التجاوز" : "لا"} | 💰 Points: ${result.cloneReport.pointsUnlocked ? "MAX" : "لا"}`);
-    sseSend(res, `[INFO] 🛡️ Tamper: ${result.cloneReport.tamperNeutralized ? "محيّد" : "لا"} | ✍️ Signature: ${result.cloneReport.signatureVerified ? "صحيح" : "لا"} | 📂 ZIP: ${result.cloneReport.zipIntegrity ? "سليم" : "لا"}`);
+    sseSend(res, `[INFO] 🛡️ Tamper: ${result.cloneReport.tamperNeutralized ? "محيّد" : "لا"} | 🔫 Frida: ${result.cloneReport.fridaInjected ? "تم الحقن" : "لا"} | ✍️ Signature: ${result.cloneReport.signatureVerified ? "صحيح" : "لا"} | 📂 ZIP: ${result.cloneReport.zipIntegrity ? "سليم" : "لا"}`);
+
+    // Stream audit report summary (advanced technique from Clone section)
+    if (result.auditReport) {
+      sseSend(res, `[STEP] ════ تقرير التدقيق الشامل (Audit Report) ════`);
+      sseSend(res, `[AUDIT] 🔑 أسرار: ${result.auditReport.secretsFound} | 🌐 نقاط نهاية: ${result.auditReport.endpointsDiscovered}`);
+      sseSend(res, `[AUDIT] 📊 إعلانات: ${result.auditReport.adsRemoved ? "مُزالة" : "لا"} | Frida: ${result.auditReport.fridaInjected ? "محقون" : "لا"}`);
+    }
 
     if (result.success && result.apkBuffer) {
       const outDir = path.join(os.tmpdir(), `hayo_fullautoclone_${Date.now()}`);
@@ -1346,6 +1368,7 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
           riskLevel: result.pentest.riskLevel,
         },
         cloneReport: result.cloneReport,
+        auditReport: result.auditReport,
         generatedAt: result.generatedAt,
       });
       sseSend(res, `[DONE] ════ اكتمل Full Auto Clone: ${fileName} ════`);
@@ -1356,6 +1379,7 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
         phases: result.phases,
         pentest: result.pentest,
         cloneReport: result.cloneReport,
+        auditReport: result.auditReport,
         generatedAt: result.generatedAt,
       });
       sseSend(res, `[ERROR] فشل Full Auto Clone: ${result.error}`);

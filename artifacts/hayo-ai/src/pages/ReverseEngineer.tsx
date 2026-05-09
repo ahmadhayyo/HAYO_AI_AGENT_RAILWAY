@@ -16,7 +16,7 @@ import {
   Search, Save, Hammer, Binary, AlertTriangle,
   Dot, CheckCheck, Undo2, Sparkles, Eye, Zap,
   GitBranch, Globe, Key, Terminal, Scan, Fingerprint,
-  ToggleLeft, ToggleRight, Rocket, Flame,
+  ToggleLeft, ToggleRight, Rocket, Flame, Settings,
   Keyboard, Database, Activity, TrendingUp, BarChart3, Code,
   Microscope, Network, FileSearch, Diff, Layers, FileOutput,
   ArrowUpDown, Braces, Hash, Link2, type LucideIcon,
@@ -521,6 +521,8 @@ export default function ReverseEngineer(){
   const[facResult,setFacResult]=useState<any>(null);
   const[facLogs,setFacLogs]=useState<string[]>([]);
   const[facActivePhase,setFacActivePhase]=useState(0);
+  const[facOpts,setFacOpts]=useState({removeAds:true,unlockPremium:true,removeTracking:false,removeLicenseCheck:true,bypassLogin:true,neutralizeTamper:true,injectFrida:false,extractSecrets:true,changeAppName:"",changePackageName:"",customInstructions:""});
+  const[facShowOpts,setFacShowOpts]=useState(false);
   // Sequential Pipeline
   const[seqRunning,setSeqRunning]=useState(false);
   const[seqPhase,setSeqPhase]=useState(0); // 0=idle, 1=firebase, 2=pentest, 3=clone
@@ -800,7 +802,7 @@ export default function ReverseEngineer(){
       const uploadId=upData.uploadId;
 
       // Step 2: SSE stream
-      const sseUrl=`/api/reverse/stream/full-auto-clone?uploadId=${uploadId}`;
+      const sseUrl=`/api/reverse/stream/full-auto-clone?uploadId=${uploadId}&opts=${encodeURIComponent(JSON.stringify(facOpts))}`;
       const es=new EventSource(sseUrl);
       es.onmessage=(e:MessageEvent)=>{
         const msg=e.data as string;
@@ -1505,6 +1507,19 @@ export default function ReverseEngineer(){
               {facLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Rocket className="w-5 h-5"/>}Full Auto Clone
             </Button>
           </div>
+          {/* Full Auto Clone — Granular Options (integrated from Clone section) */}
+          <button onClick={()=>setFacShowOpts(v=>!v)} className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors"><Settings className="w-3.5 h-3.5"/>{facShowOpts?"إخفاء خيارات Full Auto Clone":"خيارات Full Auto Clone المتقدمة"}</button>
+          {facShowOpts&&<div className="w-full max-w-xl space-y-3 bg-card/50 backdrop-blur-sm border border-emerald-500/20 rounded-2xl p-4">
+            <div className="text-xs font-bold text-emerald-300 text-right">خيارات التعديل (من قسم الاستنساخ المتقدم)</div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {([["removeAds","إزالة الإعلانات","🚫","AdMob, Facebook, Unity"],["unlockPremium","فتح المدفوع","🔓","isPremium, Coins → MAX"],["removeTracking","إزالة التتبع","📡","Firebase, Analytics"],["removeLicenseCheck","تجاوز الرخصة","🔑","checkLicense, verify"],["bypassLogin","تجاوز الدخول","🚪","isLoggedIn→true"],["neutralizeTamper","تحييد الحماية","🛡️","SafetyNet, Root"],["extractSecrets","استخراج الأسرار","🗝️","Firebase, AWS, JWT"],["injectFrida","حقن Frida","🔬","Dynamic instrumentation"]] as [string,string,string,string][]).map(([k,l,ic,d])=><button key={k} onClick={()=>setFacOpts(p=>({...p,[k]:!(p as any)[k]}))} className={`p-2.5 rounded-xl border text-right transition-all ${(facOpts as any)[k]?"bg-emerald-500/10 border-emerald-500/40 text-emerald-300":"bg-card/70 backdrop-blur-sm border-border text-muted-foreground hover:border-emerald-500/30"}`}><div className="flex items-center gap-1.5"><span className="text-sm">{ic}</span><span className="font-medium text-[11px]">{l}</span><span className="mr-auto">{(facOpts as any)[k]?<ToggleRight className="w-4 h-4 text-emerald-400"/>:<ToggleLeft className="w-4 h-4"/>}</span></div><p className="text-[9px] mt-0.5 opacity-60">{d}</p></button>)}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <input value={facOpts.changeAppName} onChange={e=>setFacOpts(p=>({...p,changeAppName:e.target.value}))} placeholder="اسم جديد (اختياري)" className="bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-emerald-500/50"/>
+              <input value={facOpts.changePackageName} onChange={e=>setFacOpts(p=>({...p,changePackageName:e.target.value}))} placeholder="حزمة جديدة (اختياري)" className="bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-emerald-500/50 font-mono"/>
+            </div>
+            <textarea value={facOpts.customInstructions} onChange={e=>setFacOpts(p=>({...p,customInstructions:e.target.value}))} placeholder="تعليمات إضافية للذكاء الاصطناعي..." rows={2} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:border-emerald-500/50"/>
+          </div>}
           <div className="grid grid-cols-8 gap-1.5 w-full max-w-xl">
             {["تفكيك","مصادقة","مفاتيح","IDOR","استغلال","سحب DB","Telegram","تقرير"].map((s,i)=><div key={i} className="text-center">
               <div className="w-7 h-7 mx-auto rounded-full bg-muted/20 border border-border/50 flex items-center justify-center text-[10px] font-bold text-muted-foreground">{i+1}</div>
@@ -1673,6 +1688,22 @@ export default function ReverseEngineer(){
               <div className="text-2xl font-bold">{facResult.cloneReport.loginBypassed?"تم":"لا"}</div>
               <div className="text-[10px] text-muted-foreground mt-1">تجاوز تسجيل الدخول</div>
             </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.adsRemoved?"bg-green-500/10 border-green-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.adsRemoved?"مُزالة":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">الإعلانات</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.tamperNeutralized?"bg-green-500/10 border-green-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.tamperNeutralized?"محيّد":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">الحماية</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.fridaInjected?"bg-violet-500/10 border-violet-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.fridaInjected?"محقون":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">Frida Gadget</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.pointsUnlocked?"bg-green-500/10 border-green-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.pointsUnlocked?"MAX":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">النقاط/العملات</div>
+            </div>
             <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.signatureVerified?"bg-green-500/10 border-green-500/30":"bg-yellow-500/10 border-yellow-500/30"}`}>
               <div className="text-2xl font-bold">{facResult.cloneReport.signatureVerified?"صحيح":"فشل"}</div>
               <div className="text-[10px] text-muted-foreground mt-1">التوقيع</div>
@@ -1681,6 +1712,38 @@ export default function ReverseEngineer(){
               <div className="text-2xl font-bold">{facResult.cloneReport.zipIntegrity?"سليم":"تالف"}</div>
               <div className="text-[10px] text-muted-foreground mt-1">سلامة ZIP</div>
             </div>
+          </div>}
+
+          {/* Audit Report (advanced technique from Clone section) */}
+          {facResult.auditReport&&<div className="bg-gradient-to-r from-indigo-900/30 to-violet-900/30 border border-indigo-500/30 rounded-2xl p-4 space-y-3">
+            <h3 className="text-sm font-bold text-indigo-300 flex items-center gap-2"><Scan className="w-4 h-4"/>تقرير التدقيق الشامل (Audit Report)</h3>
+            <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+              <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-center">
+                <div className="text-lg font-bold text-indigo-300">{facResult.auditReport.secretsFound}</div>
+                <div className="text-[9px] text-muted-foreground">أسرار</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-center">
+                <div className="text-lg font-bold text-indigo-300">{facResult.auditReport.endpointsDiscovered}</div>
+                <div className="text-[9px] text-muted-foreground">نقاط نهاية</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-center">
+                <div className="text-lg font-bold text-indigo-300">{facResult.auditReport.premiumMethodsPatched}</div>
+                <div className="text-[9px] text-muted-foreground">Premium</div>
+              </div>
+              <div className={`p-2.5 rounded-lg border text-center ${facResult.auditReport.loginBypassed?"bg-green-500/10 border-green-500/20":"bg-muted/10 border-border/20"}`}>
+                <div className="text-lg font-bold">{facResult.auditReport.loginBypassed?"نعم":"لا"}</div>
+                <div className="text-[9px] text-muted-foreground">تجاوز الدخول</div>
+              </div>
+              <div className={`p-2.5 rounded-lg border text-center ${facResult.auditReport.fridaInjected?"bg-violet-500/10 border-violet-500/20":"bg-muted/10 border-border/20"}`}>
+                <div className="text-lg font-bold">{facResult.auditReport.fridaInjected?"نعم":"لا"}</div>
+                <div className="text-[9px] text-muted-foreground">Frida</div>
+              </div>
+              <div className={`p-2.5 rounded-lg border text-center ${facResult.auditReport.tamperNeutralized?"bg-green-500/10 border-green-500/20":"bg-muted/10 border-border/20"}`}>
+                <div className="text-lg font-bold">{facResult.auditReport.tamperNeutralized?"نعم":"لا"}</div>
+                <div className="text-[9px] text-muted-foreground">تحييد الحماية</div>
+              </div>
+            </div>
+            <div className="text-[10px] text-indigo-300/60 font-mono">الحزمة: {facResult.auditReport.packageName} | التعديلات: {facResult.auditReport.modifications?.length||0}</div>
           </div>}
 
           {/* Phase Results */}

@@ -2601,10 +2601,12 @@ export interface FullAutoCloneResult {
     pointsUnlocked: boolean;
     tamperNeutralized: boolean;
     adsRemoved: boolean;
+    fridaInjected: boolean;
     signatureVerified: boolean;
     zipIntegrity: boolean;
     modifications: string[];
   };
+  auditReport?: AuditReport;
   error?: string;
   generatedAt: string;
 }
@@ -2666,8 +2668,15 @@ export async function runFullAutoClone(
   buffer: Buffer,
   fileName: string,
   onProgress?: FullAutoProgressCallback,
+  options?: CloneOptions,
 ): Promise<FullAutoCloneResult> {
   const emit = onProgress || (() => {});
+  const opts: CloneOptions = options || {
+    removeAds: true, unlockPremium: true, removeTracking: false,
+    removeLicenseCheck: true, bypassLogin: true, neutralizeTamper: true,
+    injectFrida: false, extractSecrets: true,
+    changeAppName: "", changePackageName: "", customInstructions: "",
+  };
   const phases: FullAutoCloneResult["phases"] = [];
   const modifications: string[] = [];
   const allSecrets: ExtractedSecret[] = [];
@@ -2690,6 +2699,7 @@ export async function runFullAutoClone(
   let coinsCount = 0;
   let loginBypassed = false;
   let tamperNeutralized = false;
+  let fridaInjected = false;
   let signatureVerified = false;
   let zipIntegrity = false;
   let packageName = "unknown";
@@ -2818,7 +2828,7 @@ export async function runFullAutoClone(
         success: false,
         phases,
         pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
-        cloneReport: { packageName, premiumMethodsPatched: 0, loginBypassed: false, pointsUnlocked: false, tamperNeutralized: false, adsRemoved: false, signatureVerified: false, zipIntegrity: false, modifications },
+        cloneReport: { packageName, premiumMethodsPatched: 0, loginBypassed: false, pointsUnlocked: false, tamperNeutralized: false, adsRemoved: false, fridaInjected: false, signatureVerified: false, zipIntegrity: false, modifications },
         error: decompResult.error,
         generatedAt: new Date().toISOString(),
       };
@@ -2860,52 +2870,114 @@ export async function runFullAutoClone(
     if (pkgMatch2) packageName = pkgMatch2[1];
 
     // 3a. Remove Ads
-    emit(3, "محرك التعديل الذكي", "إزالة الإعلانات...");
-    const adMods = await patchAds(decompDir, manifest);
-    modifications.push(...adMods);
-    p3Details.push(...adMods);
-    if (fs.existsSync(manifestPath)) manifest = fs.readFileSync(manifestPath, "utf-8");
+    if (opts.removeAds !== false) {
+      emit(3, "محرك التعديل الذكي", "إزالة الإعلانات...");
+      const adMods = await patchAds(decompDir, manifest);
+      modifications.push(...adMods);
+      p3Details.push(...adMods);
+      if (fs.existsSync(manifestPath)) manifest = fs.readFileSync(manifestPath, "utf-8");
+    } else {
+      p3Details.push("⏭️ إزالة الإعلانات: معطّل بواسطة المستخدم");
+    }
 
     // 3b. Unlock Premium
-    emit(3, "محرك التعديل الذكي", "فتح Premium...");
-    const premMods = await patchPremium(decompDir);
-    modifications.push(...premMods);
-    p3Details.push(...premMods);
-    premiumCount = premMods.filter(m => m.includes("🔓")).length;
-    coinsCount = premMods.filter(m => m.includes("💰")).length;
+    if (opts.unlockPremium !== false) {
+      emit(3, "محرك التعديل الذكي", "فتح Premium...");
+      const premMods = await patchPremium(decompDir);
+      modifications.push(...premMods);
+      p3Details.push(...premMods);
+      premiumCount = premMods.filter(m => m.includes("🔓")).length;
+      coinsCount = premMods.filter(m => m.includes("💰")).length;
+    } else {
+      p3Details.push("⏭️ فتح Premium: معطّل بواسطة المستخدم");
+    }
 
     // 3c. Remove License Check
-    emit(3, "محرك التعديل الذكي", "تجاوز License...");
-    const licMods = await patchLicense(decompDir);
-    modifications.push(...licMods);
-    p3Details.push(...licMods);
+    if (opts.removeLicenseCheck !== false) {
+      emit(3, "محرك التعديل الذكي", "تجاوز License...");
+      const licMods = await patchLicense(decompDir);
+      modifications.push(...licMods);
+      p3Details.push(...licMods);
+    } else {
+      p3Details.push("⏭️ تجاوز الرخصة: معطّل بواسطة المستخدم");
+    }
 
     // 3d. Bypass Login
-    emit(3, "محرك التعديل الذكي", "تجاوز تسجيل الدخول...");
-    const loginMods = await patchLoginBypass(decompDir, manifestPath);
-    modifications.push(...loginMods);
-    p3Details.push(...loginMods);
-    loginBypassed = loginMods.some(m => m.includes("🚪") || m.includes("تجاوز"));
+    if (opts.bypassLogin !== false) {
+      emit(3, "محرك التعديل الذكي", "تجاوز تسجيل الدخول...");
+      const loginMods = await patchLoginBypass(decompDir, manifestPath);
+      modifications.push(...loginMods);
+      p3Details.push(...loginMods);
+      loginBypassed = loginMods.some(m => m.includes("🚪") || m.includes("تجاوز"));
+    } else {
+      p3Details.push("⏭️ تجاوز تسجيل الدخول: معطّل بواسطة المستخدم");
+    }
 
     // 3e. Neutralize Tamper Detection
-    emit(3, "محرك التعديل الذكي", "تحييد الحماية...");
-    const tamperMods = await patchTamperDetection(decompDir);
-    modifications.push(...tamperMods);
-    p3Details.push(...tamperMods);
-    tamperNeutralized = tamperMods.some(m => m.includes("🛡️") || m.includes("حماية"));
+    if (opts.neutralizeTamper !== false) {
+      emit(3, "محرك التعديل الذكي", "تحييد الحماية...");
+      const tamperMods = await patchTamperDetection(decompDir);
+      modifications.push(...tamperMods);
+      p3Details.push(...tamperMods);
+      tamperNeutralized = tamperMods.some(m => m.includes("🛡️") || m.includes("حماية"));
+    } else {
+      p3Details.push("⏭️ تحييد الحماية: معطّل بواسطة المستخدم");
+    }
 
     // 3f. Remove Tracking
-    emit(3, "محرك التعديل الذكي", "إزالة التتبع...");
-    const trackMods = await patchTracking(decompDir);
-    modifications.push(...trackMods);
-    p3Details.push(...trackMods);
-
-    // 3g. Extract remaining secrets from decompiled source
-    const moreSecrets = extractSecretsFromAPK(decompDir);
-    for (const s of moreSecrets) {
-      if (!allSecrets.some(es => es.value === s.value)) allSecrets.push(s);
+    if (opts.removeTracking === true) {
+      emit(3, "محرك التعديل الذكي", "إزالة التتبع...");
+      const trackMods = await patchTracking(decompDir);
+      modifications.push(...trackMods);
+      p3Details.push(...trackMods);
     }
-    if (moreSecrets.length > 0) p3Details.push(`أسرار إضافية مكتشفة: ${moreSecrets.length}`);
+
+    // 3g. Change App Name
+    if (opts.changeAppName?.trim()) {
+      emit(3, "محرك التعديل الذكي", `تغيير اسم التطبيق إلى: ${opts.changeAppName}...`);
+      const nameMods = patchAppName(decompDir, opts.changeAppName);
+      modifications.push(...nameMods);
+      p3Details.push(...nameMods);
+    }
+
+    // 3h. Change Package Name
+    if (opts.changePackageName?.trim()) {
+      emit(3, "محرك التعديل الذكي", `تغيير اسم الحزمة إلى: ${opts.changePackageName}...`);
+      const pkgMods = patchPackageName(decompDir, manifestPath, opts.changePackageName);
+      modifications.push(...pkgMods);
+      p3Details.push(...pkgMods);
+    }
+
+    // 3i. Custom AI Instructions
+    if (opts.customInstructions?.trim()) {
+      emit(3, "محرك التعديل الذكي", "تطبيق تعليمات AI مخصصة...");
+      const customMods = await patchCustomInstructions(decompDir, opts.customInstructions);
+      modifications.push(...customMods);
+      p3Details.push(...customMods);
+    }
+
+    // 3j. Extract remaining secrets from decompiled source
+    if (opts.extractSecrets !== false) {
+      emit(3, "محرك التعديل الذكي", "استخراج الأسرار المدمجة...");
+      const moreSecrets = extractSecretsFromAPK(decompDir);
+      for (const s of moreSecrets) {
+        if (!allSecrets.some(es => es.value === s.value)) allSecrets.push(s);
+      }
+      if (moreSecrets.length > 0) {
+        p3Details.push(`🔑 أسرار إضافية مكتشفة: ${moreSecrets.length}`);
+        const types = [...new Set(moreSecrets.map(s => s.type))];
+        p3Details.push(`   🗝️ الأنواع: ${types.slice(0, 5).join(", ")}${types.length > 5 ? ` +${types.length - 5} أخرى` : ""}`);
+      }
+    }
+
+    // 3k. Inject Frida Gadget
+    if (opts.injectFrida === true) {
+      emit(3, "محرك التعديل الذكي", "حقن Frida Gadget...");
+      const fridaMods = await injectFridaGadget(decompDir, manifestPath);
+      modifications.push(...fridaMods);
+      p3Details.push(...fridaMods);
+      fridaInjected = fridaMods.some(m => m.includes("Frida"));
+    }
 
     phases.push({ phase: 3, name: "محرك التعديل الذكي (Smali Patching)", status: "success", details: p3Details, duration: Date.now() - p3Start });
 
@@ -2942,7 +3014,7 @@ export async function runFullAutoClone(
           success: false,
           phases,
           pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
-          cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, signatureVerified: false, zipIntegrity: false, modifications },
+          cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: opts.removeAds !== false, fridaInjected, signatureVerified: false, zipIntegrity: false, modifications },
           error: "فشل إعادة بناء APK",
           generatedAt: new Date().toISOString(),
         };
@@ -3035,17 +3107,17 @@ export async function runFullAutoClone(
         success: false,
         phases,
         pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
-        cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, signatureVerified: false, zipIntegrity, modifications },
+        cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: opts.removeAds !== false, fridaInjected, signatureVerified: false, zipIntegrity, modifications },
         error: fatalMsg,
         generatedAt: new Date().toISOString(),
       };
     }
 
     // ══════════════════════════════════════════════════════════════
-    // PHASE 6: FINAL OUTPUT & REPORT
+    // PHASE 6: FINAL OUTPUT & AUDIT REPORT
     // ══════════════════════════════════════════════════════════════
     const p6Start = Date.now();
-    emit(6, "التقرير النهائي والتحميل", "إعداد الملف النهائي...");
+    emit(6, "التقرير النهائي والتحميل", "إعداد الملف النهائي وتقرير التدقيق...");
     const p6Details: string[] = [];
 
     const apkBuffer = fs.readFileSync(finalApk);
@@ -3055,8 +3127,27 @@ export async function runFullAutoClone(
     p6Details.push(`Premium معدّل: ${premiumCount}`);
     p6Details.push(`تجاوز تسجيل الدخول: ${loginBypassed ? "نعم" : "لا"}`);
     p6Details.push(`نقاط/عملات: ${coinsCount > 0 ? "غير محدود" : "لا"}`);
+    p6Details.push(`Frida Gadget: ${fridaInjected ? "تم الحقن" : "لا"}`);
     p6Details.push(`توقيع صحيح: ${signatureVerified ? "نعم" : "لا"}`);
     p6Details.push(`سلامة ZIP: ${zipIntegrity ? "نعم" : "لا"}`);
+
+    // Build comprehensive AuditReport (from Clone section's advanced technique)
+    const auditReport: AuditReport = {
+      packageName,
+      secretsFound: allSecrets.length,
+      endpointsDiscovered: allEndpoints.length,
+      premiumMethodsPatched: premiumCount,
+      loginBypassed,
+      pointsUnlocked: coinsCount > 0,
+      tamperNeutralized,
+      adsRemoved: opts.removeAds !== false,
+      fridaInjected,
+      signatureVerified,
+      zipIntegrity,
+      modifications,
+      secrets: allSecrets,
+      endpoints: allEndpoints,
+    };
 
     phases.push({ phase: 6, name: "التقرير النهائي والتحميل", status: "success", details: p6Details, duration: Date.now() - p6Start });
 
@@ -3079,11 +3170,13 @@ export async function runFullAutoClone(
         loginBypassed,
         pointsUnlocked: coinsCount > 0,
         tamperNeutralized,
-        adsRemoved: true,
+        adsRemoved: opts.removeAds !== false,
+        fridaInjected,
         signatureVerified,
         zipIntegrity,
         modifications,
       },
+      auditReport,
       generatedAt: new Date().toISOString(),
     };
   } catch (e: any) {
@@ -3091,7 +3184,7 @@ export async function runFullAutoClone(
       success: false,
       phases,
       pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
-      cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: false, signatureVerified: false, zipIntegrity: false, modifications },
+      cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: opts.removeAds !== false, fridaInjected, signatureVerified: false, zipIntegrity: false, modifications },
       error: e.message,
       generatedAt: new Date().toISOString(),
     };
