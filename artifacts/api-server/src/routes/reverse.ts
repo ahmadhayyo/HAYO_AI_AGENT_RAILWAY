@@ -14,6 +14,8 @@ import {
   decompileFileForEdit,
   getSessionInfo,
   keepSessionAlive,
+  applyPatchTemplate,
+  verifyAPK,
   readSessionFileContent,
   saveFileEdit,
   aiModifyCode,
@@ -52,7 +54,7 @@ import {
   extractSecretsFromAPK,
   runFullAutoClone,
 } from "../hayo/services/reverse-engineer.js";
-import type { CloneOptions, AuditReport } from "../hayo/services/reverse-engineer.js";
+import type { CloneOptions, AuditReport, PatchTemplate, BuildReport, VerificationResult } from "../hayo/services/reverse-engineer.js";
 import { callPowerAI } from "../hayo/providers.js";
 import path from "path";
 import fs from "fs";
@@ -283,11 +285,27 @@ router.post("/rebuild", async (req: Request, res: Response) => {
     if (result.success && result.apkBuffer) {
       res.setHeader("Content-Type", "application/vnd.android.package-archive");
       res.setHeader("Content-Disposition", `attachment; filename="rebuilt_${sessionId}.apk"`);
-      if ((result as any).signed) res.setHeader("X-APK-Signed", "true");
+      if (result.signed) res.setHeader("X-APK-Signed", "true");
+      // Send build report as JSON headers so frontend can display pipeline details
+      res.setHeader("X-Build-Steps", Buffer.from(JSON.stringify(result.steps)).toString("base64"));
+      if (result.verification) res.setHeader("X-Verification", Buffer.from(JSON.stringify(result.verification)).toString("base64"));
       res.send(result.apkBuffer);
     } else {
-      res.status(500).json({ error: result.error || "فشل إعادة البناء" });
+      res.status(500).json({ error: result.error || "فشل إعادة البناء", steps: result.steps });
     }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Apply patch template (Edit tab) ──
+router.post("/apply-patch", async (req: Request, res: Response) => {
+  extendTimeout(req, res);
+  const { sessionId, template, options } = req.body as { sessionId: string; template: PatchTemplate; options?: { apiUrl?: string; apiReplace?: string } };
+  if (!sessionId || !template) { res.status(400).json({ error: "sessionId و template مطلوبين" }); return; }
+  try {
+    const result = await applyPatchTemplate(sessionId, template, options);
+    res.json(result);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

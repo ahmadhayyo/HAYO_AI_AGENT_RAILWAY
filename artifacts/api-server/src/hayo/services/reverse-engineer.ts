@@ -1002,119 +1002,196 @@ export async function aiSmartModify(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// REBUILD APK
+// BUILD REPORT — detailed build pipeline results
 // ═══════════════════════════════════════════════════════════════
-export async function rebuildAPK(sessionId: string): Promise<{ success: boolean; apkBuffer?: Buffer; signed?: boolean; error?: string }> {
-  const sess = editSessions.get(sessionId);
-  if (!sess) return { success: false, error: "الجلسة غير موجودة" };
-  sess.lastActivity = Date.now();
+export interface BuildReport {
+  success: boolean;
+  apkBuffer?: Buffer;
+  signed: boolean;
+  steps: BuildStep[];
+  verification?: VerificationResult;
+  error?: string;
+}
+interface BuildStep {
+  name: string;
+  status: "success" | "failed" | "skipped" | "warning";
+  detail: string;
+  durationMs: number;
+}
+export interface VerificationResult {
+  signatureValid: boolean;
+  v1Signed: boolean;
+  v2Signed: boolean;
+  v3Signed: boolean;
+  zipAligned: boolean;
+  zipIntegrity: boolean;
+  installable: boolean;
+  apkSizeBytes: number;
+  details: string[];
+  warnings: string[];
+}
 
-  // For non-APK formats, create a ZIP of the modified files
+// ═══════════════════════════════════════════════════════════════
+// REBUILD APK — Production-grade pipeline
+// ═══════════════════════════════════════════════════════════════
+export async function rebuildAPK(sessionId: string): Promise<BuildReport> {
+  const sess = editSessions.get(sessionId);
+  if (!sess) return { success: false, signed: false, steps: [], error: "الجلسة غير موجودة" };
+  sess.lastActivity = Date.now();
+  const steps: BuildStep[] = [];
+
+  // ── Non-APK formats: ZIP package ──
   if (!sess.usedApkTool) {
+    const t0 = Date.now();
     try {
       const workDir = path.dirname(sess.decompDir);
       const outputZip = path.join(workDir, "rebuilt.zip");
-      runCmd("zip", ["-r", outputZip, "."], sess.decompDir, 120_000);
+      runCmd("zip", ["-r", "-9", outputZip, "."], sess.decompDir, 120_000);
       if (!fs.existsSync(outputZip)) {
-        return { success: false, error: "فشل إنشاء ملف ZIP للملفات المعدّلة" };
+        steps.push({ name: "حزم ZIP", status: "failed", detail: "فشل إنشاء ملف ZIP", durationMs: Date.now() - t0 });
+        return { success: false, signed: false, steps, error: "فشل إنشاء ملف ZIP" };
       }
       const zipBuffer = fs.readFileSync(outputZip);
-      return { success: true, apkBuffer: zipBuffer, signed: false };
+      steps.push({ name: "حزم ZIP", status: "success", detail: `${(zipBuffer.length / 1024 / 1024).toFixed(2)} MB`, durationMs: Date.now() - t0 });
+      return { success: true, apkBuffer: zipBuffer, signed: false, steps };
     } catch (e: any) {
-      return { success: false, error: "فشل حزم الملفات المعدّلة: " + e.message };
+      steps.push({ name: "حزم ZIP", status: "failed", detail: e.message, durationMs: Date.now() - t0 });
+      return { success: false, signed: false, steps, error: e.message };
     }
   }
 
   const workDir = path.dirname(sess.decompDir);
-  const outputApk = path.join(workDir, "rebuilt.apk");
 
+  // ── STEP 1: Purge old META-INF signatures from decompiled source ──
+  const t1 = Date.now();
+  let purgedCount = 0;
+  try {
+    const sigExts = [".SF", ".RSA", ".DSA", ".EC", ".MF"];
+    for (const subDir of ["original/META-INF", "META-INF"]) {
+      const metaDir = path.join(sess.decompDir, subDir);
+      if (fs.existsSync(metaDir)) {
+        for (const f of fs.readdirSync(metaDir)) {
+          if (sigExts.some(e => f.toUpperCase().endsWith(e))) {
+            fs.unlinkSync(path.join(metaDir, f));
+            purgedCount++;
+          }
+        }
+      }
+    }
+    // Also remove apktool's stamp file to avoid "invalid signature" artifacts
+    const stampFile = path.join(sess.decompDir, "original", "META-INF", "STAMP-CERT-SHA256");
+    if (fs.existsSync(stampFile)) { fs.unlinkSync(stampFile); purgedCount++; }
+    steps.push({ name: "حذف التوقيعات القديمة", status: purgedCount > 0 ? "success" : "skipped", detail: purgedCount > 0 ? `تم حذف ${purgedCount} ملف توقيع من META-INF` : "لا توجد توقيعات قديمة", durationMs: Date.now() - t1 });
+  } catch (e: any) {
+    steps.push({ name: "حذف التوقيعات القديمة", status: "warning", detail: e.message, durationMs: Date.now() - t1 });
+  }
+
+  // ── STEP 2: APKTool rebuild ──
+  const t2 = Date.now();
+  const outputApk = path.join(workDir, "rebuilt.apk");
   try {
     const apkt = findApkTool();
     const apktJar = findApkToolJar();
     const javaAvail = isJavaAvailable();
     const rebuildHelper = (args: string[]) => {
-      if (javaAvail && apktJar) {
-        return runCmd("java", ["-Xmx2G", "-jar", apktJar, ...args], workDir, 300_000);
-      }
+      if (javaAvail && apktJar) return runCmd("java", ["-Xmx2G", "-jar", apktJar, ...args], workDir, 300_000);
       return runCmd(apkt, args, workDir, 180_000);
     };
-    const r = rebuildHelper(["b", "--use-aapt2", "-o", outputApk, sess.decompDir]);
+
+    // Try with --use-aapt2 first (modern), then fallback without
+    let r = rebuildHelper(["b", "--use-aapt2", "-o", outputApk, sess.decompDir]);
     if (!fs.existsSync(outputApk)) {
-      const r2 = rebuildHelper(["b", "-o", outputApk, sess.decompDir]);
-      if (!fs.existsSync(outputApk)) {
-        return { success: false, error: "فشل إعادة البناء: " + r2.stderr.slice(0, 300) };
-      }
+      r = rebuildHelper(["b", "-o", outputApk, sess.decompDir]);
     }
-    const signed = await signAPKFile(outputApk, workDir);
-    const apkBuffer = fs.readFileSync(signed || outputApk);
-    return { success: true, apkBuffer, signed: !!signed };
+    if (!fs.existsSync(outputApk)) {
+      steps.push({ name: "إعادة بناء APK", status: "failed", detail: "APKTool فشل: " + (r.stderr || "").slice(0, 200), durationMs: Date.now() - t2 });
+      return { success: false, signed: false, steps, error: "فشل إعادة بناء APK — " + (r.stderr || "").slice(0, 200) };
+    }
+    const apkSize = fs.statSync(outputApk).size;
+    steps.push({ name: "إعادة بناء APK", status: "success", detail: `APKTool → ${(apkSize / 1024 / 1024).toFixed(2)} MB`, durationMs: Date.now() - t2 });
   } catch (e: any) {
-    return { success: false, error: e.message };
+    steps.push({ name: "إعادة بناء APK", status: "failed", detail: e.message, durationMs: Date.now() - t2 });
+    return { success: false, signed: false, steps, error: e.message };
   }
-}
 
-// ═══════════════════════════════════════════════════════════════
-// SIGN APK — zipalign → apksigner (Android 11+ compatible)
-// ═══════════════════════════════════════════════════════════════
-async function signAPKFile(apkPath: string, workDir: string): Promise<string | null> {
+  // ── STEP 3: Strip old signatures from rebuilt APK ZIP ──
+  const t3 = Date.now();
   try {
-    // ── 1. Resolve keystore ──────────────────────────────────
-    const keystorePaths = [
-      "/home/runner/debug.keystore",
-      path.join(workDir, "qa_debug.keystore"),
-      path.join(workDir, "debug.keystore"),
-    ];
-    let keystorePath = keystorePaths.find(p => fs.existsSync(p)) ?? null;
-
-    if (!keystorePath) {
-      const newKeystore = path.join(workDir, "qa_debug.keystore");
-      runCmd("keytool", [
-        "-genkeypair", "-v",
-        "-keystore", newKeystore,
-        "-storepass", "android",
-        "-alias", "androiddebugkey",
-        "-keypass", "android",
-        "-keyalg", "RSA",
-        "-keysize", "2048",
-        "-validity", "10000",
-        "-dname", "CN=QA,O=Security,C=US",
-      ], workDir, 30_000);
-      keystorePath = fs.existsSync(newKeystore) ? newKeystore : null;
-    }
-
-    if (!keystorePath) {
-      console.warn("[SignAPK] No keystore available — returning unsigned APK");
-      return null;
-    }
-
-    // ── 2. Strip old V1 signature files — CRITICAL for modern Android ──
-    // APKTool rebuild keeps META-INF from original. If the old CERT.RSA claims
-    // V2-signed but no valid V2 block exists, Android 7+ throws INSTALL_PARSE_FAILED.
-    // We list actual META-INF entries first to avoid corrupting the ZIP with zip -d on non-existent entries.
-    console.log("[SignAPK] Checking for old META-INF signature files...");
-    const listResult = runCmd("unzip", ["-l", apkPath], workDir, 10_000);
-    const sigExts = [".RSA", ".SF", ".DSA", ".EC"];
+    const listResult = runCmd("unzip", ["-l", outputApk], workDir, 10_000);
+    const sigExts = [".RSA", ".SF", ".DSA", ".EC", ".MF"];
     const metaEntries = (listResult.stdout || "").split("\n")
       .map(l => l.trim().split(/\s+/).pop() || "")
-      .filter(e => e.startsWith("META-INF/") && (e === "META-INF/MANIFEST.MF" || sigExts.some(x => e.toUpperCase().endsWith(x))));
+      .filter(e => e.startsWith("META-INF/") && sigExts.some(x => e.toUpperCase().endsWith(x)));
     if (metaEntries.length > 0) {
-      console.log(`[SignAPK] Stripping ${metaEntries.length} old signature files: ${metaEntries.join(", ")}`);
-      const stripResult = runCmd("zip", ["-d", apkPath, ...metaEntries], workDir, 15_000);
-      console.log(`[SignAPK] META-INF strip exit code: ${stripResult.code}`);
+      runCmd("zip", ["-d", outputApk, ...metaEntries], workDir, 15_000);
+      steps.push({ name: "تنظيف التوقيعات من APK", status: "success", detail: `حُذف ${metaEntries.length} ملف: ${metaEntries.join(", ")}`, durationMs: Date.now() - t3 });
     } else {
-      console.log("[SignAPK] No old signature files found — skipping strip");
+      steps.push({ name: "تنظيف التوقيعات من APK", status: "skipped", detail: "APK نظيف بالفعل", durationMs: Date.now() - t3 });
     }
+  } catch (e: any) {
+    steps.push({ name: "تنظيف التوقيعات من APK", status: "warning", detail: e.message, durationMs: Date.now() - t3 });
+  }
 
-    // ── 3. zipalign -f 4 (required for Android 11+) ─────────
-    const alignedPath = apkPath.replace(/\.apk$/, "-aligned.apk");
-    const alignResult = runCmd("zipalign", ["-f", "-v", "4", apkPath, alignedPath], workDir, 60_000);
-    const useAligned = alignResult.code === 0 && fs.existsSync(alignedPath);
-    const targetForSigning = useAligned ? alignedPath : apkPath;
-    console.log(`[SignAPK] zipalign ${useAligned ? "OK" : "FAILED (using unaligned APK)"}`);
+  // ── STEP 4: Resolve/Generate keystore ──
+  const t4 = Date.now();
+  const keystorePaths = [
+    "/home/runner/debug.keystore",
+    path.join(workDir, "qa_debug.keystore"),
+    path.join(workDir, "debug.keystore"),
+    path.join(os.homedir(), ".android", "debug.keystore"),
+  ];
+  let keystorePath = keystorePaths.find(p => fs.existsSync(p)) ?? null;
+  if (!keystorePath) {
+    const newKeystore = path.join(workDir, "qa_debug.keystore");
+    const r = runCmd("keytool", [
+      "-genkeypair", "-v", "-keystore", newKeystore,
+      "-storepass", "android", "-alias", "androiddebugkey", "-keypass", "android",
+      "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
+      "-dname", "CN=HAYO Security,OU=RE,O=HAYO,L=Cloud,C=US",
+    ], workDir, 30_000);
+    keystorePath = fs.existsSync(newKeystore) ? newKeystore : null;
+    if (keystorePath) {
+      steps.push({ name: "إنشاء مفتاح التوقيع", status: "success", detail: "RSA-2048 keystore تم إنشاؤه", durationMs: Date.now() - t4 });
+    } else {
+      steps.push({ name: "إنشاء مفتاح التوقيع", status: "failed", detail: "فشل إنشاء keystore: " + r.stderr.slice(0, 100), durationMs: Date.now() - t4 });
+    }
+  } else {
+    steps.push({ name: "مفتاح التوقيع", status: "success", detail: "keystore موجود", durationMs: Date.now() - t4 });
+  }
 
-    // ── 4. apksigner (preferred — Android 11+ V2/V3 schemes) ─
-    const signedPath = apkPath.replace(/\.apk$/, "-signed.apk");
-    const apkSignerResult = runCmd("apksigner", [
+  if (!keystorePath) {
+    // Return unsigned APK if no keystore
+    const apkBuffer = fs.readFileSync(outputApk);
+    steps.push({ name: "التوقيع", status: "failed", detail: "لا يوجد keystore — APK غير موقّع", durationMs: 0 });
+    return { success: true, apkBuffer, signed: false, steps };
+  }
+
+  // ── STEP 5: zipalign (4-byte boundary alignment — required before apksigner) ──
+  const t5 = Date.now();
+  const alignedPath = path.join(workDir, "aligned.apk");
+  let alignedOk = false;
+  try {
+    const r = runCmd("zipalign", ["-f", "-v", "4", outputApk, alignedPath], workDir, 60_000);
+    alignedOk = r.code === 0 && fs.existsSync(alignedPath);
+    if (alignedOk) {
+      // Verify alignment
+      const checkResult = runCmd("zipalign", ["-c", "-v", "4", alignedPath], workDir, 30_000);
+      const isAligned = checkResult.code === 0;
+      steps.push({ name: "محاذاة zipalign", status: isAligned ? "success" : "warning", detail: isAligned ? "4-byte aligned ✓" : "محاذاة غير مثالية لكن متابعة", durationMs: Date.now() - t5 });
+    } else {
+      steps.push({ name: "محاذاة zipalign", status: "warning", detail: "zipalign غير متاح — متابعة بدون محاذاة", durationMs: Date.now() - t5 });
+    }
+  } catch {
+    steps.push({ name: "محاذاة zipalign", status: "warning", detail: "zipalign غير متاح", durationMs: Date.now() - t5 });
+  }
+  const apkForSigning = alignedOk ? alignedPath : outputApk;
+
+  // ── STEP 6: Sign with apksigner (V1+V2+V3 — Android 7-14+ compatible) ──
+  const t6 = Date.now();
+  const signedPath = path.join(workDir, "signed.apk");
+  let signedOk = false;
+  try {
+    const r = runCmd("apksigner", [
       "sign",
       "--ks", keystorePath,
       "--ks-pass", "pass:android",
@@ -1124,48 +1201,364 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
       "--v1-signing-enabled", "true",
       "--v2-signing-enabled", "true",
       "--v3-signing-enabled", "true",
+      "--v4-signing-enabled", "false",
+      apkForSigning,
+    ], workDir, 60_000);
+    signedOk = r.code === 0 && fs.existsSync(signedPath);
+    if (signedOk) {
+      steps.push({ name: "توقيع apksigner V1+V2+V3", status: "success", detail: "V1 (JAR) + V2 (APK Sig v2) + V3 (APK Sig v3)", durationMs: Date.now() - t6 });
+    }
+  } catch {}
+
+  // Fallback to jarsigner if apksigner failed
+  if (!signedOk) {
+    try {
+      const jarSignedPath = path.join(workDir, "jarsigned.apk");
+      fs.copyFileSync(apkForSigning, jarSignedPath);
+      const r = runCmd("jarsigner", [
+        "-verbose", "-sigalg", "SHA256withRSA", "-digestalg", "SHA-256",
+        "-keystore", keystorePath, "-storepass", "android", "-keypass", "android",
+        jarSignedPath, "androiddebugkey",
+      ], workDir, 60_000);
+      if (r.code === 0) {
+        // Re-align after jarsigner (jarsigner breaks alignment)
+        const reAligned = path.join(workDir, "final-aligned.apk");
+        const rAlign = runCmd("zipalign", ["-f", "4", jarSignedPath, reAligned], workDir, 30_000);
+        if (rAlign.code === 0 && fs.existsSync(reAligned)) {
+          fs.copyFileSync(reAligned, signedPath);
+        } else {
+          fs.copyFileSync(jarSignedPath, signedPath);
+        }
+        signedOk = true;
+        steps.push({ name: "توقيع jarsigner (بديل)", status: "warning", detail: "V1 فقط — قد لا يعمل على Android 11+", durationMs: Date.now() - t6 });
+      }
+    } catch {}
+  }
+
+  if (!signedOk) {
+    steps.push({ name: "التوقيع", status: "failed", detail: "فشل apksigner و jarsigner", durationMs: Date.now() - t6 });
+    const apkBuffer = fs.readFileSync(outputApk);
+    return { success: true, apkBuffer, signed: false, steps };
+  }
+
+  // ── STEP 7: Post-build verification ──
+  const verification = verifyAPK(signedPath, workDir);
+  steps.push({
+    name: "التحقق من صحة APK",
+    status: verification.installable ? "success" : "warning",
+    detail: verification.installable
+      ? `✓ قابل للتثبيت | ${verification.v1Signed ? "V1" : ""}${verification.v2Signed ? "+V2" : ""}${verification.v3Signed ? "+V3" : ""} | ${(verification.apkSizeBytes / 1024 / 1024).toFixed(2)} MB`
+      : verification.warnings.join(" | "),
+    durationMs: 0,
+  });
+
+  const apkBuffer = fs.readFileSync(signedPath);
+  return { success: true, apkBuffer, signed: true, steps, verification };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// VERIFY APK — comprehensive post-build integrity check
+// ═══════════════════════════════════════════════════════════════
+export function verifyAPK(apkPath: string, workDir: string): VerificationResult {
+  const details: string[] = [];
+  const warnings: string[] = [];
+  let signatureValid = false, v1 = false, v2 = false, v3 = false, zipAligned = false, zipIntegrity = false;
+
+  // 1. Signature verification
+  try {
+    const r = runCmd("apksigner", ["verify", "--verbose", "--print-certs", apkPath], workDir, 30_000);
+    signatureValid = r.code === 0;
+    const out = r.stdout || "";
+    v1 = /Verified using v1 scheme.*true/i.test(out);
+    v2 = /Verified using v2 scheme.*true/i.test(out);
+    v3 = /Verified using v3 scheme.*true/i.test(out);
+    if (signatureValid) details.push("✓ التوقيع صالح");
+    else warnings.push("✗ فشل التحقق من التوقيع: " + (r.stderr || "").slice(0, 100));
+    if (v1) details.push("✓ V1 (JAR Signature)");
+    if (v2) details.push("✓ V2 (APK Signature Scheme v2)");
+    if (v3) details.push("✓ V3 (APK Signature Scheme v3)");
+    if (!v2 && !v3) warnings.push("⚠ لا يوجد V2/V3 — قد لا يعمل على Android 7+");
+  } catch {
+    warnings.push("⚠ apksigner غير متاح — لم يتم التحقق من التوقيع");
+  }
+
+  // 2. ZIP alignment check
+  try {
+    const r = runCmd("zipalign", ["-c", "-v", "4", apkPath], workDir, 30_000);
+    zipAligned = r.code === 0;
+    if (zipAligned) details.push("✓ محاذاة 4-byte صحيحة");
+    else warnings.push("⚠ محاذاة غير صحيحة — قد يؤثر على الأداء");
+  } catch {
+    warnings.push("⚠ zipalign غير متاح — لم يتم التحقق من المحاذاة");
+  }
+
+  // 3. ZIP integrity (can Android parse this APK at all?)
+  try {
+    const r = runCmd("unzip", ["-t", apkPath], workDir, 30_000);
+    zipIntegrity = r.code === 0;
+    if (zipIntegrity) details.push("✓ سلامة ZIP");
+    else warnings.push("✗ ملف APK تالف (ZIP corrupt)");
+  } catch {
+    warnings.push("⚠ لم يتم التحقق من سلامة ZIP");
+  }
+
+  // 4. Check for critical files
+  try {
+    const r = runCmd("unzip", ["-l", apkPath], workDir, 10_000);
+    const out = r.stdout || "";
+    const hasDex = out.includes("classes.dex");
+    const hasManifest = out.includes("AndroidManifest.xml");
+    const hasResources = out.includes("resources.arsc");
+    if (hasDex) details.push("✓ classes.dex موجود");
+    else warnings.push("✗ classes.dex مفقود — APK لن يعمل");
+    if (hasManifest) details.push("✓ AndroidManifest.xml موجود");
+    else warnings.push("✗ AndroidManifest.xml مفقود");
+    if (hasResources) details.push("✓ resources.arsc موجود");
+  } catch {}
+
+  const apkSizeBytes = fs.existsSync(apkPath) ? fs.statSync(apkPath).size : 0;
+  const installable = signatureValid && zipIntegrity && (v1 || v2 || v3);
+
+  return { signatureValid, v1Signed: v1, v2Signed: v2, v3Signed: v3, zipAligned, zipIntegrity, installable, apkSizeBytes, details, warnings };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TEMPLATE PATCHES — Real Smali-level modifications for Edit tab
+// ═══════════════════════════════════════════════════════════════
+export type PatchTemplate = "removeAds" | "bypassRoot" | "bypassSSL" | "removeLicense" | "unlockPremium" | "modifyAPI" | "removeTracking" | "bypassIntegrity";
+
+export async function applyPatchTemplate(
+  sessionId: string, template: PatchTemplate, options?: { apiUrl?: string; apiReplace?: string }
+): Promise<{ success: boolean; modifications: string[]; filesModified: number; error?: string }> {
+  const sess = editSessions.get(sessionId);
+  if (!sess) return { success: false, modifications: [], filesModified: 0, error: "الجلسة غير موجودة" };
+  if (!sess.usedApkTool) return { success: false, modifications: [], filesModified: 0, error: "القوالب تعمل فقط على APK (smali)" };
+  sess.lastActivity = Date.now();
+
+  const mods: string[] = [];
+  const manifestPath = path.join(sess.decompDir, "AndroidManifest.xml");
+  const manifest = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, "utf-8") : "";
+
+  switch (template) {
+    case "removeAds": {
+      const r = await patchAds(sess.decompDir, manifest);
+      mods.push(...r);
+      break;
+    }
+    case "bypassRoot": {
+      const smaliFiles = readDirRecursive(sess.decompDir).filter(f => f.endsWith(".smali")).slice(0, 2000);
+      let patched = 0;
+      const rootPatterns = [
+        "isRooted", "isDeviceRooted", "checkRoot", "detectRoot", "checkSuExists",
+        "checkForSuperUser", "checkForBusyBoxBinary", "checkRootMethod",
+        "isRootAvailable", "isRootedDevice", "RootBeer", "RootTools",
+      ];
+      for (const fp of smaliFiles) {
+        try {
+          let content = fs.readFileSync(fp, "utf-8");
+          let changed = false;
+          // Patch boolean root-detection methods to return false
+          for (const method of rootPatterns) {
+            const re = new RegExp(`(\\.method\\s+(?:public|private|protected|static|final|synchronized|native|abstract|bridge|synthetic|\\s)+[^\\n]*${method}[^\\n]*\\)Z\\n)([\\s\\S]*?)(\\.end method)`, "gm");
+            content = content.replace(re, (match, header, body, end) => {
+              if (body.length < 5000) {
+                patched++;
+                changed = true;
+                if (!sess.fileBackups.has(path.relative(sess.decompDir, fp))) sess.fileBackups.set(path.relative(sess.decompDir, fp), fs.readFileSync(fp, "utf-8"));
+                return `${header}    .locals 1\n    # [HAYO] ROOT BYPASS\n    const/4 v0, 0x0\n    return v0\n${end}`;
+              }
+              return match;
+            });
+          }
+          // Neutralize su/magisk binary checks
+          const suInvokes = /invoke-[a-z/]+\s+\{[^}]*\},\s*L[^;]*;->(?:exec|getRuntime|checkSuExists|checkForBinary)\([^)]*\)[^\n]*/g;
+          const r = safeNeutralizeInvoke(content, suInvokes, "ROOT BYPASS");
+          if (r.count > 0) { content = r.content; changed = true; patched += r.count; }
+          if (changed) fs.writeFileSync(fp, content, "utf-8");
+        } catch {}
+      }
+      if (patched > 0) mods.push(`🔓 تم تجاوز ${patched} فحص Root Detection`);
+      else mods.push("ℹ لم يتم العثور على فحوصات Root");
+      break;
+    }
+    case "bypassSSL": {
+      const smaliFiles = readDirRecursive(sess.decompDir).filter(f => f.endsWith(".smali")).slice(0, 2000);
+      let patched = 0;
+      const sslPatterns = [
+        "checkServerTrusted", "checkClientTrusted", "verify",
+        "getAcceptedIssuers", "onReceivedSslError", "certificatePinner",
+      ];
+      for (const fp of smaliFiles) {
+        try {
+          let content = fs.readFileSync(fp, "utf-8");
+          let changed = false;
+          // Patch SSL verification methods to no-op
+          for (const method of sslPatterns) {
+            const re = new RegExp(`(\\.method\\s+(?:public|private|protected|static|final|synchronized|native|abstract|bridge|synthetic|\\s)+[^\\n]*${method}[^\\n]*\\)V\\n)([\\s\\S]*?)(\\.end method)`, "gm");
+            content = content.replace(re, (match, header, body, end) => {
+              if (body.length < 5000 && !body.includes("[HAYO]")) {
+                patched++;
+                changed = true;
+                if (!sess.fileBackups.has(path.relative(sess.decompDir, fp))) sess.fileBackups.set(path.relative(sess.decompDir, fp), fs.readFileSync(fp, "utf-8"));
+                return `${header}    .locals 0\n    # [HAYO] SSL PINNING BYPASS\n    return-void\n${end}`;
+              }
+              return match;
+            });
+          }
+          // Patch getAcceptedIssuers (returns X509Certificate[])
+          const issuerRe = /(.method\s+(?:public|private|protected|static|final|synchronized|native|abstract|bridge|synthetic|\s)+[^\n]*getAcceptedIssuers[^\n]*\)\[Ljava\/security\/cert\/X509Certificate;\n)([\s\S]*?)(\.end method)/gm;
+          content = content.replace(issuerRe, (match, header, body, end) => {
+            if (body.length < 3000 && !body.includes("[HAYO]")) {
+              patched++;
+              changed = true;
+              return `${header}    .locals 1\n    # [HAYO] SSL BYPASS - empty trust\n    const/4 v0, 0x0\n    new-array v0, v0, [Ljava/security/cert/X509Certificate;\n    return-object v0\n${end}`;
+            }
+            return match;
+          });
+          if (changed) fs.writeFileSync(fp, content, "utf-8");
+        } catch {}
+      }
+      // Also patch network_security_config.xml if exists
+      const nscPath = path.join(sess.decompDir, "res", "xml", "network_security_config.xml");
+      if (fs.existsSync(nscPath)) {
+        const nsc = `<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>`;
+        if (!sess.fileBackups.has("res/xml/network_security_config.xml")) sess.fileBackups.set("res/xml/network_security_config.xml", fs.readFileSync(nscPath, "utf-8"));
+        fs.writeFileSync(nscPath, nsc, "utf-8");
+        patched++;
+        mods.push("🔓 تم تعديل network_security_config.xml لقبول شهادات المستخدم");
+      }
+      if (patched > 0) mods.push(`🔓 تم تعطيل ${patched} فحص SSL Pinning`);
+      else mods.push("ℹ لم يتم العثور على SSL Pinning");
+      break;
+    }
+    case "removeLicense": {
+      const r = await patchLicense(sess.decompDir);
+      mods.push(...r);
+      // Track backups
+      for (const m of r) {
+        const match = m.match(/ملف\s+(\S+)/);
+        if (match) sess.fileBackups.set(match[1], "");
+      }
+      break;
+    }
+    case "unlockPremium": {
+      const r = await patchPremium(sess.decompDir);
+      mods.push(...r);
+      break;
+    }
+    case "modifyAPI": {
+      if (!options?.apiUrl || !options?.apiReplace) {
+        return { success: false, modifications: [], filesModified: 0, error: "يجب تحديد apiUrl و apiReplace" };
+      }
+      const allFiles = readDirRecursive(sess.decompDir).filter(f => !isBinaryFile(f)).slice(0, 3000);
+      let replacedCount = 0;
+      for (const fp of allFiles) {
+        try {
+          const content = fs.readFileSync(fp, "utf-8");
+          if (content.includes(options.apiUrl)) {
+            const relPath = path.relative(sess.decompDir, fp);
+            if (!sess.fileBackups.has(relPath)) sess.fileBackups.set(relPath, content);
+            const updated = content.split(options.apiUrl).join(options.apiReplace);
+            fs.writeFileSync(fp, updated, "utf-8");
+            replacedCount++;
+          }
+        } catch {}
+      }
+      if (replacedCount > 0) mods.push(`🔑 تم استبدال API URL في ${replacedCount} ملف: ${options.apiUrl} → ${options.apiReplace}`);
+      else mods.push(`ℹ لم يتم العثور على ${options.apiUrl} في أي ملف`);
+      break;
+    }
+    case "removeTracking": {
+      const r = await patchTracking(sess.decompDir);
+      mods.push(...r);
+      break;
+    }
+    case "bypassIntegrity": {
+      const r = await patchTamperDetection(sess.decompDir);
+      mods.push(...r);
+      break;
+    }
+  }
+
+  // Update session structure
+  sess.structure = buildTree(sess.decompDir, sess.decompDir);
+  sess.fileCount = readDirRecursive(sess.decompDir).length;
+
+  return { success: true, modifications: mods, filesModified: mods.length };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SIGN APK — standalone (kept for backward compat with cloneApp)
+// ═══════════════════════════════════════════════════════════════
+async function signAPKFile(apkPath: string, workDir: string): Promise<string | null> {
+  try {
+    const keystorePaths = [
+      "/home/runner/debug.keystore",
+      path.join(workDir, "qa_debug.keystore"),
+      path.join(workDir, "debug.keystore"),
+      path.join(os.homedir(), ".android", "debug.keystore"),
+    ];
+    let keystorePath = keystorePaths.find(p => fs.existsSync(p)) ?? null;
+
+    if (!keystorePath) {
+      const newKeystore = path.join(workDir, "qa_debug.keystore");
+      runCmd("keytool", [
+        "-genkeypair", "-v", "-keystore", newKeystore,
+        "-storepass", "android", "-alias", "androiddebugkey", "-keypass", "android",
+        "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
+        "-dname", "CN=HAYO Security,OU=RE,O=HAYO,L=Cloud,C=US",
+      ], workDir, 30_000);
+      keystorePath = fs.existsSync(newKeystore) ? newKeystore : null;
+    }
+    if (!keystorePath) return null;
+
+    // Strip old signatures from APK
+    const listResult = runCmd("unzip", ["-l", apkPath], workDir, 10_000);
+    const sigExts = [".RSA", ".SF", ".DSA", ".EC", ".MF"];
+    const metaEntries = (listResult.stdout || "").split("\n")
+      .map(l => l.trim().split(/\s+/).pop() || "")
+      .filter(e => e.startsWith("META-INF/") && sigExts.some(x => e.toUpperCase().endsWith(x)));
+    if (metaEntries.length > 0) runCmd("zip", ["-d", apkPath, ...metaEntries], workDir, 15_000);
+
+    // zipalign
+    const alignedPath = apkPath.replace(/\.apk$/, "-aligned.apk");
+    const alignResult = runCmd("zipalign", ["-f", "-v", "4", apkPath, alignedPath], workDir, 60_000);
+    const useAligned = alignResult.code === 0 && fs.existsSync(alignedPath);
+    const targetForSigning = useAligned ? alignedPath : apkPath;
+
+    // apksigner V1+V2+V3
+    const signedPath = apkPath.replace(/\.apk$/, "-signed.apk");
+    const r = runCmd("apksigner", [
+      "sign", "--ks", keystorePath, "--ks-pass", "pass:android",
+      "--ks-key-alias", "androiddebugkey", "--key-pass", "pass:android",
+      "--out", signedPath,
+      "--v1-signing-enabled", "true", "--v2-signing-enabled", "true",
+      "--v3-signing-enabled", "true", "--v4-signing-enabled", "false",
       targetForSigning,
     ], workDir, 60_000);
 
-    if (apkSignerResult.code === 0 && fs.existsSync(signedPath)) {
-      console.log("[SignAPK] apksigner OK — V1/V2/V3 signatures applied");
-      // ── 5. Verify signature (confirms APK will install on modern Android) ─
-      const verifyResult = runCmd("apksigner", ["verify", "--verbose", "--print-certs", signedPath], workDir, 30_000);
-      if (verifyResult.code === 0) {
-        console.log("[SignAPK] Signature VERIFIED ✓ — APK is installable on modern Android");
-        console.log("[SignAPK] Verify output:", (verifyResult.stdout || "").substring(0, 300));
-      } else {
-        console.warn("[SignAPK] Signature verify returned non-zero:", verifyResult.stderr);
-      }
-      return signedPath;
-    }
+    if (r.code === 0 && fs.existsSync(signedPath)) return signedPath;
 
-    // ── 4. Fallback: jarsigner (older devices) ────────────────
-    console.warn("[SignAPK] apksigner failed, trying jarsigner fallback...");
-    const jarSignedPath = apkPath.replace(/\.apk$/, "-jarsigned.apk");
-    fs.copyFileSync(targetForSigning, jarSignedPath);
-    const jarResult = runCmd("jarsigner", [
-      "-verbose",
-      "-sigalg", "SHA256withRSA",
-      "-digestalg", "SHA-256",
-      "-keystore", keystorePath,
-      "-storepass", "android",
-      "-keypass", "android",
-      jarSignedPath,
-      "androiddebugkey",
+    // Fallback: jarsigner
+    const jarPath = apkPath.replace(/\.apk$/, "-jarsigned.apk");
+    fs.copyFileSync(targetForSigning, jarPath);
+    const jr = runCmd("jarsigner", [
+      "-verbose", "-sigalg", "SHA256withRSA", "-digestalg", "SHA-256",
+      "-keystore", keystorePath, "-storepass", "android", "-keypass", "android",
+      jarPath, "androiddebugkey",
     ], workDir, 60_000);
+    if (jr.code === 0) return jarPath;
 
-    if (jarResult.code === 0) {
-      console.log("[SignAPK] jarsigner fallback OK");
-      return jarSignedPath;
-    }
-
-    console.error("[SignAPK] Both apksigner and jarsigner failed");
     return null;
-  } catch (e: any) {
-    console.error("[SignAPK] Exception:", e.message);
-    return null;
-  }
+  } catch { return null; }
 }
 
 // ═══════════════════════════════════════════════════════════════

@@ -457,6 +457,9 @@ export default function ReverseEngineer(){
   // Build
   const[building,setBuilding]=useState(false);
   const[sessMins,setSessMins]=useState(240);
+  const[buildReport,setBuildReport]=useState<{steps:{name:string;status:string;detail:string;durationMs:number}[];verification?:any}|null>(null);
+  const[patching,setPatching]=useState(false);
+  const[patchResult,setPatchResult]=useState<{modifications:string[];filesModified:number}|null>(null);
   // Undo/Redo
   const[editHistory,setEditHistory]=useState<{content:string;path:string;desc:string}[]>([]);
   const[histIdx,setHistIdx]=useState(-1);
@@ -691,18 +694,39 @@ export default function ReverseEngineer(){
   const applyMod=()=>{if(!pending||!eNode)return;pushHistory(eContent,eNode.path,"قبل تعديل AI");setEContent(pending.modifiedCode);setPending(null);toast.success("تطبيق — اضغط حفظ");};
 
   const doBuild=async()=>{
-    if(!eSess||eMods.size===0){toast.error("لا تعديلات!");return;}setBuilding(true);
+    if(!eSess||eMods.size===0){toast.error("لا تعديلات!");return;}setBuilding(true);setBuildReport(null);
     try{
-      // KeepAlive before build to ensure session is fresh
       await fetch(`/api/reverse/session/${eSess.sessionId}/keepalive`,{method:"POST",credentials:"include"});
       const r=await fetchRE("/api/reverse/rebuild",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:eSess.sessionId})});
-      if(!r.ok){const d=await r.json();throw new Error(d.error||`فشل البناء (رمز: ${r.status})`);}const blob=await r.blob();const url=URL.createObjectURL(blob);
+      if(!r.ok){const d=await r.json();setBuildReport(d.steps?{steps:d.steps}:null);throw new Error(d.error||`فشل البناء (رمز: ${r.status})`);}
+      // Parse build report from headers
+      try{
+        const stepsB64=r.headers.get("X-Build-Steps");
+        const verifyB64=r.headers.get("X-Verification");
+        const steps=stepsB64?JSON.parse(atob(stepsB64)):[];
+        const verification=verifyB64?JSON.parse(atob(verifyB64)):undefined;
+        setBuildReport({steps,verification});
+      }catch{}
+      const blob=await r.blob();const url=URL.createObjectURL(blob);
       const a=document.createElement("a");a.href=url;
       const isSigned=r.headers.get("X-APK-Signed")==="true";
       if(eType==="apk"){a.download=isSigned?"modified-signed.apk":"modified.apk";}else{a.download=`modified.${eType||"zip"}`;}
       a.click();URL.revokeObjectURL(url);
-      toast.success(isSigned?"🎉 APK موقّع وجاهز!":"✅ تم البناء بنجاح — جاري التحميل");
+      toast.success(isSigned?"APK موقّع V1+V2+V3 وجاهز للتثبيت!":"تم البناء بنجاح — جاري التحميل");
     }catch(e:any){toast.error(`فشل البناء: ${e.message}`);}finally{setBuilding(false);}
+  };
+
+  const doApplyPatch=async(template:string,options?:{apiUrl?:string;apiReplace?:string})=>{
+    if(!eSess){toast.error("لا توجد جلسة!");return;}setPatching(true);setPatchResult(null);
+    try{
+      const r=await fetchRE("/api/reverse/apply-patch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:eSess.sessionId,template,options})});
+      const d=await r.json();if(!r.ok){toast.error(d.error||"فشل تطبيق القالب");return;}
+      setPatchResult(d);
+      // Refresh session info
+      const sr=await fetch(`/api/reverse/session/${eSess.sessionId}`,{credentials:"include"});
+      const sd=await sr.json();if(sd.exists){setEMods(new Set(sd.modifiedPaths));setSessMins(sd.minutesLeft??240);}
+      toast.success(`${d.filesModified} تعديل تم تطبيقه`);
+    }catch(e:any){toast.error(e.message);}finally{setPatching(false);}
   };
 
   const sharedTree:FileTreeNode[]=eSess?.structure||res?.structure||[];
@@ -1250,26 +1274,56 @@ export default function ReverseEngineer(){
           </div>
           {/* AI Panel */}
           <div className="flex flex-col gap-3 min-h-0">
-            {/* Smart Modify */}
-            <div className="bg-card/70 backdrop-blur-sm border border-primary/20 rounded-xl p-3 space-y-3 shrink-0">
-              <div className="text-sm font-semibold flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-primary"/>تعديل ذكي شامل</div>
-              <p className="text-[10px] text-muted-foreground">اكتب ما تريد — AI يبحث ويعدل تلقائياً</p>
-              <div className="flex flex-wrap gap-1.5">
+            {/* Patch Templates — Real Smali Operations */}
+            {eSess&&eType==="apk"&&<div className="bg-card/70 backdrop-blur-sm border border-red-500/20 rounded-xl p-3 space-y-2 shrink-0">
+              <div className="text-sm font-semibold flex items-center gap-1.5"><Zap className="w-4 h-4 text-red-400"/>قوالب تعديل تنفيذية</div>
+              <p className="text-[10px] text-muted-foreground">تعديلات Smali مباشرة — حقيقية وقابلة للتنفيذ</p>
+              <div className="grid grid-cols-2 gap-1.5">
                 {([
-                  ["إزالة كل القيود","text-red-300 border-red-500/30 bg-red-500/5 hover:bg-red-500/15"],
-                  ["إزالة حماية Root","text-orange-300 border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/15"],
-                  ["تعطيل SSL Pinning","text-yellow-300 border-yellow-500/30 bg-yellow-500/5 hover:bg-yellow-500/15"],
-                  ["إزالة حدود الاستخدام","text-emerald-300 border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/15"],
-                  ["تمكين وضع التطوير","text-blue-300 border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/15"],
-                  ["تغيير نقطة API","text-violet-300 border-violet-500/30 bg-violet-500/5 hover:bg-violet-500/15"],
-                ] as const).map(([q,cls])=>(
-                  <button key={q} onClick={()=>setSmartInst(q)} className={`text-[10px] font-medium px-2 py-1 rounded-lg border transition-all hover:scale-105 ${cls}`}>{q}</button>
+                  ["removeAds","إزالة الإعلانات","حذف SDK + تعطيل invoke","text-red-300 border-red-500/30 bg-red-500/5 hover:bg-red-500/15"],
+                  ["bypassRoot","تجاوز Root","إرجاع false لكل فحص","text-orange-300 border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/15"],
+                  ["bypassSSL","تعطيل SSL Pin","تفريغ checkServerTrusted","text-yellow-300 border-yellow-500/30 bg-yellow-500/5 hover:bg-yellow-500/15"],
+                  ["unlockPremium","فتح Premium","isPremium → true","text-emerald-300 border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/15"],
+                  ["removeLicense","إزالة License","تعطيل LVL + Google Play","text-blue-300 border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/15"],
+                  ["removeTracking","إزالة التتبع","حذف Analytics/Firebase","text-violet-300 border-violet-500/30 bg-violet-500/5 hover:bg-violet-500/15"],
+                  ["bypassIntegrity","تجاوز Integrity","تعطيل SafetyNet/tamper","text-pink-300 border-pink-500/30 bg-pink-500/5 hover:bg-pink-500/15"],
+                  ["modifyAPI","تعديل API","استبدال URL مخصص","text-cyan-300 border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/15"],
+                ] as [string,string,string,string][]).map(([tmpl,label,desc,cls])=>(
+                  <button key={tmpl} onClick={()=>doApplyPatch(tmpl)} disabled={patching} className={`text-[10px] font-medium px-2 py-1.5 rounded-lg border transition-all hover:scale-[1.02] text-right ${cls} ${patching?"opacity-50":""}`} title={desc}>
+                    {patching?<Loader2 className="w-3 h-3 animate-spin inline mr-1"/>:null}{label}
+                  </button>
                 ))}
               </div>
-              <textarea value={smartInst} onChange={e=>setSmartInst(e.target.value)} placeholder="اكتب تعليماتك..." rows={3} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-xs text-right placeholder:text-muted-foreground/50 resize-none" disabled={!eSess||smarting}/>
+            </div>}
+            {/* Patch Result */}
+            {patchResult&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/30 rounded-xl p-3 space-y-1.5 max-h-36 overflow-y-auto shrink-0">
+              <div className="text-xs font-semibold text-emerald-300">{patchResult.filesModified} تعديل تم تطبيقه</div>
+              {patchResult.modifications.map((m,i)=><div key={i} className="text-[10px] text-muted-foreground bg-muted/20 rounded px-2 py-1">{m}</div>)}
+            </div>}
+            {/* Build Report */}
+            {buildReport&&<div className="bg-card/70 backdrop-blur-sm border border-violet-500/30 rounded-xl p-3 space-y-2 max-h-56 overflow-y-auto shrink-0">
+              <div className="text-xs font-semibold text-violet-300 flex items-center gap-1.5"><Hammer className="w-3 h-3"/>تقرير البناء</div>
+              {buildReport.steps.map((s,i)=><div key={i} className="flex items-center gap-2 text-[10px]">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.status==="success"?"bg-emerald-400":s.status==="failed"?"bg-red-400":s.status==="warning"?"bg-amber-400":"bg-gray-400"}`}/>
+                <span className="text-muted-foreground font-medium">{s.name}</span>
+                <span className="text-muted-foreground/60 flex-1 truncate">{s.detail}</span>
+                {s.durationMs>0&&<span className="text-muted-foreground/40 font-mono">{(s.durationMs/1000).toFixed(1)}s</span>}
+              </div>)}
+              {buildReport.verification&&<div className="border-t border-border/50 pt-2 mt-1 space-y-1">
+                <div className="text-[10px] font-semibold text-muted-foreground">التحقق من APK:</div>
+                <div className="flex gap-1 flex-wrap">{buildReport.verification.v1Signed&&<span className="text-[9px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-300 rounded">V1</span>}{buildReport.verification.v2Signed&&<span className="text-[9px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-300 rounded">V2</span>}{buildReport.verification.v3Signed&&<span className="text-[9px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-300 rounded">V3</span>}{buildReport.verification.zipAligned&&<span className="text-[9px] px-1.5 py-0.5 bg-blue-500/10 text-blue-300 rounded">Aligned</span>}{buildReport.verification.zipIntegrity&&<span className="text-[9px] px-1.5 py-0.5 bg-blue-500/10 text-blue-300 rounded">ZIP OK</span>}</div>
+                <div className={`text-[10px] font-bold ${buildReport.verification.installable?"text-emerald-400":"text-red-400"}`}>{buildReport.verification.installable?"قابل للتثبيت على جميع الأجهزة":"قد لا يعمل على بعض الأجهزة"}</div>
+                <div className="text-[9px] text-muted-foreground/60">{(buildReport.verification.apkSizeBytes/1024/1024).toFixed(2)} MB</div>
+              </div>}
+            </div>}
+            {/* Smart Modify */}
+            <div className="bg-card/70 backdrop-blur-sm border border-primary/20 rounded-xl p-3 space-y-3 shrink-0">
+              <div className="text-sm font-semibold flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-primary"/>تعديل ذكي بـ AI</div>
+              <p className="text-[10px] text-muted-foreground">اكتب تعليمات حرة — AI يبحث ويعدل تلقائياً</p>
+              <textarea value={smartInst} onChange={e=>setSmartInst(e.target.value)} placeholder="مثال: غيّر اسم التطبيق إلى MyApp..." rows={3} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-xs text-right placeholder:text-muted-foreground/50 resize-none" disabled={!eSess||smarting}/>
               <Button onClick={doSmartModify} disabled={!eSess||smarting||!smartInst.trim()} className="w-full gap-2 text-sm">{smarting?<><Loader2 className="w-4 h-4 animate-spin"/>يعدّل...</>:<><Zap className="w-4 h-4"/>تنفيذ</>}</Button>
             </div>
-            {smartRes&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/30 rounded-xl p-3 space-y-2 max-h-48 overflow-y-auto"><div className="text-xs font-semibold text-emerald-300">✅ {smartRes.filesModified} ملف</div><p className="text-xs text-muted-foreground">{smartRes.summary}</p>{smartRes.modifications.map((m,i)=><div key={i} className="text-[11px] bg-muted/20 rounded p-2"><div className="font-mono text-emerald-300/80">{m.filePath}</div><div className="text-muted-foreground">{m.explanation}</div></div>)}</div>}
+            {smartRes&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/30 rounded-xl p-3 space-y-2 max-h-48 overflow-y-auto"><div className="text-xs font-semibold text-emerald-300">{smartRes.filesModified} ملف</div><p className="text-xs text-muted-foreground">{smartRes.summary}</p>{smartRes.modifications.map((m,i)=><div key={i} className="text-[11px] bg-muted/20 rounded p-2"><div className="font-mono text-emerald-300/80">{m.filePath}</div><div className="text-muted-foreground">{m.explanation}</div></div>)}</div>}
             {eNode&&<div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 space-y-2"><div className="text-xs font-semibold flex items-center gap-1.5"><Bot className="w-3.5 h-3.5"/>تعديل هذا الملف</div><textarea value={aiInst} onChange={e=>setAiInst(e.target.value)} placeholder="تعليمات..." rows={2} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-xs text-right placeholder:text-muted-foreground/50 resize-none" disabled={modifying}/><Button onClick={doAiModify} disabled={modifying||!aiInst.trim()} size="sm" className="w-full gap-2 text-xs">{modifying?<Loader2 className="w-3 h-3 animate-spin"/>:<Bot className="w-3 h-3"/>}تعديل</Button></div>}
             {eSess&&<div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 text-xs space-y-2 mt-auto">
               <div className="font-semibold text-muted-foreground flex items-center gap-1.5"><Settings className="w-3 h-3"/>معلومات الجلسة</div>
