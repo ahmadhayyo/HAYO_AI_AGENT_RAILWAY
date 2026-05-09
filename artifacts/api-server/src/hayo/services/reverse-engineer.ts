@@ -3965,6 +3965,67 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     }
   }
 
+  // ─── PRE-PROBE: Derive Project ID from API Key ─────────────
+  // If we have API keys but no project IDs, try to discover them via Firebase APIs
+  if (allProjectIds.length === 0 && allApiKeysArr.length > 0) {
+    for (const apiKey of allApiKeysArr.slice(0, 3)) {
+      // Method 1: getProjectConfig via identitytoolkit (reveals projectId in authorized domains)
+      const cfgResult = await safeFetch(
+        `https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig?key=${apiKey}`,
+        { timeout: 6000 },
+      );
+      if (cfgResult.ok && cfgResult.json) {
+        const projId = cfgResult.json.projectId || "";
+        const authorizedDomains: string[] = cfgResult.json.authorizedDomains || [];
+        if (projId) {
+          allProjectIds.push(projId);
+          // Derive DB URL and bucket from discovered project ID
+          const derivedUrl = `https://${projId}-default-rtdb.firebaseio.com`;
+          if (!allDbUrls.includes(derivedUrl)) allDbUrls.push(derivedUrl);
+          const derivedBucket = `${projId}.appspot.com`;
+          if (!allBuckets.includes(derivedBucket)) allBuckets.push(derivedBucket);
+          // Add to configs for completeness
+          addConfig({
+            projectId: projId,
+            apiKey,
+            databaseUrl: derivedUrl,
+            storageBucket: derivedBucket,
+            appId: "",
+            gcmSenderId: "",
+            authDomain: `${projId}.firebaseapp.com`,
+            source: "API Key Discovery (getProjectConfig)",
+            layer: 8,
+            confidence: "high",
+          });
+          layer8Findings.push(`🔍 Project ID اُكتشف من API Key: ${projId}`);
+          if (authorizedDomains.length > 0) {
+            layer8Findings.push(`   🌐 Authorized domains: ${authorizedDomains.join(", ")}`);
+          }
+        }
+      }
+
+      // Method 2: Firebase SDK config endpoint (often reveals storageBucket and projectId)
+      if (allProjectIds.length === 0) {
+        const sdkResult = await safeFetch(
+          `https://firebase.googleapis.com/v1alpha/projects/-:searchApps?key=${apiKey}`,
+          { timeout: 6000 },
+        );
+        if (sdkResult.ok && sdkResult.json?.apps) {
+          for (const app of sdkResult.json.apps.slice(0, 3)) {
+            const appProjId = app.projectId || "";
+            if (appProjId && !allProjectIds.includes(appProjId)) {
+              allProjectIds.push(appProjId);
+              const derivedUrl = `https://${appProjId}-default-rtdb.firebaseio.com`;
+              if (!allDbUrls.includes(derivedUrl)) allDbUrls.push(derivedUrl);
+              const derivedBucket = `${appProjId}.appspot.com`;
+              if (!allBuckets.includes(derivedBucket)) allBuckets.push(derivedBucket);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ─── LAYER 8: Firebase RTDB Security Rules Probe ────────────
   for (const dbUrl of allDbUrls.slice(0, 5)) {
     layer8Files++;

@@ -69,9 +69,10 @@ RUN wget -q --timeout=60 \
     || echo "WARNING: radare2 download failed"
 
 # ── Download Android SDK build-tools (zipalign + apksigner) ──────
+# NOTE: The correct URL format is build-tools_r34-linux.zip (NOT r34.0.0)
 RUN mkdir -p /opt/android-sdk/build-tools && \
     wget -q --timeout=120 \
-    "https://dl.google.com/android/repository/build-tools_r34.0.0-linux.zip" \
+    "https://dl.google.com/android/repository/build-tools_r34-linux.zip" \
     -O /tmp/build-tools.zip \
     && unzip -q /tmp/build-tools.zip -d /tmp/build-tools-extract \
     && mv /tmp/build-tools-extract/android-14 /opt/android-sdk/build-tools/34.0.0 \
