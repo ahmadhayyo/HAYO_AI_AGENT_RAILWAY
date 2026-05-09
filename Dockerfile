@@ -70,20 +70,29 @@ RUN wget -q --timeout=60 \
 
 # ── Download Android SDK build-tools (zipalign + apksigner) ──────
 # NOTE: The correct URL format is build-tools_r34-linux.zip (NOT r34.0.0)
+# zipalign requires libc++.so from lib64/ — we copy it to /usr/local/lib for reliable resolution
 RUN mkdir -p /opt/android-sdk/build-tools && \
-    wget -q --timeout=120 \
+    wget -q --timeout=180 \
     "https://dl.google.com/android/repository/build-tools_r34-linux.zip" \
     -O /tmp/build-tools.zip \
     && unzip -q /tmp/build-tools.zip -d /tmp/build-tools-extract \
     && mv /tmp/build-tools-extract/android-14 /opt/android-sdk/build-tools/34.0.0 \
-    && ln -sf /opt/android-sdk/build-tools/34.0.0/zipalign /usr/local/bin/zipalign \
-    && ln -sf /opt/android-sdk/build-tools/34.0.0/apksigner /usr/local/bin/apksigner \
-    && ln -sf /opt/android-sdk/build-tools/34.0.0/aapt2 /usr/local/bin/aapt2 \
+    && cp /opt/android-sdk/build-tools/34.0.0/lib64/libc++.so /usr/local/lib/ \
+    && cp /opt/android-sdk/build-tools/34.0.0/lib64/libc++.so.1 /usr/local/lib/ \
+    && ldconfig \
     && chmod +x /opt/android-sdk/build-tools/34.0.0/zipalign \
     && chmod +x /opt/android-sdk/build-tools/34.0.0/apksigner \
     && chmod +x /opt/android-sdk/build-tools/34.0.0/aapt2 \
+    && ln -sf /opt/android-sdk/build-tools/34.0.0/zipalign /usr/local/bin/zipalign \
+    && ln -sf /opt/android-sdk/build-tools/34.0.0/apksigner /usr/local/bin/apksigner \
+    && ln -sf /opt/android-sdk/build-tools/34.0.0/aapt2 /usr/local/bin/aapt2 \
     && rm -rf /tmp/build-tools.zip /tmp/build-tools-extract \
-    || echo "WARNING: Android build-tools download failed — zipalign/apksigner will use Debian fallback"
+    && echo "✅ Android build-tools installed successfully" \
+    || echo "WARNING: Android build-tools download failed — zipalign/apksigner will NOT be available"
+
+# ── Verify build-tools installation ──────────────────────────────
+RUN zipalign 2>&1 | head -1 || echo "❌ zipalign NOT working" && \
+    apksigner --version 2>&1 | head -1 || echo "❌ apksigner NOT working"
 
 # ── Download UPX (fault-tolerant — not in Debian bookworm repos) ──
 RUN wget -q --timeout=60 \
@@ -112,6 +121,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV LD_LIBRARY_PATH=/opt/android-sdk/build-tools/34.0.0/lib64:/usr/local/lib
 
 # ── Copy workspace config first (maximizes Docker layer cache) ────
 # .npmrc MUST be copied before pnpm install so shamefully-hoist=true is applied
