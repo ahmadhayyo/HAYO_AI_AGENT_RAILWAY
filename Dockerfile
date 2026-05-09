@@ -16,8 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     make \
     g++ \
-    zipalign \
-    apksigner \
+    xz-utils \
     file \
     binwalk \
     strace \
@@ -68,6 +67,22 @@ RUN wget -q --timeout=60 \
     && dpkg -i /tmp/radare2.deb \
     && rm /tmp/radare2.deb \
     || echo "WARNING: radare2 download failed"
+
+# ── Download Android SDK build-tools (zipalign + apksigner) ──────
+RUN mkdir -p /opt/android-sdk/build-tools && \
+    wget -q --timeout=120 \
+    "https://dl.google.com/android/repository/build-tools_r34.0.0-linux.zip" \
+    -O /tmp/build-tools.zip \
+    && unzip -q /tmp/build-tools.zip -d /tmp/build-tools-extract \
+    && mv /tmp/build-tools-extract/android-14 /opt/android-sdk/build-tools/34.0.0 \
+    && ln -sf /opt/android-sdk/build-tools/34.0.0/zipalign /usr/local/bin/zipalign \
+    && ln -sf /opt/android-sdk/build-tools/34.0.0/apksigner /usr/local/bin/apksigner \
+    && ln -sf /opt/android-sdk/build-tools/34.0.0/aapt2 /usr/local/bin/aapt2 \
+    && chmod +x /opt/android-sdk/build-tools/34.0.0/zipalign \
+    && chmod +x /opt/android-sdk/build-tools/34.0.0/apksigner \
+    && chmod +x /opt/android-sdk/build-tools/34.0.0/aapt2 \
+    && rm -rf /tmp/build-tools.zip /tmp/build-tools-extract \
+    || echo "WARNING: Android build-tools download failed — zipalign/apksigner will use Debian fallback"
 
 # ── Download UPX (fault-tolerant — not in Debian bookworm repos) ──
 RUN wget -q --timeout=60 \

@@ -1094,6 +1094,189 @@ router.get("/stream/clone", async (req: Request, res: Response) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// SEQUENTIAL PIPELINE — Deep Firebase → Cloud Pentest → Full Auto Clone
+// ═══════════════════════════════════════════════════════════════
+router.get("/stream/sequential-pipeline", async (req: Request, res: Response) => {
+  sseHeaders(res);
+  const uploadId = req.query.uploadId as string;
+  const stored = uploadStore.get(uploadId);
+  if (!stored) { sseSend(res, "[ERROR] ملف غير موجود — ارفع الملف أولاً"); res.end(); return; }
+
+  const { filePath, fileName } = stored;
+  const ext = fileName.split(".").pop()?.toLowerCase() || "";
+  if (ext !== "apk") {
+    sseSend(res, "[ERROR] الخط المتسلسل يدعم ملفات APK فقط");
+    sseJSON(res, "result", { success: false, error: "صيغة غير مدعومة — ارفع ملف APK" });
+    res.end();
+    return;
+  }
+
+  // Parse granular clone options from query string
+  let pipelineCloneOpts: Record<string, any> | undefined;
+  try {
+    const optsStr = req.query.opts as string;
+    if (optsStr) pipelineCloneOpts = JSON.parse(decodeURIComponent(optsStr));
+  } catch { /* use defaults */ }
+
+  req.on("close", () => {});
+
+  const buf = fs.readFileSync(filePath);
+  const sizeMB = (buf.length / 1048576).toFixed(1);
+
+  sseSend(res, `[PIPELINE] ════ بدء الخط المتسلسل: ${fileName} (${sizeMB} MB) ════`);
+  sseJSON(res, "phase", { phase: 0, name: "init", status: "running" });
+
+  let sessionId = "";
+  let dfbResultData: any = null;
+  let cpResultData: any = null;
+
+  // ════════════════════════════════════════════════════════════
+  // PHASE A: Deep Firebase Audit (12 layers + LIVE probes)
+  // ════════════════════════════════════════════════════════════
+  try {
+    sseJSON(res, "phase", { phase: 1, name: "deep-firebase-audit", status: "running" });
+    sseSend(res, "[PHASE A] ════ بدء تدقيق Firebase العميق ════");
+    sseSend(res, "[PHASE A] تفكيك APK واستخراج الملفات...");
+
+    const { decompileFileForEdit, extractFirebaseConfigDeep } = await import("../hayo/services/reverse-engineer.js");
+    const editResult = await decompileFileForEdit(buf, fileName);
+    sessionId = editResult.sessionId;
+    sseSend(res, `[PHASE A] تم التفكيك — الجلسة: ${sessionId}`);
+    sseSend(res, "[PHASE A] تشغيل التدقيق العميق (12 طبقة + فحص مباشر LIVE)...");
+
+    dfbResultData = await extractFirebaseConfigDeep(sessionId);
+    const cfgCount = dfbResultData?.summary?.totalConfigs || 0;
+    const riskLevel = dfbResultData?.summary?.riskLevel || "none";
+    const liveVulns = dfbResultData?.summary?.liveVulnerabilities || 0;
+    const liveProbes = dfbResultData?.summary?.liveProbesRun || 0;
+    sseSend(res, `[PHASE A] اكتمل — ${cfgCount} إعدادات · ${liveProbes} فحص مباشر · ${liveVulns} ثغرات LIVE · مستوى الخطورة: ${riskLevel}`);
+
+    if (dfbResultData?.layers) {
+      for (const layer of dfbResultData.layers) {
+        sseSend(res, `[PHASE A] الطبقة ${layer.layer}: ${layer.name} [${layer.status}] — ${layer.findings.length} نتائج`);
+      }
+    }
+
+    sseJSON(res, "phase", { phase: 1, name: "deep-firebase-audit", status: "done", result: dfbResultData });
+    sseSend(res, "[PHASE A] ════ اكتمل تدقيق Firebase العميق ════");
+  } catch (e: any) {
+    sseSend(res, `[PHASE A] [ERROR] فشل تدقيق Firebase: ${e.message}`);
+    sseJSON(res, "phase", { phase: 1, name: "deep-firebase-audit", status: "error", error: e.message });
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // PHASE B: Cloud Pentest Full (8-phase kill chain)
+  // ════════════════════════════════════════════════════════════
+  try {
+    sseJSON(res, "phase", { phase: 2, name: "cloud-pentest", status: "running" });
+    sseSend(res, "[PHASE B] ════ بدء اختبار الاختراق السحابي (8 مراحل) ════");
+
+    if (!sessionId) {
+      sseSend(res, "[PHASE B] إعادة تفكيك APK (لم يتوفر sessionId)...");
+      const { decompileFileForEdit } = await import("../hayo/services/reverse-engineer.js");
+      const editResult = await decompileFileForEdit(buf, fileName);
+      sessionId = editResult.sessionId;
+    }
+
+    const { runCloudPentest } = await import("../hayo/services/reverse-engineer.js");
+    const stepNames = ["تفكيك APK", "استخراج التوكن", "المفاتيح", "IDOR", "استغلال", "سحب DB", "Telegram", "سكريبت + تقرير"];
+    for (let i = 0; i < stepNames.length; i++) {
+      sseSend(res, `[PHASE B] الخطوة ${i + 1}/8: ${stepNames[i]}...`);
+    }
+
+    cpResultData = await runCloudPentest(sessionId);
+    const riskScore = cpResultData?.summary?.riskScore || 0;
+    const secretCount = cpResultData?.steps?.reduce((acc: number, s: any) => acc + (s?.findings?.length || 0), 0) || 0;
+    sseSend(res, `[PHASE B] اكتمل — درجة الخطورة: ${riskScore}/100 — ${secretCount} نتائج`);
+
+    try {
+      await sendPentestToTelegram({ ...cpResultData, sessionId, fileName, fileSize: buf.length });
+      sseSend(res, "[PHASE B] تم إرسال التقرير إلى Telegram");
+    } catch { /* ignore telegram errors */ }
+
+    sseJSON(res, "phase", { phase: 2, name: "cloud-pentest", status: "done", result: cpResultData });
+    sseSend(res, "[PHASE B] ════ اكتمل اختبار الاختراق السحابي ════");
+  } catch (e: any) {
+    sseSend(res, `[PHASE B] [ERROR] فشل اختبار الاختراق: ${e.message}`);
+    sseJSON(res, "phase", { phase: 2, name: "cloud-pentest", status: "error", error: e.message });
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // PHASE C: Full Auto Clone (6 phases)
+  // ════════════════════════════════════════════════════════════
+  try {
+    sseJSON(res, "phase", { phase: 3, name: "full-auto-clone", status: "running" });
+    sseSend(res, "[PHASE C] ════ بدء Full Auto Clone ════");
+
+    const cloneResult = await runFullAutoClone(buf, fileName, (phase, phaseName, message) => {
+      sseSend(res, `[PHASE C] [${phase}/6] ${phaseName}: ${message}`);
+    }, pipelineCloneOpts as any);
+
+    for (const phase of cloneResult.phases) {
+      sseSend(res, `[PHASE C] المرحلة ${phase.phase}/6: ${phase.name} [${phase.status}] (${phase.duration}ms)`);
+      for (const d of phase.details) {
+        sseSend(res, `[PHASE C] ${d}`);
+      }
+    }
+
+    if (cloneResult.pentest.secrets.length > 0) {
+      sseSend(res, `[PHASE C] ════ الأسرار (${cloneResult.pentest.secrets.length}) ════`);
+      for (const s of cloneResult.pentest.secrets) {
+        sseSend(res, `[SECRET] [${s.type}] ${s.value} (${s.file}:${s.line ?? "?"})`);
+      }
+    }
+
+    if (cloneResult.pentest.endpoints.length > 0) {
+      sseSend(res, `[PHASE C] ════ نقاط النهاية (${cloneResult.pentest.endpoints.length}) ════`);
+      for (const ep of cloneResult.pentest.endpoints.slice(0, 30)) {
+        sseSend(res, `[ENDPOINT] ${ep}`);
+      }
+    }
+
+    sseSend(res, `[PHASE C] ════ ملخص التقرير ════`);
+    sseSend(res, `[PHASE C] 📦 Package: ${cloneResult.cloneReport.packageName}`);
+    sseSend(res, `[PHASE C] 🔓 Premium: ${cloneResult.cloneReport.premiumMethodsPatched} | 🚪 Login: ${cloneResult.cloneReport.loginBypassed ? "تم التجاوز" : "لا"} | 💰 Points: ${cloneResult.cloneReport.pointsUnlocked ? "MAX" : "لا"}`);
+    sseSend(res, `[PHASE C] 🛡️ Tamper: ${cloneResult.cloneReport.tamperNeutralized ? "محيّد" : "لا"} | 🔫 Frida: ${cloneResult.cloneReport.fridaInjected ? "تم الحقن" : "لا"} | ✍️ Signature: ${cloneResult.cloneReport.signatureVerified ? "صحيح" : "لا"} | 📂 ZIP: ${cloneResult.cloneReport.zipIntegrity ? "سليم" : "لا"}`);
+
+    let downloadId: string | undefined;
+    if (cloneResult.success && cloneResult.apkBuffer) {
+      const outDir = path.join(os.tmpdir(), `hayo_seqpipeline_${Date.now()}`);
+      fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, `fullclone-${fileName}`);
+      fs.writeFileSync(outPath, cloneResult.apkBuffer);
+      downloadId = `dl_${Date.now()}`;
+      uploadStore.set(downloadId, { filePath: outPath, fileName: `fullclone-${fileName}`, uploadedAt: Date.now() });
+    }
+
+    sseJSON(res, "phase", { phase: 3, name: "full-auto-clone", status: "done", result: {
+      success: cloneResult.success,
+      downloadId,
+      phases: cloneResult.phases,
+      pentest: cloneResult.pentest,
+      cloneReport: cloneResult.cloneReport,
+      auditReport: cloneResult.auditReport,
+    }});
+    sseSend(res, "[PHASE C] ════ اكتمل Full Auto Clone ════");
+  } catch (e: any) {
+    sseSend(res, `[PHASE C] [ERROR] فشل Full Auto Clone: ${e.message}`);
+    sseJSON(res, "phase", { phase: 3, name: "full-auto-clone", status: "error", error: e.message });
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // FINAL RESULT
+  // ════════════════════════════════════════════════════════════
+  sseSend(res, "[PIPELINE] ════ اكتمل الخط المتسلسل بالكامل ════");
+  sseJSON(res, "result", {
+    success: true,
+    pipeline: "sequential",
+    deepFirebase: dfbResultData,
+    cloudPentest: cpResultData,
+    generatedAt: new Date().toISOString(),
+  });
+  res.end();
+});
+
+// ═══════════════════════════════════════════════════════════════
 // FULL AUTO CLONE — Unified 6-Phase SSE Pipeline (No Telegram)
 // ═══════════════════════════════════════════════════════════════
 router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
@@ -1111,6 +1294,13 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
     return;
   }
 
+  // Parse granular clone options from query string (matches Clone section's cOpts)
+  let cloneOpts: Record<string, any> | undefined;
+  try {
+    const optsStr = req.query.opts as string;
+    if (optsStr) cloneOpts = JSON.parse(decodeURIComponent(optsStr));
+  } catch { /* use defaults */ }
+
   req.on("close", () => {});
 
   try {
@@ -1119,7 +1309,7 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
 
     const result = await runFullAutoClone(buf, fileName, (phase, phaseName, message) => {
       sseSend(res, `[PHASE ${phase}/6] ${phaseName}: ${message}`);
-    });
+    }, cloneOpts as any);
 
     // Stream phase results
     for (const phase of result.phases) {
@@ -1149,7 +1339,14 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
     sseSend(res, `[STEP] ════ ملخص التقرير النهائي ════`);
     sseSend(res, `[INFO] 📦 Package: ${result.cloneReport.packageName}`);
     sseSend(res, `[INFO] 🔓 Premium: ${result.cloneReport.premiumMethodsPatched} | 🚪 Login: ${result.cloneReport.loginBypassed ? "تم التجاوز" : "لا"} | 💰 Points: ${result.cloneReport.pointsUnlocked ? "MAX" : "لا"}`);
-    sseSend(res, `[INFO] 🛡️ Tamper: ${result.cloneReport.tamperNeutralized ? "محيّد" : "لا"} | ✍️ Signature: ${result.cloneReport.signatureVerified ? "صحيح" : "لا"} | 📂 ZIP: ${result.cloneReport.zipIntegrity ? "سليم" : "لا"}`);
+    sseSend(res, `[INFO] 🛡️ Tamper: ${result.cloneReport.tamperNeutralized ? "محيّد" : "لا"} | 🔫 Frida: ${result.cloneReport.fridaInjected ? "تم الحقن" : "لا"} | ✍️ Signature: ${result.cloneReport.signatureVerified ? "صحيح" : "لا"} | 📂 ZIP: ${result.cloneReport.zipIntegrity ? "سليم" : "لا"}`);
+
+    // Stream audit report summary (advanced technique from Clone section)
+    if (result.auditReport) {
+      sseSend(res, `[STEP] ════ تقرير التدقيق الشامل (Audit Report) ════`);
+      sseSend(res, `[AUDIT] 🔑 أسرار: ${result.auditReport.secretsFound} | 🌐 نقاط نهاية: ${result.auditReport.endpointsDiscovered}`);
+      sseSend(res, `[AUDIT] 📊 إعلانات: ${result.auditReport.adsRemoved ? "مُزالة" : "لا"} | Frida: ${result.auditReport.fridaInjected ? "محقون" : "لا"}`);
+    }
 
     if (result.success && result.apkBuffer) {
       const outDir = path.join(os.tmpdir(), `hayo_fullautoclone_${Date.now()}`);
@@ -1173,6 +1370,7 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
           riskLevel: result.pentest.riskLevel,
         },
         cloneReport: result.cloneReport,
+        auditReport: result.auditReport,
         generatedAt: result.generatedAt,
       });
       sseSend(res, `[DONE] ════ اكتمل Full Auto Clone: ${fileName} ════`);
@@ -1183,6 +1381,7 @@ router.get("/stream/full-auto-clone", async (req: Request, res: Response) => {
         phases: result.phases,
         pentest: result.pentest,
         cloneReport: result.cloneReport,
+        auditReport: result.auditReport,
         generatedAt: result.generatedAt,
       });
       sseSend(res, `[ERROR] فشل Full Auto Clone: ${result.error}`);

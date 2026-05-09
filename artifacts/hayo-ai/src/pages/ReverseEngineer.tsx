@@ -16,7 +16,7 @@ import {
   Search, Save, Hammer, Binary, AlertTriangle,
   Dot, CheckCheck, Undo2, Sparkles, Eye, Zap,
   GitBranch, Globe, Key, Terminal, Scan, Fingerprint,
-  ToggleLeft, ToggleRight, Rocket, Flame,
+  ToggleLeft, ToggleRight, Rocket, Flame, Settings,
   Keyboard, Database, Activity, TrendingUp, BarChart3, Code,
   Microscope, Network, FileSearch, Diff, Layers, FileOutput,
   ArrowUpDown, Braces, Hash, Link2, type LucideIcon,
@@ -521,6 +521,13 @@ export default function ReverseEngineer(){
   const[facResult,setFacResult]=useState<any>(null);
   const[facLogs,setFacLogs]=useState<string[]>([]);
   const[facActivePhase,setFacActivePhase]=useState(0);
+  const[facOpts,setFacOpts]=useState({removeAds:true,unlockPremium:true,removeTracking:false,removeLicenseCheck:true,bypassLogin:true,neutralizeTamper:true,injectFrida:false,extractSecrets:true,changeAppName:"",changePackageName:"",customInstructions:""});
+  const[facShowOpts,setFacShowOpts]=useState(false);
+  // Sequential Pipeline
+  const[seqRunning,setSeqRunning]=useState(false);
+  const[seqPhase,setSeqPhase]=useState(0); // 0=idle, 1=firebase, 2=pentest, 3=clone
+  const[seqLogs,setSeqLogs]=useState<string[]>([]);
+  const[seqDone,setSeqDone]=useState(false);
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -795,7 +802,7 @@ export default function ReverseEngineer(){
       const uploadId=upData.uploadId;
 
       // Step 2: SSE stream
-      const sseUrl=`/api/reverse/stream/full-auto-clone?uploadId=${uploadId}`;
+      const sseUrl=`/api/reverse/stream/full-auto-clone?uploadId=${uploadId}&opts=${encodeURIComponent(JSON.stringify(facOpts))}`;
       const es=new EventSource(sseUrl);
       es.onmessage=(e:MessageEvent)=>{
         const msg=e.data as string;
@@ -821,6 +828,76 @@ export default function ReverseEngineer(){
       });
       es.onerror=()=>{es.close();setFacLoading(false);toast.error("انقطع الاتصال");};
     }catch(e:any){toast.error(e.message);setFacLoading(false);}
+  };
+
+  // ═══ SEQUENTIAL PIPELINE ═══
+  const doSequentialPipeline=async()=>{
+    if(!cpFile){toast.error("ارفع ملف APK أولاً");return;}
+    setSeqRunning(true);setSeqPhase(0);setSeqLogs([]);setSeqDone(false);
+    setCpResult(null);setDfbResult(null);setFacResult(null);setFacLogs([]);setCpShowReport(false);
+    setCpActiveStep(0);setCpStepsRevealed([]);setFacActivePhase(0);
+    try{
+      // Upload APK once
+      const fd=new FormData();fd.append("file",cpFile);
+      setSeqLogs(prev=>[...prev,"[PIPELINE] جاري رفع الملف..."]);
+      const upRes=await fetchRE("/api/reverse/upload",{method:"POST",body:fd});
+      const upData=await upRes.json();
+      if(!upRes.ok)throw new Error(upData.error||"فشل رفع الملف");
+      const uploadId=upData.uploadId;
+      setSeqLogs(prev=>[...prev,`[PIPELINE] تم الرفع — uploadId: ${uploadId}`]);
+
+      // SSE stream for sequential pipeline
+      const sseUrl=`/api/reverse/stream/sequential-pipeline?uploadId=${uploadId}`;
+      const es=new EventSource(sseUrl);
+
+      es.onmessage=(e:MessageEvent)=>{
+        const msg=e.data as string;
+        setSeqLogs(prev=>[...prev,msg]);
+        // Track phase from PHASE A/B/C markers
+        if(msg.includes("[PHASE A]")&&!msg.includes("اكتمل"))setSeqPhase(1);
+        if(msg.includes("[PHASE B]")&&!msg.includes("اكتمل"))setSeqPhase(2);
+        if(msg.includes("[PHASE C]")&&!msg.includes("اكتمل"))setSeqPhase(3);
+      };
+
+      es.addEventListener("phase",(e:any)=>{
+        try{
+          const data=JSON.parse(e.data);
+          if(data.status==="running")setSeqPhase(data.phase);
+          if(data.name==="deep-firebase-audit"&&data.status==="done"&&data.result){
+            setDfbResult(data.result);
+            toast.success(`تدقيق Firebase — ${data.result?.summary?.totalConfigs||0} إعدادات`);
+          }
+          if(data.name==="cloud-pentest"&&data.status==="done"&&data.result){
+            setCpResult(data.result);setCpStepsRevealed([1,2,3,4,5,6,7,8]);setCpActiveStep(0);
+            setCpExpanded(new Set([1,2,3,4,5,6,7,8]));
+            toast.success(`اختبار الاختراق — خطورة: ${data.result?.summary?.riskScore||0}/100`);
+          }
+          if(data.name==="full-auto-clone"&&data.status==="done"&&data.result){
+            setFacResult(data.result);
+            if(data.result.success&&data.result.downloadId){
+              toast.success("Full Auto Clone اكتمل — جاري التحميل...");
+              const a=document.createElement("a");
+              a.href=`/api/reverse/stream/download/${data.result.downloadId}`;
+              a.download=`fullclone-${cpFile?.name||"app.apk"}`;
+              a.click();
+            }
+          }
+        }catch{}
+      });
+
+      es.addEventListener("result",(e:any)=>{
+        try{
+          const data=JSON.parse(e.data);
+          if(data.deepFirebase)setDfbResult(data.deepFirebase);
+          if(data.cloudPentest){setCpResult(data.cloudPentest);setCpStepsRevealed([1,2,3,4,5,6,7,8]);setCpExpanded(new Set([1,2,3,4,5,6,7,8]));}
+        }catch{}
+        setSeqDone(true);setSeqPhase(0);setSeqRunning(false);
+        toast.success("اكتمل الخط المتسلسل بالكامل!");
+        es.close();
+      });
+
+      es.onerror=()=>{es.close();setSeqRunning(false);setSeqPhase(0);toast.error("انقطع الاتصال بالخط المتسلسل");};
+    }catch(e:any){toast.error(e.message);setSeqRunning(false);setSeqPhase(0);}
   };
 
   // ═══ RENDER ═══
@@ -1412,17 +1489,37 @@ export default function ReverseEngineer(){
               <div className="text-sm text-muted-foreground">اسحب ملف APK هنا أو اضغط للاختيار</div>
             </div>}
           </div>
+          {/* Sequential Pipeline — Primary Action */}
+          <Button onClick={doSequentialPipeline} disabled={!cpFile||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-violet-600 via-cyan-600 to-emerald-600 hover:from-violet-500 hover:via-cyan-500 hover:to-emerald-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-violet-900/40 animate-pulse font-bold w-full max-w-xl">
+            {seqRunning?<Loader2 className="w-6 h-6 animate-spin"/>:<Rocket className="w-6 h-6"/>}
+            {seqRunning?"جاري تنفيذ الخط المتسلسل...":"ابدأ الخط المتسلسل الكامل"}
+          </Button>
+          {!seqRunning&&<div className="text-xs text-muted-foreground text-center max-w-lg">Firebase Audit → Cloud Pentest (8 مراحل) → Full Auto Clone (6 مراحل) — تلقائي بالكامل</div>}
+          {/* Individual buttons — secondary */}
           <div className="flex items-center gap-3 flex-wrap justify-center">
-            <Button onClick={doCloudPentestFull} disabled={!cpFile} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
+            <Button onClick={doCloudPentestFull} disabled={!cpFile||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
               <Zap className="w-5 h-5"/>ابدأ الاختبار التلقائي
             </Button>
-            <Button onClick={doDeepFirebaseAudit} disabled={!cpFile||dfbLoading} size="lg" className="gap-3 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-orange-900/30">
+            <Button onClick={doDeepFirebaseAudit} disabled={!cpFile||dfbLoading||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-orange-900/30">
               {dfbLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Flame className="w-5 h-5"/>}Deep Firebase Audit
             </Button>
-            <Button onClick={doFullAutoClone} disabled={!cpFile||facLoading} size="lg" className="gap-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-emerald-900/30 animate-pulse">
+            <Button onClick={doFullAutoClone} disabled={!cpFile||facLoading||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-emerald-900/30">
               {facLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Rocket className="w-5 h-5"/>}Full Auto Clone
             </Button>
           </div>
+          {/* Full Auto Clone — Granular Options (integrated from Clone section) */}
+          <button onClick={()=>setFacShowOpts(v=>!v)} className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors"><Settings className="w-3.5 h-3.5"/>{facShowOpts?"إخفاء خيارات Full Auto Clone":"خيارات Full Auto Clone المتقدمة"}</button>
+          {facShowOpts&&<div className="w-full max-w-xl space-y-3 bg-card/50 backdrop-blur-sm border border-emerald-500/20 rounded-2xl p-4">
+            <div className="text-xs font-bold text-emerald-300 text-right">خيارات التعديل (من قسم الاستنساخ المتقدم)</div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {([["removeAds","إزالة الإعلانات","🚫","AdMob, Facebook, Unity"],["unlockPremium","فتح المدفوع","🔓","isPremium, Coins → MAX"],["removeTracking","إزالة التتبع","📡","Firebase, Analytics"],["removeLicenseCheck","تجاوز الرخصة","🔑","checkLicense, verify"],["bypassLogin","تجاوز الدخول","🚪","isLoggedIn→true"],["neutralizeTamper","تحييد الحماية","🛡️","SafetyNet, Root"],["extractSecrets","استخراج الأسرار","🗝️","Firebase, AWS, JWT"],["injectFrida","حقن Frida","🔬","Dynamic instrumentation"]] as [string,string,string,string][]).map(([k,l,ic,d])=><button key={k} onClick={()=>setFacOpts(p=>({...p,[k]:!(p as any)[k]}))} className={`p-2.5 rounded-xl border text-right transition-all ${(facOpts as any)[k]?"bg-emerald-500/10 border-emerald-500/40 text-emerald-300":"bg-card/70 backdrop-blur-sm border-border text-muted-foreground hover:border-emerald-500/30"}`}><div className="flex items-center gap-1.5"><span className="text-sm">{ic}</span><span className="font-medium text-[11px]">{l}</span><span className="mr-auto">{(facOpts as any)[k]?<ToggleRight className="w-4 h-4 text-emerald-400"/>:<ToggleLeft className="w-4 h-4"/>}</span></div><p className="text-[9px] mt-0.5 opacity-60">{d}</p></button>)}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <input value={facOpts.changeAppName} onChange={e=>setFacOpts(p=>({...p,changeAppName:e.target.value}))} placeholder="اسم جديد (اختياري)" className="bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-emerald-500/50"/>
+              <input value={facOpts.changePackageName} onChange={e=>setFacOpts(p=>({...p,changePackageName:e.target.value}))} placeholder="حزمة جديدة (اختياري)" className="bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-emerald-500/50 font-mono"/>
+            </div>
+            <textarea value={facOpts.customInstructions} onChange={e=>setFacOpts(p=>({...p,customInstructions:e.target.value}))} placeholder="تعليمات إضافية للذكاء الاصطناعي..." rows={2} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:border-emerald-500/50"/>
+          </div>}
           <div className="grid grid-cols-8 gap-1.5 w-full max-w-xl">
             {["تفكيك","مصادقة","مفاتيح","IDOR","استغلال","سحب DB","Telegram","تقرير"].map((s,i)=><div key={i} className="text-center">
               <div className="w-7 h-7 mx-auto rounded-full bg-muted/20 border border-border/50 flex items-center justify-center text-[10px] font-bold text-muted-foreground">{i+1}</div>
@@ -1430,6 +1527,44 @@ export default function ReverseEngineer(){
             </div>)}
           </div>
         </div>}
+
+        {/* ── Sequential Pipeline: Live Progress ── */}
+        {seqRunning&&<div className="space-y-4 w-full">
+          <div className="bg-gradient-to-r from-violet-900/40 via-cyan-900/40 to-emerald-900/40 border border-violet-500/30 rounded-2xl p-5">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-violet-400"/>
+              <div>
+                <h2 className="text-lg font-bold text-violet-300">جاري تنفيذ الخط المتسلسل الكامل...</h2>
+                <p className="text-xs text-muted-foreground">الملف: {cpFile?.name} ({cpFile?((cpFile.size/1024/1024).toFixed(1)+" MB"):""})</p>
+              </div>
+            </div>
+            <div className="mt-4 flex gap-2">
+              {[{n:1,label:"Firebase Audit",color:"from-orange-500 to-red-500"},{n:2,label:"Cloud Pentest",color:"from-cyan-500 to-blue-500"},{n:3,label:"Full Auto Clone",color:"from-emerald-500 to-teal-500"}].map(p=>(
+                <div key={p.n} className="flex-1">
+                  <div className={`h-2 rounded-full overflow-hidden ${seqPhase>p.n?"bg-green-500":seqPhase===p.n?`bg-gradient-to-r ${p.color} animate-pulse`:"bg-muted/20"}`}>
+                    {seqPhase===p.n&&<div className="h-full bg-white/20 animate-pulse rounded-full" style={{width:"60%"}}/>}
+                  </div>
+                  <div className={`text-[10px] mt-1 text-center ${seqPhase===p.n?"text-violet-300 font-bold":seqPhase>p.n?"text-green-400":"text-muted-foreground"}`}>{seqPhase>p.n?"✓ ":seqPhase===p.n?"▶ ":""}{p.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="bg-black/40 border border-border/30 rounded-xl p-3 max-h-60 overflow-y-auto font-mono text-[11px] text-green-400/80 space-y-0.5">
+            {seqLogs.slice(-40).map((log,i)=><div key={i} className={log.includes("[ERROR]")?"text-red-400":log.includes("[PHASE")?"text-cyan-300":log.includes("[SECRET]")?"text-yellow-400":log.includes("[PIPELINE]")?"text-violet-300 font-bold":""}>{log}</div>)}
+          </div>
+        </div>}
+
+        {/* ── Sequential Pipeline: Done ── */}
+        {seqDone&&!seqRunning&&<div className="bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-500/40 rounded-2xl p-5 w-full text-center space-y-2">
+          <div className="text-2xl font-bold text-green-400">اكتمل الخط المتسلسل بالكامل</div>
+          <div className="text-sm text-muted-foreground">Firebase Audit + Cloud Pentest + Full Auto Clone — تم تنفيذ جميع المراحل بنجاح</div>
+          <div className="flex gap-2 justify-center text-xs">
+            {dfbResult&&<span className="px-3 py-1 rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/30">Firebase: {dfbResult?.summary?.totalConfigs||0} إعدادات</span>}
+            {cpResult&&<span className="px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Pentest: {cpResult?.summary?.riskScore||0}/100</span>}
+            {facResult&&<span className="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Clone: {facResult?.success?"ناجح":"فشل"}</span>}
+          </div>
+        </div>}
+
 {/* الزر الجديد: Live Audit */}
 <Button 
   onClick={async () => {
@@ -1553,6 +1688,22 @@ export default function ReverseEngineer(){
               <div className="text-2xl font-bold">{facResult.cloneReport.loginBypassed?"تم":"لا"}</div>
               <div className="text-[10px] text-muted-foreground mt-1">تجاوز تسجيل الدخول</div>
             </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.adsRemoved?"bg-green-500/10 border-green-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.adsRemoved?"مُزالة":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">الإعلانات</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.tamperNeutralized?"bg-green-500/10 border-green-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.tamperNeutralized?"محيّد":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">الحماية</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.fridaInjected?"bg-violet-500/10 border-violet-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.fridaInjected?"محقون":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">Frida Gadget</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.pointsUnlocked?"bg-green-500/10 border-green-500/30":"bg-muted/10 border-border/30"}`}>
+              <div className="text-2xl font-bold">{facResult.cloneReport.pointsUnlocked?"MAX":"لا"}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">النقاط/العملات</div>
+            </div>
             <div className={`p-4 rounded-xl border text-center ${facResult.cloneReport.signatureVerified?"bg-green-500/10 border-green-500/30":"bg-yellow-500/10 border-yellow-500/30"}`}>
               <div className="text-2xl font-bold">{facResult.cloneReport.signatureVerified?"صحيح":"فشل"}</div>
               <div className="text-[10px] text-muted-foreground mt-1">التوقيع</div>
@@ -1561,6 +1712,38 @@ export default function ReverseEngineer(){
               <div className="text-2xl font-bold">{facResult.cloneReport.zipIntegrity?"سليم":"تالف"}</div>
               <div className="text-[10px] text-muted-foreground mt-1">سلامة ZIP</div>
             </div>
+          </div>}
+
+          {/* Audit Report (advanced technique from Clone section) */}
+          {facResult.auditReport&&<div className="bg-gradient-to-r from-indigo-900/30 to-violet-900/30 border border-indigo-500/30 rounded-2xl p-4 space-y-3">
+            <h3 className="text-sm font-bold text-indigo-300 flex items-center gap-2"><Scan className="w-4 h-4"/>تقرير التدقيق الشامل (Audit Report)</h3>
+            <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+              <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-center">
+                <div className="text-lg font-bold text-indigo-300">{facResult.auditReport.secretsFound}</div>
+                <div className="text-[9px] text-muted-foreground">أسرار</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-center">
+                <div className="text-lg font-bold text-indigo-300">{facResult.auditReport.endpointsDiscovered}</div>
+                <div className="text-[9px] text-muted-foreground">نقاط نهاية</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-center">
+                <div className="text-lg font-bold text-indigo-300">{facResult.auditReport.premiumMethodsPatched}</div>
+                <div className="text-[9px] text-muted-foreground">Premium</div>
+              </div>
+              <div className={`p-2.5 rounded-lg border text-center ${facResult.auditReport.loginBypassed?"bg-green-500/10 border-green-500/20":"bg-muted/10 border-border/20"}`}>
+                <div className="text-lg font-bold">{facResult.auditReport.loginBypassed?"نعم":"لا"}</div>
+                <div className="text-[9px] text-muted-foreground">تجاوز الدخول</div>
+              </div>
+              <div className={`p-2.5 rounded-lg border text-center ${facResult.auditReport.fridaInjected?"bg-violet-500/10 border-violet-500/20":"bg-muted/10 border-border/20"}`}>
+                <div className="text-lg font-bold">{facResult.auditReport.fridaInjected?"نعم":"لا"}</div>
+                <div className="text-[9px] text-muted-foreground">Frida</div>
+              </div>
+              <div className={`p-2.5 rounded-lg border text-center ${facResult.auditReport.tamperNeutralized?"bg-green-500/10 border-green-500/20":"bg-muted/10 border-border/20"}`}>
+                <div className="text-lg font-bold">{facResult.auditReport.tamperNeutralized?"نعم":"لا"}</div>
+                <div className="text-[9px] text-muted-foreground">تحييد الحماية</div>
+              </div>
+            </div>
+            <div className="text-[10px] text-indigo-300/60 font-mono">الحزمة: {facResult.auditReport.packageName} | التعديلات: {facResult.auditReport.modifications?.length||0}</div>
           </div>}
 
           {/* Phase Results */}
@@ -1632,7 +1815,7 @@ export default function ReverseEngineer(){
               </div>
             </div>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
             <div className={`p-4 rounded-xl border text-center ${dfbResult.summary?.riskLevel==="critical"?"bg-red-500/10 border-red-500/40":dfbResult.summary?.riskLevel==="high"?"bg-orange-500/10 border-orange-500/40":"bg-cyan-500/10 border-cyan-500/30"}`}>
               <div className={`text-2xl font-black ${dfbResult.summary?.riskLevel==="critical"?"text-red-400":dfbResult.summary?.riskLevel==="high"?"text-orange-400":"text-cyan-400"}`}>{dfbResult.summary?.riskLevel?.toUpperCase()}</div>
               <div className="text-[10px] text-muted-foreground mt-1">مستوى الخطورة</div>
@@ -1649,16 +1832,44 @@ export default function ReverseEngineer(){
               <div className="text-3xl font-bold text-yellow-400">{dfbResult.summary?.databaseUrls?.length||0}</div>
               <div className="text-[10px] text-muted-foreground mt-1">عناوين قواعد البيانات</div>
             </div>
+            <div className="p-4 rounded-xl border bg-blue-500/10 border-blue-500/30 text-center">
+              <div className="text-3xl font-bold text-blue-400">{dfbResult.summary?.storageBuckets?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">Storage Buckets</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-purple-500/10 border-purple-500/30 text-center">
+              <div className="text-3xl font-bold text-purple-400">{dfbResult.summary?.serviceAccounts||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">Service Accounts</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-cyan-500/10 border-cyan-500/30 text-center">
+              <div className="text-3xl font-bold text-cyan-400">{dfbResult.summary?.liveProbesRun||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">فحوصات LIVE</div>
+            </div>
+            <div className={`p-4 rounded-xl border text-center ${(dfbResult.summary?.liveVulnerabilities||0)>0?"bg-red-500/10 border-red-500/40":"bg-emerald-500/10 border-emerald-500/30"}`}>
+              <div className={`text-3xl font-bold ${(dfbResult.summary?.liveVulnerabilities||0)>0?"text-red-400":"text-emerald-400"}`}>{dfbResult.summary?.liveVulnerabilities||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">ثغرات مباشرة</div>
+            </div>
           </div>
           {dfbResult.summary?.projectIds?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-orange-500/20 rounded-xl px-4 py-3"><span className="text-xs text-orange-300 font-semibold">Firebase Project IDs:</span>{dfbResult.summary.projectIds.map((pid:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/30 text-orange-200 font-mono">{pid}</code>)}</div>}
           {dfbResult.summary?.apiKeys?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-red-500/20 rounded-xl px-4 py-3"><span className="text-xs text-red-300 font-semibold">API Keys:</span>{dfbResult.summary.apiKeys.map((k:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-red-500/10 border border-red-500/30 text-red-200 font-mono">{k}</code>)}</div>}
           {dfbResult.summary?.databaseUrls?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-yellow-500/20 rounded-xl px-4 py-3"><span className="text-xs text-yellow-300 font-semibold">Database URLs:</span>{dfbResult.summary.databaseUrls.map((u:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-yellow-500/10 border border-yellow-500/30 text-yellow-200 font-mono">{u}</code>)}</div>}
           {dfbResult.summary?.riskDetails?.length>0&&<div className="bg-black/30 rounded-xl p-4 space-y-1">{dfbResult.summary.riskDetails.map((d:string,i:number)=><div key={i} className="text-[11px] text-orange-200/80">{d}</div>)}</div>}
+          {/* Live Probes Section */}
+          {dfbResult.liveProbes?.length>0&&<div className="bg-gradient-to-r from-red-900/30 to-purple-900/30 border border-red-500/30 rounded-xl p-4 space-y-3">
+            <div className="text-sm font-bold text-red-300 flex items-center gap-2"><Shield className="w-4 h-4"/>نتائج الفحص المباشر (LIVE Probes) — {dfbResult.liveProbes.length} اختبار</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{dfbResult.liveProbes.map((probe:any,i:number)=><div key={i} className={`rounded-lg border p-3 ${probe.accessible?"border-red-500/40 bg-red-500/10":"border-emerald-500/20 bg-emerald-500/5"}`}>
+              <div className="flex items-center justify-between"><span className="text-[11px] font-semibold text-white">{probe.service}</span><span className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${probe.accessible?"bg-red-500/30 text-red-300":"bg-emerald-500/20 text-emerald-300"}`}>{probe.accessible?"مكشوف":"محمي"}</span></div>
+              <div className="text-[10px] text-muted-foreground mt-1 font-mono">{probe.url}</div>
+              <div className="text-[10px] mt-1 text-orange-200/80">{probe.details}</div>
+              {probe.data?.keys&&<div className="mt-1 flex flex-wrap gap-1">{probe.data.keys.slice(0,8).map((k:string,ki:number)=><code key={ki} className="text-[9px] px-1.5 py-0.5 rounded bg-black/40 border border-red-500/20 text-red-200">{k}</code>)}</div>}
+              {probe.data?.files&&<div className="mt-1 flex flex-wrap gap-1">{probe.data.files.slice(0,5).map((f:string,fi:number)=><code key={fi} className="text-[9px] px-1.5 py-0.5 rounded bg-black/40 border border-blue-500/20 text-blue-200">{f}</code>)}</div>}
+            </div>)}</div>
+          </div>}
+
           <div className="space-y-3">
-            <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><Layers className="w-4 h-4"/>طبقات الاستخراج (4 طبقات)</div>
-            {dfbResult.layers?.map((layer:any)=><div key={layer.layer} className={`rounded-xl border p-4 ${layer.status==="found"?"border-orange-500/30 bg-orange-500/5":layer.status==="partial"?"border-yellow-500/20 bg-yellow-500/5":"border-border/20 bg-muted/5"}`}>
-              <div className="flex items-center justify-between"><span className="text-sm font-semibold text-orange-200">{layer.layer}. {layer.name}</span><span className={`text-[10px] px-2 py-0.5 rounded-full ${layer.status==="found"?"bg-orange-500/20 text-orange-300":layer.status==="partial"?"bg-yellow-500/20 text-yellow-300":"bg-muted/20 text-muted-foreground"}`}>{layer.status==="found"?"تم الاكتشاف":layer.status==="partial"?"جزئي":"فارغ"} ({layer.filesScanned} ملف)</span></div>
-              {layer.findings?.length>0&&<div className="mt-2 bg-black/20 rounded-lg p-3 max-h-48 overflow-y-auto space-y-0.5">{layer.findings.map((f:string,fi:number)=><div key={fi} className="text-[10px] font-mono text-muted-foreground">{f}</div>)}</div>}
+            <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><Layers className="w-4 h-4"/>طبقات الاستخراج والفحص ({dfbResult.layers?.length||12} طبقة)</div>
+            {dfbResult.layers?.map((layer:any)=><div key={layer.layer} className={`rounded-xl border p-4 ${layer.status==="found"?(layer.layer>=8?"border-red-500/30 bg-red-500/5":"border-orange-500/30 bg-orange-500/5"):layer.status==="partial"?"border-yellow-500/20 bg-yellow-500/5":"border-border/20 bg-muted/5"}`}>
+              <div className="flex items-center justify-between"><span className={`text-sm font-semibold ${layer.layer>=8?"text-red-200":"text-orange-200"}`}>{layer.layer}. {layer.name}</span><span className={`text-[10px] px-2 py-0.5 rounded-full ${layer.status==="found"?(layer.layer>=8?"bg-red-500/20 text-red-300":"bg-orange-500/20 text-orange-300"):layer.status==="partial"?"bg-yellow-500/20 text-yellow-300":"bg-muted/20 text-muted-foreground"}`}>{layer.status==="found"?"تم الاكتشاف":layer.status==="partial"?"جزئي":"فارغ"} ({layer.filesScanned} ملف)</span></div>
+              {layer.findings?.length>0&&<div className="mt-2 bg-black/20 rounded-lg p-3 max-h-48 overflow-y-auto space-y-0.5">{layer.findings.map((f:string,fi:number)=><div key={fi} className={`text-[10px] font-mono ${f.includes("🔴")||f.includes("💀")?"text-red-300":f.includes("✅")||f.includes("🛡️")?"text-emerald-300":f.includes("⛓️")?"text-yellow-300":"text-muted-foreground"}`}>{f}</div>)}</div>}
             </div>)}
           </div>
           {dfbResult.configs?.length>0&&<div className="space-y-2">
