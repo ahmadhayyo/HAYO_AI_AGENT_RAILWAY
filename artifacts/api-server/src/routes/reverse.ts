@@ -13,6 +13,7 @@ import {
   analyzeWithAI,
   decompileFileForEdit,
   getSessionInfo,
+  keepSessionAlive,
   readSessionFileContent,
   saveFileEdit,
   aiModifyCode,
@@ -195,7 +196,16 @@ router.get("/session/:sessionId", (req: Request, res: Response) => {
     const info = getSessionInfo(req.params.sessionId);
     res.json(info);
   } catch (e: any) {
-    res.status(404).json({ error: "Session not found", details: e.message });
+    res.json({ exists: false, error: e.message });
+  }
+});
+
+router.post("/session/:sessionId/keepalive", (req: Request, res: Response) => {
+  try {
+    const result = keepSessionAlive(req.params.sessionId);
+    res.json(result);
+  } catch (e: any) {
+    res.json({ success: false, minutesLeft: 0, error: e.message });
   }
 });
 

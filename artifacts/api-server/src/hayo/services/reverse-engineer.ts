@@ -37,6 +37,7 @@ export interface EditSession {
   sessionId: string; structure: FileTreeNode[]; fileCount: number;
   apkToolAvailable: boolean; usedApkTool: boolean; fileType?: string;
   decompDir: string; origFile: string; fileBackups: Map<string, string>;
+  createdAt: number; lastActivity: number;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -800,6 +801,7 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
 
     const structure = buildTree(decompDir, decompDir);
     const allFiles = readDirRecursive(decompDir);
+    const now = Date.now();
     const session: EditSession = {
       sessionId, structure,
       fileCount: allFiles.length,
@@ -809,14 +811,25 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
       decompDir,
       origFile: inputPath,
       fileBackups: new Map(),
+      createdAt: now, lastActivity: now,
     };
     editSessions.set(sessionId, session);
 
-    // Auto-cleanup after 2 hours
-    setTimeout(() => {
-      editSessions.delete(sessionId);
-      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
-    }, 7_200_000);
+    // Auto-cleanup after 4 hours of inactivity
+    const SESSION_MAX_TTL = 14_400_000; // 4 hours absolute max
+    const SESSION_IDLE_TTL = 3_600_000; // 1 hour of inactivity
+    const cleanupTimer = setInterval(() => {
+      const sess = editSessions.get(sessionId);
+      if (!sess) { clearInterval(cleanupTimer); return; }
+      const now = Date.now();
+      const idleTime = now - sess.lastActivity;
+      const totalTime = now - sess.createdAt;
+      if (idleTime > SESSION_IDLE_TTL || totalTime > SESSION_MAX_TTL) {
+        editSessions.delete(sessionId);
+        clearInterval(cleanupTimer);
+        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+      }
+    }, 60_000);
 
     return { ...session, success: true };
   } catch (e: any) {
@@ -833,12 +846,27 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
 // ═══════════════════════════════════════════════════════════════
 // SESSION OPERATIONS
 // ═══════════════════════════════════════════════════════════════
-export function getSessionInfo(sessionId: string): EditSession {
+export function getSessionInfo(sessionId: string): EditSession & { exists: boolean; minutesLeft: number; modifiedPaths: string[] } {
   const sess = editSessions.get(sessionId);
   if (!sess) throw new Error(`الجلسة ${sessionId} غير موجودة أو انتهت`);
+  sess.lastActivity = Date.now();
   sess.structure = buildTree(sess.decompDir, sess.decompDir);
   sess.fileCount = readDirRecursive(sess.decompDir).length;
-  return sess;
+  const elapsed = Date.now() - sess.createdAt;
+  const maxTTL = 14_400_000; // 4 hours
+  const minutesLeft = Math.max(0, Math.round((maxTTL - elapsed) / 60_000));
+  const modifiedPaths = Array.from(sess.fileBackups.keys());
+  return { ...sess, exists: true, minutesLeft, modifiedPaths };
+}
+
+export function keepSessionAlive(sessionId: string): { success: boolean; minutesLeft: number; error?: string } {
+  const sess = editSessions.get(sessionId);
+  if (!sess) return { success: false, minutesLeft: 0, error: "الجلسة غير موجودة أو انتهت" };
+  sess.lastActivity = Date.now();
+  const elapsed = Date.now() - sess.createdAt;
+  const maxTTL = 14_400_000;
+  const minutesLeft = Math.max(0, Math.round((maxTTL - elapsed) / 60_000));
+  return { success: true, minutesLeft };
 }
 
 export function readSessionFileContent(sessionId: string, filePath: string): { success: boolean; content?: string; isBinary?: boolean; error?: string } {
@@ -854,6 +882,7 @@ export function readSessionFileContent(sessionId: string, filePath: string): { s
 export function saveFileEdit(sessionId: string, filePath: string, content: string): { success: boolean; error?: string } {
   const sess = editSessions.get(sessionId);
   if (!sess) return { success: false, error: "الجلسة غير موجودة" };
+  sess.lastActivity = Date.now();
   const fullPath = path.join(sess.decompDir, filePath.replace(/\.\.[/\\]/g, ""));
   if (!fs.existsSync(fullPath)) return { success: false, error: "الملف غير موجود" };
   // Backup original if not already backed up
@@ -978,7 +1007,23 @@ export async function aiSmartModify(
 export async function rebuildAPK(sessionId: string): Promise<{ success: boolean; apkBuffer?: Buffer; signed?: boolean; error?: string }> {
   const sess = editSessions.get(sessionId);
   if (!sess) return { success: false, error: "الجلسة غير موجودة" };
-  if (!sess.usedApkTool) return { success: false, error: "الجلسة لم تُفكَّك بـ APKTool — لا يمكن إعادة البناء" };
+  sess.lastActivity = Date.now();
+
+  // For non-APK formats, create a ZIP of the modified files
+  if (!sess.usedApkTool) {
+    try {
+      const workDir = path.dirname(sess.decompDir);
+      const outputZip = path.join(workDir, "rebuilt.zip");
+      runCmd("zip", ["-r", outputZip, "."], sess.decompDir, 120_000);
+      if (!fs.existsSync(outputZip)) {
+        return { success: false, error: "فشل إنشاء ملف ZIP للملفات المعدّلة" };
+      }
+      const zipBuffer = fs.readFileSync(outputZip);
+      return { success: true, apkBuffer: zipBuffer, signed: false };
+    } catch (e: any) {
+      return { success: false, error: "فشل حزم الملفات المعدّلة: " + e.message };
+    }
+  }
 
   const workDir = path.dirname(sess.decompDir);
   const outputApk = path.join(workDir, "rebuilt.apk");
@@ -2799,6 +2844,7 @@ export async function runFullAutoClone(
           usedApkTool: true,
           fileType: "apk",
           fileBackups: new Map(),
+          createdAt: Date.now(), lastActivity: Date.now(),
         } as EditSession);
 
         try {
