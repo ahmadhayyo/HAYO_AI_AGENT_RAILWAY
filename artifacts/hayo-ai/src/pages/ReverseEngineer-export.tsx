@@ -422,7 +422,7 @@ export default function ReverseEngineer(){
   const[pending,setPending]=useState<{modifiedCode:string;explanation:string}|null>(null);
   // Build
   const[building,setBuilding]=useState(false);
-  const[sessMins,setSessMins]=useState(30);
+  const[sessMins,setSessMins]=useState(240);
   // Undo/Redo
   const[editHistory,setEditHistory]=useState<{content:string;path:string;desc:string}[]>([]);
   const[histIdx,setHistIdx]=useState(-1);
@@ -512,10 +512,21 @@ export default function ReverseEngineer(){
     return()=>clearInterval(iv);
   },[decomp]);
 
-  // Session timer
+  // Session timer + keepAlive
   useEffect(()=>{
     if(!eSess)return;
-    const iv=setInterval(async()=>{try{const r=await fetch(`/api/reverse/session/${eSess.sessionId}`,{credentials:"include"});const d=await r.json();if(d.exists){setSessMins(d.minutesLeft);setEMods(new Set(d.modifiedPaths));}else{setESess(null);toast.error("انتهت الجلسة");}}catch{}},60000);
+    // Initial session check
+    (async()=>{try{const r=await fetch(`/api/reverse/session/${eSess.sessionId}`,{credentials:"include"});const d=await r.json();if(d.exists){setSessMins(d.minutesLeft??240);if(d.modifiedPaths)setEMods(new Set(d.modifiedPaths));}}catch{}})();
+    // Periodic check every 30s
+    const iv=setInterval(async()=>{
+      try{
+        await fetch(`/api/reverse/session/${eSess.sessionId}/keepalive`,{method:"POST",credentials:"include"});
+        const r=await fetch(`/api/reverse/session/${eSess.sessionId}`,{credentials:"include"});
+        const d=await r.json();
+        if(d.exists){setSessMins(d.minutesLeft??240);if(d.modifiedPaths)setEMods(new Set(d.modifiedPaths));}
+        else{setESess(null);toast.error("انتهت الجلسة — يمكنك إعادة رفع الملف");}
+      }catch{}
+    },30000);
     return()=>clearInterval(iv);
   },[eSess]);
 
@@ -536,7 +547,7 @@ export default function ReverseEngineer(){
       if(!r.ok){toast.error(d.error||"فشل التحليل");return;}
       setRes(d);if(d.downloadId)setDlId(d.downloadId);toast.success(`✅ ${d.totalFiles} ملف`);
       const fd2=new FormData();fd2.append("file",aFile);
-      try{const r2=await fetchRE("/api/reverse/decompile-for-edit",{method:"POST",body:fd2});const d2=await r2.json();if(r2.ok&&d2.sessionId){setASessId(d2.sessionId);setESess(d2);setEType(d2.fileType||"apk");setEMods(new Set());setSessMins(30);toast.success("✅ الجلسة جاهزة — الاستخبارات والطب الشرعي والتحرير مرتبطة");}else{toast.error(d2.error||"فشل إنشاء جلسة التحرير");}}catch(e:any){toast.error(e.message||"فشل إنشاء جلسة التحرير");}
+      try{const r2=await fetchRE("/api/reverse/decompile-for-edit",{method:"POST",body:fd2});const d2=await r2.json();if(r2.ok&&d2.sessionId){setASessId(d2.sessionId);setESess(d2);setEType(d2.fileType||"apk");setEMods(new Set());setSessMins(240);toast.success("✅ الجلسة جاهزة — الاستخبارات والطب الشرعي والتحرير مرتبطة");}else{toast.error(d2.error||"فشل إنشاء جلسة التحرير");}}catch(e:any){toast.error(e.message||"فشل إنشاء جلسة التحرير");}
     }catch(e:any){toast.error(e.message);}finally{setDecomp(false);}
   };
   const doSelNode=(n:FileTreeNode)=>{setSelNode(n);setAiText("");setShowAi(false);if(res){const f=res.files.find(f=>f.path===n.path);if(f?.isBinary){setSelBinary(f);setSelContent("");}else{setSelBinary(null);setSelContent(f?.content||"لا محتوى");}}};
@@ -572,7 +583,7 @@ export default function ReverseEngineer(){
   const doEditDecomp=async()=>{
     if(!eFile)return;setEDecomp(true);setESess(null);setECache(new Map());setENode(null);setEContent("");
     editBufRef.current=eFile;const fd=new FormData();fd.append("file",eFile);
-    try{const r=await fetchRE("/api/reverse/decompile-for-edit",{method:"POST",body:fd});const d=await r.json();if(!r.ok){toast.error(d.error);return;}setESess(d);setEType(d.fileType||"apk");setEMods(new Set());setSessMins(30);toast.success(`✅ ${d.fileCount} ملف [${(d.fileType||"apk").toUpperCase()}]`);}catch(e:any){toast.error(e.message);}finally{setEDecomp(false);}
+    try{const r=await fetchRE("/api/reverse/decompile-for-edit",{method:"POST",body:fd});const d=await r.json();if(!r.ok){toast.error(d.error);return;}setESess(d);setEType(d.fileType||"apk");setEMods(new Set());setSessMins(240);toast.success(`✅ ${d.fileCount} ملف [${(d.fileType||"apk").toUpperCase()}]`);}catch(e:any){toast.error(e.message);}finally{setEDecomp(false);}
   };
 
   const loadFile=useCallback(async(node:FileTreeNode)=>{

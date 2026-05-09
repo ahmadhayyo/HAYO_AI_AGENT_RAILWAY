@@ -456,7 +456,10 @@ export default function ReverseEngineer(){
   const[pending,setPending]=useState<{modifiedCode:string;explanation:string}|null>(null);
   // Build
   const[building,setBuilding]=useState(false);
-  const[sessMins,setSessMins]=useState(30);
+  const[sessMins,setSessMins]=useState(240);
+  const[buildReport,setBuildReport]=useState<{steps:{name:string;status:string;detail:string;durationMs:number}[];verification?:any}|null>(null);
+  const[patching,setPatching]=useState(false);
+  const[patchResult,setPatchResult]=useState<{modifications:string[];filesModified:number}|null>(null);
   // Undo/Redo
   const[editHistory,setEditHistory]=useState<{content:string;path:string;desc:string}[]>([]);
   const[histIdx,setHistIdx]=useState(-1);
@@ -560,10 +563,22 @@ export default function ReverseEngineer(){
     return()=>clearInterval(iv);
   },[decomp]);
 
-  // Session timer
+  // Session timer + keepAlive
   useEffect(()=>{
     if(!eSess)return;
-    const iv=setInterval(async()=>{try{const r=await fetch(`/api/reverse/session/${eSess.sessionId}`,{credentials:"include"});const d=await r.json();if(d.exists){setSessMins(d.minutesLeft);setEMods(new Set(d.modifiedPaths));}else{setESess(null);toast.error("انتهت الجلسة");}}catch{}},60000);
+    // Initial session check
+    (async()=>{try{const r=await fetch(`/api/reverse/session/${eSess.sessionId}`,{credentials:"include"});const d=await r.json();if(d.exists){setSessMins(d.minutesLeft??240);if(d.modifiedPaths)setEMods(new Set(d.modifiedPaths));}}catch{}})();
+    // Periodic check every 30s
+    const iv=setInterval(async()=>{
+      try{
+        // Send keepAlive to extend session
+        await fetch(`/api/reverse/session/${eSess.sessionId}/keepalive`,{method:"POST",credentials:"include"});
+        const r=await fetch(`/api/reverse/session/${eSess.sessionId}`,{credentials:"include"});
+        const d=await r.json();
+        if(d.exists){setSessMins(d.minutesLeft??240);if(d.modifiedPaths)setEMods(new Set(d.modifiedPaths));}
+        else{setESess(null);toast.error("انتهت الجلسة — يمكنك إعادة رفع الملف");}
+      }catch{}
+    },30000);
     return()=>clearInterval(iv);
   },[eSess]);
 
@@ -599,7 +614,7 @@ export default function ReverseEngineer(){
       setLiveStream({sseUrl});
       await new Promise<void>((resolve)=>{decompResolveRef.current=resolve;setTimeout(resolve,300000);});
       const fd2=new FormData();fd2.append("file",aFile);
-      try{const r2=await fetchRE("/api/reverse/decompile-for-edit",{method:"POST",body:fd2});const d2=await r2.json();if(r2.ok&&d2.sessionId){setASessId(d2.sessionId);setESess(d2);setEType(d2.fileType||"apk");setEMods(new Set());setSessMins(30);toast.success("✅ الجلسة جاهزة");}else{toast.error(d2.error||"فشل إنشاء جلسة التحرير");}}catch(e:any){toast.error(e.message||"فشل إنشاء جلسة التحرير");}
+      try{const r2=await fetchRE("/api/reverse/decompile-for-edit",{method:"POST",body:fd2});const d2=await r2.json();if(r2.ok&&d2.sessionId){setASessId(d2.sessionId);setESess(d2);setEType(d2.fileType||"apk");setEMods(new Set());setSessMins(240);toast.success("✅ الجلسة جاهزة");}else{toast.error(d2.error||"فشل إنشاء جلسة التحرير");}}catch(e:any){toast.error(e.message||"فشل إنشاء جلسة التحرير");}
     }catch(e:any){toast.error(e.message);}finally{setDecomp(false);}
   };
   const doSelNode=(n:FileTreeNode)=>{setSelNode(n);setAiText("");setShowAi(false);if(res){const f=res.files.find(f=>f.path===n.path);if(f?.isBinary){setSelBinary(f);setSelContent("");}else{setSelBinary(null);setSelContent(f?.content||"لا محتوى");}}};
@@ -647,7 +662,7 @@ export default function ReverseEngineer(){
   const doEditDecomp=async()=>{
     if(!eFile)return;setEDecomp(true);setESess(null);setECache(new Map());setENode(null);setEContent("");
     editBufRef.current=eFile;const fd=new FormData();fd.append("file",eFile);
-    try{const r=await fetchRE("/api/reverse/decompile-for-edit",{method:"POST",body:fd});const d=await r.json();if(!r.ok){toast.error(d.error);return;}setESess(d);setEType(d.fileType||"apk");setEMods(new Set());setSessMins(30);toast.success(`✅ ${d.fileCount} ملف [${(d.fileType||"apk").toUpperCase()}]`);}catch(e:any){toast.error(e.message);}finally{setEDecomp(false);}
+    try{const r=await fetchRE("/api/reverse/decompile-for-edit",{method:"POST",body:fd});const d=await r.json();if(!r.ok){toast.error(d.error);return;}setESess(d);setEType(d.fileType||"apk");setEMods(new Set());setSessMins(240);toast.success(`✅ ${d.fileCount} ملف [${(d.fileType||"apk").toUpperCase()}]`);}catch(e:any){toast.error(e.message);}finally{setEDecomp(false);}
   };
 
   const loadFile=useCallback(async(node:FileTreeNode)=>{
@@ -679,8 +694,39 @@ export default function ReverseEngineer(){
   const applyMod=()=>{if(!pending||!eNode)return;pushHistory(eContent,eNode.path,"قبل تعديل AI");setEContent(pending.modifiedCode);setPending(null);toast.success("تطبيق — اضغط حفظ");};
 
   const doBuild=async()=>{
-    if(!eSess||eMods.size===0){toast.error("لا تعديلات!");return;}setBuilding(true);
-    try{const r=await fetchRE("/api/reverse/rebuild",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:eSess.sessionId})});if(!r.ok){const d=await r.json();throw new Error(d.error);}const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=r.headers.get("X-APK-Signed")==="true"?"modified-signed.apk":`modified.${eType==="apk"?"apk":"zip"}`;a.click();URL.revokeObjectURL(url);toast.success(r.headers.get("X-APK-Signed")==="true"?"🎉 APK موقّع!":"✅ بناء");}catch(e:any){toast.error(e.message);}finally{setBuilding(false);}
+    if(!eSess||eMods.size===0){toast.error("لا تعديلات!");return;}setBuilding(true);setBuildReport(null);
+    try{
+      await fetch(`/api/reverse/session/${eSess.sessionId}/keepalive`,{method:"POST",credentials:"include"});
+      const r=await fetchRE("/api/reverse/rebuild",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:eSess.sessionId})});
+      if(!r.ok){const d=await r.json();setBuildReport(d.steps?{steps:d.steps}:null);throw new Error(d.error||`فشل البناء (رمز: ${r.status})`);}
+      // Parse build report from headers
+      try{
+        const stepsB64=r.headers.get("X-Build-Steps");
+        const verifyB64=r.headers.get("X-Verification");
+        const steps=stepsB64?JSON.parse(atob(stepsB64)):[];
+        const verification=verifyB64?JSON.parse(atob(verifyB64)):undefined;
+        setBuildReport({steps,verification});
+      }catch{}
+      const blob=await r.blob();const url=URL.createObjectURL(blob);
+      const a=document.createElement("a");a.href=url;
+      const isSigned=r.headers.get("X-APK-Signed")==="true";
+      if(eType==="apk"){a.download=isSigned?"modified-signed.apk":"modified.apk";}else{a.download=`modified.${eType||"zip"}`;}
+      a.click();URL.revokeObjectURL(url);
+      toast.success(isSigned?"APK موقّع V1+V2+V3 وجاهز للتثبيت!":"تم البناء بنجاح — جاري التحميل");
+    }catch(e:any){toast.error(`فشل البناء: ${e.message}`);}finally{setBuilding(false);}
+  };
+
+  const doApplyPatch=async(template:string,options?:{apiUrl?:string;apiReplace?:string})=>{
+    if(!eSess){toast.error("لا توجد جلسة!");return;}setPatching(true);setPatchResult(null);
+    try{
+      const r=await fetchRE("/api/reverse/apply-patch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:eSess.sessionId,template,options})});
+      const d=await r.json();if(!r.ok){toast.error(d.error||"فشل تطبيق القالب");return;}
+      setPatchResult(d);
+      // Refresh session info
+      const sr=await fetch(`/api/reverse/session/${eSess.sessionId}`,{credentials:"include"});
+      const sd=await sr.json();if(sd.exists){setEMods(new Set(sd.modifiedPaths));setSessMins(sd.minutesLeft??240);}
+      toast.success(`${d.filesModified} تعديل تم تطبيقه`);
+    }catch(e:any){toast.error(e.message);}finally{setPatching(false);}
   };
 
   const sharedTree:FileTreeNode[]=eSess?.structure||res?.structure||[];
@@ -1184,13 +1230,24 @@ export default function ReverseEngineer(){
 
       {/* ═══ TAB 3: EDIT & BUILD ═══ */}
       {tab==="edit"&&<div className="flex-1 flex flex-col gap-4 min-h-0">
+        {/* Session Status Bar */}
+        {eSess&&<div className="flex items-center gap-3 px-4 py-2 bg-card/70 backdrop-blur-sm border border-border rounded-xl">
+          <div className="flex items-center gap-1.5"><Activity className="w-3.5 h-3.5 text-emerald-400"/><span className="text-xs font-medium text-emerald-400">جلسة نشطة</span></div>
+          <div className="flex-1 h-1.5 bg-muted/30 rounded-full overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style={{width:`${Math.min(100,sessMins/2.4)}%`,background:sessMins<15?"#ef4444":sessMins<60?"#f59e0b":"#22c55e"}}/></div>
+          <span className={`text-xs font-mono font-bold ${sessMins<15?"text-red-400":sessMins<60?"text-amber-400":"text-emerald-400"}`}>{sessMins>60?`${Math.floor(sessMins/60)}h ${sessMins%60}m`:`${sessMins}m`}</span>
+          <span className="text-[10px] text-muted-foreground px-2 py-0.5 bg-muted/20 rounded-full">{eType.toUpperCase()}</span>
+          <span className="text-[10px] text-yellow-300 px-2 py-0.5 bg-yellow-500/10 rounded-full">{eMods.size} معدّل</span>
+        </div>}
+        {/* Toolbar */}
         <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="outline" size="sm" className="gap-2 h-9" onClick={()=>efRef.current?.click()}><Upload className="w-4 h-4"/>{eFile?eFile.name.slice(0,20)+"…":"رفع ملف"}</Button>
+          <Button variant="outline" size="sm" className="gap-2 h-9" onClick={()=>efRef.current?.click()}><Upload className="w-4 h-4"/>{eFile?eFile.name.slice(0,20)+"...":"رفع ملف"}</Button>
           <input ref={efRef} type="file" accept={ACCEPT_STR} className="hidden" onChange={e=>{const f=e.target.files?.[0];if(f&&valid(f)){setEFile(f);editBufRef.current=f;setESess(null);setECache(new Map());setENode(null);setEContent("");}}}/>
           {eFile&&!eSess&&<Button onClick={doEditDecomp} disabled={eDecomp} size="sm" className="gap-2 bg-emerald-600 h-9">{eDecomp?<><Loader2 className="w-4 h-4 animate-spin"/>تفكيك...</>:<><Binary className="w-4 h-4"/>فتح</>}</Button>}
           {eSess&&eNode&&<><Button onClick={undoEdit} disabled={histIdx<=0} size="sm" variant="ghost" className="h-9 w-9 p-0" title="تراجع"><Undo2 className="w-4 h-4"/></Button><Button onClick={redoEdit} disabled={histIdx>=editHistory.length-1} size="sm" variant="ghost" className="h-9 w-9 p-0" title="إعادة"><ArrowUpDown className="w-4 h-4"/></Button><Button onClick={doSave} disabled={saving} size="sm" variant="outline" className="gap-2 h-9 border-emerald-500/30">{saving?<Loader2 className="w-4 h-4 animate-spin"/>:<Save className="w-4 h-4 text-emerald-400"/>}حفظ</Button></>}
-          {eSess&&<Button onClick={doBuild} disabled={building||eMods.size===0} size="sm" className="gap-2 bg-primary h-9 mr-auto">{building?<><Loader2 className="w-4 h-4 animate-spin"/>بناء...</>:<><Hammer className="w-4 h-4"/>بناء ({eMods.size})</>}</Button>}
+          {eSess&&<Button onClick={doBuild} disabled={building||eMods.size===0} size="sm" className={`gap-2 h-9 mr-auto ${eMods.size>0?"bg-gradient-to-r from-violet-600 to-pink-600 hover:from-violet-500 hover:to-pink-500":"bg-primary"}`}>{building?<><Loader2 className="w-4 h-4 animate-spin"/>جاري البناء...</>:<><Hammer className="w-4 h-4"/>{eType==="apk"?`بناء APK (${eMods.size})`:`حزم ${eType.toUpperCase()} (${eMods.size})`}</>}</Button>}
         </div>
+        {/* Build Progress */}
+        {building&&<div className="flex items-center gap-3 px-4 py-3 bg-violet-500/5 border border-violet-500/20 rounded-xl animate-pulse"><Loader2 className="w-5 h-5 text-violet-400 animate-spin"/><div className="flex-1"><div className="text-sm font-medium text-violet-300">{eType==="apk"?"جاري إعادة بناء APK وتوقيعه...":"جاري حزم الملفات المعدّلة..."}</div><div className="text-[10px] text-muted-foreground mt-0.5">{eType==="apk"?"APKTool rebuild + zipalign + apksigner":"ZIP compression"}</div></div></div>}
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[260px_1fr_280px] gap-4 min-h-0" style={{minHeight:"500px"}}>
           {/* Tree + Search */}
           <div className="flex flex-col gap-3 min-h-0">
@@ -1217,28 +1274,70 @@ export default function ReverseEngineer(){
           </div>
           {/* AI Panel */}
           <div className="flex flex-col gap-3 min-h-0">
-            {/* Smart Modify */}
-            <div className="bg-card/70 backdrop-blur-sm border border-primary/20 rounded-xl p-3 space-y-3 shrink-0">
-              <div className="text-sm font-semibold flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-primary"/>تعديل ذكي شامل</div>
-              <p className="text-[10px] text-muted-foreground">اكتب ما تريد — AI يبحث ويعدل تلقائياً</p>
-              <div className="flex flex-wrap gap-1.5">
+            {/* Patch Templates — Real Smali Operations */}
+            {eSess&&eType==="apk"&&<div className="bg-card/70 backdrop-blur-sm border border-red-500/20 rounded-xl p-3 space-y-2 shrink-0">
+              <div className="text-sm font-semibold flex items-center gap-1.5"><Zap className="w-4 h-4 text-red-400"/>قوالب تعديل تنفيذية</div>
+              <p className="text-[10px] text-muted-foreground">تعديلات Smali مباشرة — حقيقية وقابلة للتنفيذ</p>
+              <div className="grid grid-cols-2 gap-1.5">
                 {([
-                  ["إزالة كل القيود","text-red-300 border-red-500/30 bg-red-500/5 hover:bg-red-500/15"],
-                  ["إزالة حماية Root","text-orange-300 border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/15"],
-                  ["تعطيل SSL Pinning","text-yellow-300 border-yellow-500/30 bg-yellow-500/5 hover:bg-yellow-500/15"],
-                  ["إزالة حدود الاستخدام","text-emerald-300 border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/15"],
-                  ["تمكين وضع التطوير","text-blue-300 border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/15"],
-                  ["تغيير نقطة API","text-violet-300 border-violet-500/30 bg-violet-500/5 hover:bg-violet-500/15"],
-                ] as const).map(([q,cls])=>(
-                  <button key={q} onClick={()=>setSmartInst(q)} className={`text-[10px] font-medium px-2 py-1 rounded-lg border transition-all hover:scale-105 ${cls}`}>{q}</button>
+                  ["removeAds","إزالة الإعلانات","حذف SDK + تعطيل invoke","text-red-300 border-red-500/30 bg-red-500/5 hover:bg-red-500/15"],
+                  ["bypassRoot","تجاوز Root","إرجاع false لكل فحص","text-orange-300 border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/15"],
+                  ["bypassSSL","تعطيل SSL Pin","تفريغ checkServerTrusted","text-yellow-300 border-yellow-500/30 bg-yellow-500/5 hover:bg-yellow-500/15"],
+                  ["unlockPremium","فتح Premium","isPremium → true","text-emerald-300 border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/15"],
+                  ["removeLicense","إزالة License","تعطيل LVL + Google Play","text-blue-300 border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/15"],
+                  ["removeTracking","إزالة التتبع","حذف Analytics/Firebase","text-violet-300 border-violet-500/30 bg-violet-500/5 hover:bg-violet-500/15"],
+                  ["bypassIntegrity","تجاوز Integrity","تعطيل SafetyNet/tamper","text-pink-300 border-pink-500/30 bg-pink-500/5 hover:bg-pink-500/15"],
+                  ["modifyAPI","تعديل API","استبدال URL مخصص","text-cyan-300 border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/15"],
+                ] as [string,string,string,string][]).map(([tmpl,label,desc,cls])=>(
+                  <button key={tmpl} onClick={()=>doApplyPatch(tmpl)} disabled={patching} className={`text-[10px] font-medium px-2 py-1.5 rounded-lg border transition-all hover:scale-[1.02] text-right ${cls} ${patching?"opacity-50":""}`} title={desc}>
+                    {patching?<Loader2 className="w-3 h-3 animate-spin inline mr-1"/>:null}{label}
+                  </button>
                 ))}
               </div>
-              <textarea value={smartInst} onChange={e=>setSmartInst(e.target.value)} placeholder="اكتب تعليماتك..." rows={3} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-xs text-right placeholder:text-muted-foreground/50 resize-none" disabled={!eSess||smarting}/>
+            </div>}
+            {/* Patch Result */}
+            {patchResult&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/30 rounded-xl p-3 space-y-1.5 max-h-36 overflow-y-auto shrink-0">
+              <div className="text-xs font-semibold text-emerald-300">{patchResult.filesModified} تعديل تم تطبيقه</div>
+              {patchResult.modifications.map((m,i)=><div key={i} className="text-[10px] text-muted-foreground bg-muted/20 rounded px-2 py-1">{m}</div>)}
+            </div>}
+            {/* Build Report */}
+            {buildReport&&<div className="bg-card/70 backdrop-blur-sm border border-violet-500/30 rounded-xl p-3 space-y-2 max-h-56 overflow-y-auto shrink-0">
+              <div className="text-xs font-semibold text-violet-300 flex items-center gap-1.5"><Hammer className="w-3 h-3"/>تقرير البناء</div>
+              {buildReport.steps.map((s,i)=><div key={i} className="flex items-center gap-2 text-[10px]">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.status==="success"?"bg-emerald-400":s.status==="failed"?"bg-red-400":s.status==="warning"?"bg-amber-400":"bg-gray-400"}`}/>
+                <span className="text-muted-foreground font-medium">{s.name}</span>
+                <span className="text-muted-foreground/60 flex-1 truncate">{s.detail}</span>
+                {s.durationMs>0&&<span className="text-muted-foreground/40 font-mono">{(s.durationMs/1000).toFixed(1)}s</span>}
+              </div>)}
+              {buildReport.verification&&<div className="border-t border-border/50 pt-2 mt-1 space-y-1">
+                <div className="text-[10px] font-semibold text-muted-foreground">التحقق من APK:</div>
+                <div className="flex gap-1 flex-wrap">{buildReport.verification.v1Signed&&<span className="text-[9px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-300 rounded">V1</span>}{buildReport.verification.v2Signed&&<span className="text-[9px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-300 rounded">V2</span>}{buildReport.verification.v3Signed&&<span className="text-[9px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-300 rounded">V3</span>}{buildReport.verification.zipAligned&&<span className="text-[9px] px-1.5 py-0.5 bg-blue-500/10 text-blue-300 rounded">Aligned</span>}{buildReport.verification.zipIntegrity&&<span className="text-[9px] px-1.5 py-0.5 bg-blue-500/10 text-blue-300 rounded">ZIP OK</span>}</div>
+                <div className={`text-[10px] font-bold ${buildReport.verification.installable?"text-emerald-400":"text-red-400"}`}>{buildReport.verification.installable?"قابل للتثبيت على جميع الأجهزة":"قد لا يعمل على بعض الأجهزة"}</div>
+                <div className="text-[9px] text-muted-foreground/60">{(buildReport.verification.apkSizeBytes/1024/1024).toFixed(2)} MB</div>
+              </div>}
+            </div>}
+            {/* Smart Modify */}
+            <div className="bg-card/70 backdrop-blur-sm border border-primary/20 rounded-xl p-3 space-y-3 shrink-0">
+              <div className="text-sm font-semibold flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-primary"/>تعديل ذكي بـ AI</div>
+              <p className="text-[10px] text-muted-foreground">اكتب تعليمات حرة — AI يبحث ويعدل تلقائياً</p>
+              <textarea value={smartInst} onChange={e=>setSmartInst(e.target.value)} placeholder="مثال: غيّر اسم التطبيق إلى MyApp..." rows={3} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-xs text-right placeholder:text-muted-foreground/50 resize-none" disabled={!eSess||smarting}/>
               <Button onClick={doSmartModify} disabled={!eSess||smarting||!smartInst.trim()} className="w-full gap-2 text-sm">{smarting?<><Loader2 className="w-4 h-4 animate-spin"/>يعدّل...</>:<><Zap className="w-4 h-4"/>تنفيذ</>}</Button>
             </div>
-            {smartRes&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/30 rounded-xl p-3 space-y-2 max-h-48 overflow-y-auto"><div className="text-xs font-semibold text-emerald-300">✅ {smartRes.filesModified} ملف</div><p className="text-xs text-muted-foreground">{smartRes.summary}</p>{smartRes.modifications.map((m,i)=><div key={i} className="text-[11px] bg-muted/20 rounded p-2"><div className="font-mono text-emerald-300/80">{m.filePath}</div><div className="text-muted-foreground">{m.explanation}</div></div>)}</div>}
+            {smartRes&&<div className="bg-card/70 backdrop-blur-sm border border-emerald-500/30 rounded-xl p-3 space-y-2 max-h-48 overflow-y-auto"><div className="text-xs font-semibold text-emerald-300">{smartRes.filesModified} ملف</div><p className="text-xs text-muted-foreground">{smartRes.summary}</p>{smartRes.modifications.map((m,i)=><div key={i} className="text-[11px] bg-muted/20 rounded p-2"><div className="font-mono text-emerald-300/80">{m.filePath}</div><div className="text-muted-foreground">{m.explanation}</div></div>)}</div>}
             {eNode&&<div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 space-y-2"><div className="text-xs font-semibold flex items-center gap-1.5"><Bot className="w-3.5 h-3.5"/>تعديل هذا الملف</div><textarea value={aiInst} onChange={e=>setAiInst(e.target.value)} placeholder="تعليمات..." rows={2} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-xs text-right placeholder:text-muted-foreground/50 resize-none" disabled={modifying}/><Button onClick={doAiModify} disabled={modifying||!aiInst.trim()} size="sm" className="w-full gap-2 text-xs">{modifying?<Loader2 className="w-3 h-3 animate-spin"/>:<Bot className="w-3 h-3"/>}تعديل</Button></div>}
-            {eSess&&<div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 text-xs space-y-1.5 mt-auto"><div className="font-semibold text-muted-foreground">الجلسة</div><div className="flex justify-between"><span className="text-muted-foreground">معدّلة</span><span className="text-yellow-300">{eMods.size}</span></div><div className="flex justify-between"><span className="text-muted-foreground">وقت</span><span className={sessMins<5?"text-red-400":"text-emerald-400"}>{sessMins}م</span></div><div className="flex justify-between"><span className="text-muted-foreground">نوع</span><span className="text-emerald-300">{eType.toUpperCase()}</span></div></div>}
+            {eSess&&<div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 text-xs space-y-2 mt-auto">
+              <div className="font-semibold text-muted-foreground flex items-center gap-1.5"><Settings className="w-3 h-3"/>معلومات الجلسة</div>
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center"><span className="text-muted-foreground">الحالة</span><span className="flex items-center gap-1 text-emerald-400"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"/>نشطة</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">ملفات معدّلة</span><span className="text-yellow-300 font-bold">{eMods.size}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">الوقت المتبقي</span><span className={`font-mono font-bold ${sessMins<15?"text-red-400":sessMins<60?"text-amber-400":"text-emerald-400"}`}>{sessMins>60?`${Math.floor(sessMins/60)}h ${sessMins%60}m`:`${sessMins}m`}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">نوع الملف</span><span className="text-emerald-300 font-mono">{eType.toUpperCase()}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">عدد الملفات</span><span className="text-blue-300">{eSess.fileCount}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">APKTool</span><span className={eSess.usedApkTool?"text-emerald-300":"text-amber-300"}>{eSess.usedApkTool?"مفعّل":"JADX/ZIP"}</span></div>
+              </div>
+              {sessMins<30&&<div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 text-center text-[10px] text-amber-300"><AlertTriangle className="w-3 h-3 inline mr-1"/>الجلسة تقترب من الانتهاء</div>}
+              {eMods.size>0&&<div className="border-t border-border/50 pt-2"><div className="text-[10px] font-semibold text-muted-foreground mb-1">الملفات المعدّلة:</div><div className="max-h-24 overflow-y-auto space-y-0.5">{Array.from(eMods).map((p,i)=><div key={i} className="text-[10px] text-yellow-300/80 truncate font-mono" title={p}>{p.split("/").pop()}</div>)}</div></div>}
+            </div>}
           </div>
         </div>
       </div>}
