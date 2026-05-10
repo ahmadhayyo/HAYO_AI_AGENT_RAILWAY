@@ -3263,10 +3263,10 @@ export async function runFullAutoClone(
 
   try {
     // ══════════════════════════════════════════════════════════════
-    // PHASE 1: DEEP CLOUD PENTEST (4-Layer Firebase Analysis)
+    // PHASE 1: DEEP CLOUD PENTEST (12-Layer Firebase Analysis)
     // ══════════════════════════════════════════════════════════════
     const p1Start = Date.now();
-    emit(1, "اختبار اختراق سحابي عميق", "بدء التحليل بـ 4 طبقات...");
+    emit(1, "اختبار اختراق سحابي عميق", "بدء التحليل بـ 12 طبقة...");
     const p1Details: string[] = [];
 
     try {
@@ -3371,7 +3371,7 @@ export async function runFullAutoClone(
       p1Details.push(`خطأ في المرحلة 1: ${e.message}`);
     }
 
-    phases.push({ phase: 1, name: "اختبار اختراق سحابي عميق (4 طبقات)", status: allSecrets.length > 0 ? "success" : "warning", details: p1Details, duration: Date.now() - p1Start });
+    phases.push({ phase: 1, name: "اختبار اختراق سحابي عميق (12 طبقة)", status: allSecrets.length > 0 ? "success" : "warning", details: p1Details, duration: Date.now() - p1Start });
 
     // ══════════════════════════════════════════════════════════════
     // PHASE 2: MEMORY-AWARE DECOMPILATION
@@ -3974,6 +3974,14 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
   const firestoreRegex = /firestore\.googleapis\.com\/v1\/projects\/([a-z0-9\-]+)/gi;
   const gcmSenderRegex = /(?:const-string[^"]*|["'=:])["']?(\d{10,13})["']?/g;
   const measurementIdRegex = /G-[A-Z0-9]{8,12}/g;
+  // Enhanced: Firestore direct URL patterns (many apps use Firestore, not RTDB)
+  const firestoreDirectRegex = /https?:\/\/firestore\.googleapis\.com\/v1(?:beta1)?\/projects\/([a-z0-9\-]+)/gi;
+  // Enhanced: Cloud Run / Cloud Tasks / Pub/Sub URLs
+  const cloudRunRegex = /https:\/\/([a-z0-9\-]+)-(?:[a-z0-9]+)\.(?:a\.run\.app|run\.app)/gi;
+  // Enhanced: Multi-region RTDB URLs (newer format)
+  const rtdbRegionRegex = /https?:\/\/([a-z0-9\-]+)-default-rtdb\.(?:asia-southeast1|europe-west1|us-central1)\.firebasedatabase\.app/gi;
+  // Enhanced: Firebase Hosting .web.app domains
+  const webAppRegex = /https:\/\/([a-z0-9\-]+)\.web\.app/gi;
 
   const layer2ProjectIds = new Set<string>();
   const layer2ApiKeys = new Set<string>();
@@ -4037,6 +4045,35 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     measurementIdRegex.lastIndex = 0;
     while ((m = measurementIdRegex.exec(content)) !== null) {
       layer2Findings.push(`📊 GA Measurement ID في ${rel}: ${m[0]}`);
+    }
+
+    // Enhanced: Firestore direct REST API URLs
+    firestoreDirectRegex.lastIndex = 0;
+    while ((m = firestoreDirectRegex.exec(content)) !== null) {
+      layer2ProjectIds.add(m[1]);
+      layer2Findings.push(`📂 Firestore REST API في ${rel}: project=${m[1]}`);
+    }
+
+    // Enhanced: Cloud Run service URLs
+    cloudRunRegex.lastIndex = 0;
+    while ((m = cloudRunRegex.exec(content)) !== null) {
+      layer2Findings.push(`☁️ Cloud Run Service في ${rel}: ${m[0]}`);
+    }
+
+    // Enhanced: Multi-region RTDB URLs (firebasedatabase.app format)
+    rtdbRegionRegex.lastIndex = 0;
+    while ((m = rtdbRegionRegex.exec(content)) !== null) {
+      const projId = m[1].replace(/-default-rtdb$/, "");
+      layer2DbUrls.add(m[0]);
+      layer2ProjectIds.add(projId);
+      layer2Findings.push(`🔥 Multi-region RTDB في ${rel}: ${m[0]}`);
+    }
+
+    // Enhanced: Firebase Hosting .web.app URLs
+    webAppRegex.lastIndex = 0;
+    while ((m = webAppRegex.exec(content)) !== null) {
+      layer2ProjectIds.add(m[1]);
+      layer2Findings.push(`🌐 Firebase Hosting في ${rel}: ${m[0]}`);
     }
   }
 
@@ -4239,8 +4276,115 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     }
   }
 
+  // 4c. Enhanced: URL-encoded strings
+  const urlEncodedRegex = /["']((?:%[0-9a-fA-F]{2}){5,}[^"']*)["']/g;
+  for (const cf of codeFiles.slice(0, 200)) {
+    const content = readText(cf, 100_000);
+    if (!content) continue;
+    urlEncodedRegex.lastIndex = 0;
+    let um: RegExpExecArray | null;
+    while ((um = urlEncodedRegex.exec(content)) !== null) {
+      try {
+        const decoded = decodeURIComponent(um[1]);
+        if (decoded.includes("firebaseio.com") || decoded.match(/AIza[0-9A-Za-z\-_]{35}/) || decoded.includes("appspot.com")) {
+          layer4Findings.push(`🔓 URL-encoded مفكوك في ${relPath(cf)}: ${decoded.slice(0, 80)}`);
+          const fbUrl = decoded.match(/https?:\/\/([a-z0-9\-]+)\.firebaseio\.com/i);
+          const fbKey = decoded.match(/AIza[0-9A-Za-z\-_]{35}/);
+          addConfig({
+            projectId: fbUrl ? fbUrl[1].replace(/-default-rtdb$/, "") : "",
+            apiKey: fbKey?.[0] || "",
+            databaseUrl: fbUrl?.[0] || "",
+            source: `URL-decoded: ${relPath(cf)}`,
+            layer: 4,
+            confidence: "low",
+          });
+        }
+      } catch { /* invalid URL encoding */ }
+    }
+  }
+
+  // 4d. Enhanced: Unicode escape sequences (\uXXXX)
+  const unicodeEscRegex = /["']((?:\\u[0-9a-fA-F]{4}){5,}[^"']*)["']/g;
+  for (const cf of codeFiles.slice(0, 200)) {
+    const content = readText(cf, 100_000);
+    if (!content) continue;
+    unicodeEscRegex.lastIndex = 0;
+    let um2: RegExpExecArray | null;
+    while ((um2 = unicodeEscRegex.exec(content)) !== null) {
+      try {
+        const decoded = JSON.parse(`"${um2[1]}"`);
+        if (decoded.includes("firebaseio.com") || decoded.match(/AIza[0-9A-Za-z\-_]{35}/) || decoded.includes("appspot.com")) {
+          layer4Findings.push(`🔓 Unicode-escaped مفكوك في ${relPath(cf)}: ${decoded.slice(0, 80)}`);
+          const fbUrl = decoded.match(/https?:\/\/([a-z0-9\-]+)\.firebaseio\.com/i);
+          const fbKey = decoded.match(/AIza[0-9A-Za-z\-_]{35}/);
+          addConfig({
+            projectId: fbUrl ? fbUrl[1].replace(/-default-rtdb$/, "") : "",
+            apiKey: fbKey?.[0] || "",
+            databaseUrl: fbUrl?.[0] || "",
+            source: `Unicode-decoded: ${relPath(cf)}`,
+            layer: 4,
+            confidence: "low",
+          });
+        }
+      } catch { /* invalid unicode */ }
+    }
+  }
+
+  // 4e. Enhanced: ROT13/ROT47 obfuscation
+  const rot13 = (s: string) => s.replace(/[a-zA-Z]/g, c => {
+    const base = c <= "Z" ? 65 : 97;
+    return String.fromCharCode(((c.charCodeAt(0) - base + 13) % 26) + base);
+  });
+  for (const cf of codeFiles.slice(0, 200)) {
+    const content = readText(cf, 100_000);
+    if (!content) continue;
+    const constStrings = content.match(/const-string[^"]*"([^"]{15,200})"/g) || [];
+    for (const cs of constStrings.slice(0, 50)) {
+      const strMatch = cs.match(/"([^"]+)"/);
+      if (!strMatch) continue;
+      const decoded = rot13(strMatch[1]);
+      if (decoded.includes("firebaseio.com") || decoded.match(/AIza[0-9A-Za-z\-_]{35}/) || decoded.includes("appspot.com")) {
+        layer4Findings.push(`🔓 ROT13 مفكوك في ${relPath(cf)}: ${decoded.slice(0, 80)}`);
+        const fbUrl = decoded.match(/https?:\/\/([a-z0-9\-]+)\.firebaseio\.com/i);
+        const fbKey = decoded.match(/AIza[0-9A-Za-z\-_]{35}/);
+        addConfig({
+          projectId: fbUrl ? fbUrl[1].replace(/-default-rtdb$/, "") : "",
+          apiKey: fbKey?.[0] || "",
+          databaseUrl: fbUrl?.[0] || "",
+          source: `ROT13-decoded: ${relPath(cf)}`,
+          layer: 4,
+          confidence: "low",
+        });
+      }
+    }
+  }
+
+  // 4f. Enhanced: String concatenation / split-key detection in smali
+  const splitKeyParts: string[] = [];
+  for (const cf of smaliAndCodeFiles.slice(0, 300)) {
+    const content = readText(cf, 200_000);
+    if (!content) continue;
+    // Detect sequential const-string loading that forms API keys
+    const constStrs = [...content.matchAll(/const-string\s+\w+,\s*"([^"]{2,20})"/g)];
+    for (let i = 0; i < constStrs.length - 1; i++) {
+      const combined = constStrs[i][1] + constStrs[i + 1][1];
+      if (combined.match(/AIza[0-9A-Za-z\-_]{35}/)) {
+        layer4Findings.push(`🔓 Split API Key في ${relPath(cf)}: ${combined}`);
+        addConfig({
+          apiKey: combined.match(/AIza[0-9A-Za-z\-_]{35}/)?.[0] || "",
+          source: `Split-key detection: ${relPath(cf)}`,
+          layer: 4,
+          confidence: "low",
+        });
+      }
+      if (combined.match(/[a-z0-9\-]+\.firebaseio\.com/i)) {
+        layer4Findings.push(`🔓 Split DB URL في ${relPath(cf)}: ${combined}`);
+      }
+    }
+  }
+
   if (layer4Findings.length === 0) {
-    layer4Findings.push("ℹ️ لم يتم العثور على إعدادات Firebase مشفرة بـ Base64/Hex");
+    layer4Findings.push("ℹ️ لم يتم العثور على إعدادات Firebase مشفرة بـ Base64/Hex/ROT13/Unicode");
   }
 
   // ─── LAYER 5: Service Account & OAuth Credential Detection ──
@@ -4629,6 +4773,32 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     }
   }
 
+  // Enhanced: RTDB path enumeration with wordlist
+  const rtdbWordlist = ["users", "admin", "admins", "config", "settings", "messages", "chats", "orders", "payments", "tokens", "sessions", "notifications", "profiles", "accounts", "data", "logs", "analytics", "api_keys", "secrets", "credentials", "private", "internal"];
+  for (const dbUrl of allDbUrls.slice(0, 3)) {
+    const accessiblePaths: string[] = [];
+    for (const wordPath of rtdbWordlist) {
+      const pathResult = await safeFetch(`${dbUrl}/${wordPath}.json?shallow=true&limitToFirst=1`, { timeout: 4000 });
+      if (pathResult.ok && pathResult.json && pathResult.json !== null && typeof pathResult.json === "object") {
+        accessiblePaths.push(wordPath);
+      }
+    }
+    if (accessiblePaths.length > 0) {
+      layer8Findings.push(`🔴 RTDB مسارات مكشوفة (${accessiblePaths.length}): /${accessiblePaths.join(", /")}`);
+      liveProbes.push({ service: "RTDB Paths", url: dbUrl, accessible: true, details: `${accessiblePaths.length} paths exposed: ${accessiblePaths.join(", ")}`, data: { paths: accessiblePaths } });
+    }
+  }
+
+  // Enhanced: RTDB rules download attempt
+  for (const dbUrl of allDbUrls.slice(0, 3)) {
+    const rulesResult = await safeFetch(`${dbUrl}/.settings/rules.json`, { timeout: 5000 });
+    if (rulesResult.ok && rulesResult.text.length > 5) {
+      layer8Findings.push(`🔴 قواعد أمان RTDB قابلة للقراءة! ${dbUrl}`);
+      layer8Findings.push(`   📜 القواعد: ${rulesResult.text.slice(0, 200)}...`);
+      liveProbes.push({ service: "RTDB Rules", url: dbUrl, accessible: true, details: "Security rules exposed — attacker can read full ruleset" });
+    }
+  }
+
   if (allDbUrls.length === 0) {
     layer8Findings.push("ℹ️ لا توجد عناوين RTDB لاختبارها");
   }
@@ -4666,7 +4836,79 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     }
   }
 
-  if (allBuckets.length === 0) {
+  // Enhanced: Firestore unauthenticated access probe (many apps use Firestore, not RTDB)
+  for (const pid of allProjectIds.slice(0, 3)) {
+    layer9Files++;
+    const firestoreCollections = ["users", "messages", "orders", "payments", "profiles", "config", "settings", "admins", "accounts", "notifications", "products", "transactions", "chats", "logs", "documents"];
+    let firestoreExposed = 0;
+    const exposedCollections: string[] = [];
+    for (const col of firestoreCollections) {
+      const fsUrl = `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents/${col}?pageSize=1`;
+      const fsResult = await safeFetch(fsUrl, { timeout: 5000 });
+      if (fsResult.ok && fsResult.json?.documents && fsResult.json.documents.length > 0) {
+        firestoreExposed++;
+        exposedCollections.push(col);
+      }
+    }
+    if (firestoreExposed > 0) {
+      layer9Findings.push(`🔴 Firestore مكشوف! ${pid} — ${firestoreExposed} مجموعة قابلة للقراءة: ${exposedCollections.join(", ")}`);
+      liveProbes.push({ service: "Firestore Read", url: pid, accessible: true, details: `${firestoreExposed} collections exposed: ${exposedCollections.join(", ")}`, data: { collections: exposedCollections } });
+
+      // Try Firestore write probe (safe: write then delete)
+      const testDocUrl = `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents/_hayo_probe?documentId=probe_${Date.now()}`;
+      const fsWriteResult = await safeFetch(testDocUrl, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fields: { _probe: { booleanValue: true } } }),
+        timeout: 5000,
+      });
+      if (fsWriteResult.ok) {
+        layer9Findings.push(`🔴 Firestore قابل للكتابة بدون مصادقة! ${pid}`);
+        liveProbes.push({ service: "Firestore Write", url: pid, accessible: true, details: "CRITICAL — unauthenticated Firestore write" });
+        // Clean up
+        const docName = fsWriteResult.json?.name;
+        if (docName) await safeFetch(`https://firestore.googleapis.com/v1/${docName}`, { method: "DELETE", timeout: 3000 });
+      }
+    } else {
+      // Try root-level list to check if Firestore exists but collections are empty/different names
+      const rootUrl = `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents`;
+      const rootResult = await safeFetch(rootUrl, { timeout: 5000 });
+      if (rootResult.ok && rootResult.json?.documents) {
+        layer9Findings.push(`🟡 Firestore موجود لـ ${pid} — المجموعات الافتراضية محمية لكن قد توجد أخرى`);
+        liveProbes.push({ service: "Firestore Read", url: pid, accessible: false, details: "Root accessible but standard collections secured" });
+      } else if (rootResult.status === 403 || rootResult.status === 401) {
+        layer9Findings.push(`✅ Firestore محمي: ${pid}`);
+        liveProbes.push({ service: "Firestore Read", url: pid, accessible: false, details: "Access denied — properly secured" });
+      } else if (rootResult.status === 404) {
+        layer9Findings.push(`ℹ️ Firestore غير مُفعّل: ${pid}`);
+      }
+    }
+  }
+
+  // Enhanced: Storage write/upload probe
+  for (const bucket of allBuckets.slice(0, 3)) {
+    const bucketClean = bucket.replace(/^gs:\/\//, "");
+    const uploadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketClean}/o?name=_hayo_probe_${Date.now()}.txt`;
+    const uploadResult = await safeFetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: "security_probe",
+      timeout: 5000,
+    });
+    if (uploadResult.ok) {
+      layer9Findings.push(`🔴 Storage قابل للكتابة/الرفع بدون مصادقة! ${bucketClean}`);
+      liveProbes.push({ service: "Storage Upload", url: bucketClean, accessible: true, details: "CRITICAL — unauthenticated file upload" });
+      // Clean up
+      const uploadedName = uploadResult.json?.name;
+      if (uploadedName) {
+        await safeFetch(`https://firebasestorage.googleapis.com/v0/b/${bucketClean}/o/${encodeURIComponent(uploadedName)}`, { method: "DELETE", timeout: 3000 });
+      }
+    }
+  }
+
+  if (allBuckets.length === 0 && allProjectIds.length === 0) {
+    layer9Findings.push("ℹ️ لا توجد Storage Buckets أو Firestore لاختبارها");
+  } else if (allBuckets.length === 0) {
     layer9Findings.push("ℹ️ لا توجد Storage Buckets لاختبارها");
   }
 
@@ -4731,6 +4973,57 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
 
   if (allApiKeysArr.length === 0) {
     layer10Findings.push("ℹ️ لا توجد API Keys لاختبار المصادقة");
+  }
+
+  // Enhanced: Authenticated re-probing — use anonymous auth token to test auth-only endpoints
+  let authToken: string | null = null;
+  for (const apiKey of allApiKeysArr.slice(0, 1)) {
+    const anonAuth = await safeFetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ returnSecureToken: true }) },
+    );
+    if (anonAuth.ok && anonAuth.json?.idToken) {
+      authToken = anonAuth.json.idToken;
+      layer10Findings.push(`🔑 تم الحصول على توكن مصادقة مجهول — بدء إعادة الفحص المصادق...`);
+
+      // Re-probe RTDB with auth token
+      for (const dbUrl of allDbUrls.slice(0, 3)) {
+        const authRead = await safeFetch(`${dbUrl}/.json?shallow=true&auth=${authToken}`, { timeout: 5000 });
+        if (authRead.ok && authRead.json && typeof authRead.json === "object" && authRead.json !== null) {
+          const keyCount = Object.keys(authRead.json).length;
+          layer10Findings.push(`🔴 RTDB قابلة للقراءة بتوكن مجهول! ${dbUrl} — ${keyCount} مفتاح`);
+          liveProbes.push({ service: "RTDB Auth-Read", url: dbUrl, accessible: true, details: `Authenticated anonymous read: ${keyCount} keys` });
+        } else {
+          layer10Findings.push(`✅ RTDB محمية حتى بتوكن مجهول: ${dbUrl}`);
+        }
+      }
+
+      // Re-probe Firestore with auth token
+      for (const pid of allProjectIds.slice(0, 2)) {
+        const authFsUrl = `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents/users?pageSize=1`;
+        const authFs = await safeFetch(authFsUrl, {
+          headers: { Authorization: `Bearer ${authToken}` },
+          timeout: 5000,
+        });
+        if (authFs.ok && authFs.json?.documents) {
+          layer10Findings.push(`🔴 Firestore /users قابل للقراءة بتوكن مجهول! ${pid}`);
+          liveProbes.push({ service: "Firestore Auth-Read", url: pid, accessible: true, details: "Authenticated anonymous Firestore read on /users" });
+        }
+      }
+
+      // Re-probe Storage with auth token
+      for (const bucket of allBuckets.slice(0, 2)) {
+        const bucketClean = bucket.replace(/^gs:\/\//, "");
+        const authStorage = await safeFetch(
+          `https://firebasestorage.googleapis.com/v0/b/${bucketClean}/o?maxResults=5`,
+          { headers: { Authorization: `Firebase ${authToken}` }, timeout: 5000 },
+        );
+        if (authStorage.ok && authStorage.json?.items && authStorage.json.items.length > 0) {
+          layer10Findings.push(`🔴 Storage قابل للقراءة بتوكن مجهول! ${bucketClean}`);
+          liveProbes.push({ service: "Storage Auth-Read", url: bucketClean, accessible: true, details: "Authenticated anonymous Storage list" });
+        }
+      }
+    }
   }
 
   // ─── LAYER 11: Remote Config & Cloud Functions Discovery ────
@@ -4851,6 +5144,38 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     layer12Findings.push(`⛓️ Cloud Functions مفتوحة — ${vulnerableFunctions.length} دالة بدون مصادقة`);
   }
 
+  // Enhanced: Firestore chain detection
+  const vulnerableFirestore = liveProbes.filter(p => p.service.startsWith("Firestore") && p.accessible);
+  if (vulnerableFirestore.length > 0 && vulnerableAuth.length > 0) {
+    layer12Findings.push(`⛓️ سلسلة حرجة: Auth مفتوح + Firestore مكشوف → وصول كامل لبيانات Firestore بحساب مجهول`);
+  }
+  if (vulnerableFirestore.length > 0 && vulnerableFirestore.some(p => p.service === "Firestore Write")) {
+    layer12Findings.push(`💀 Firestore كتابة مفتوحة — يمكن لأي شخص تعديل/حذف بيانات المستخدمين!`);
+  }
+
+  // Enhanced: Authenticated re-probe chain
+  const authProbeVulns = liveProbes.filter(p => p.service.includes("Auth-Read") && p.accessible);
+  if (authProbeVulns.length > 0) {
+    layer12Findings.push(`⛓️ سلسلة خطيرة: Anonymous Auth → توكن مجهول → ${authProbeVulns.length} خدمات قابلة للقراءة بالمصادقة المجهولة`);
+  }
+
+  // Enhanced: RTDB path exposure chain
+  const rtdbPathProbes = liveProbes.filter(p => p.service === "RTDB Paths" && p.accessible);
+  if (rtdbPathProbes.length > 0) {
+    const pathData = rtdbPathProbes[0]?.data as { paths?: string[] } | undefined;
+    const paths = pathData?.paths || [];
+    const sensitiveDataPaths = paths.filter((p: string) => ["users", "payments", "tokens", "secrets", "credentials", "admin", "admins", "accounts"].includes(p));
+    if (sensitiveDataPaths.length > 0) {
+      layer12Findings.push(`💀 بيانات حساسة مكشوفة في RTDB: /${sensitiveDataPaths.join(", /")} — بيانات مستخدمين/مالية/أسرار!`);
+    }
+  }
+
+  // Enhanced: Storage upload chain
+  const storageUploadVulns = liveProbes.filter(p => p.service === "Storage Upload" && p.accessible);
+  if (storageUploadVulns.length > 0) {
+    layer12Findings.push(`💀 رفع ملفات بدون مصادقة — يمكن رفع ملفات خبيثة أو استبدال ملفات التطبيق!`);
+  }
+
   // Cross-reference: configs found in deep layers vs surface layers
   const deepLayerConfigs = configs.filter(c => c.layer >= 3);
   const surfaceConfigs = configs.filter(c => c.layer <= 2);
@@ -4871,15 +5196,49 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
   const l12LiveVulns = liveProbes.filter(p => p.accessible).length;
   layer12Findings.push(`🎯 إجمالي الثغرات المباشرة: ${l12LiveVulns} من أصل ${liveProbes.length} اختبار`);
 
+  // Enhanced: CVSS-like scoring system
+  let cvssScore = 0;
+  const cvssFactors: string[] = [];
+  // Attack Vector (AV): Network = 0.85 (always, since Firebase is cloud)
+  cvssScore += 0.85;
+  // Attack Complexity (AC): Low if API key found
+  if (allApiKeysArr.length > 0) { cvssScore += 0.77; cvssFactors.push("AC:Low — مفتاح API متاح"); }
+  else { cvssScore += 0.44; cvssFactors.push("AC:High — لا يوجد مفتاح API"); }
+  // Privileges Required (PR): None if anonymous auth works
+  if (vulnerableAuth.length > 0) { cvssScore += 0.85; cvssFactors.push("PR:None — مصادقة مجهولة متاحة"); }
+  else { cvssScore += 0.62; cvssFactors.push("PR:Low — يحتاج مصادقة"); }
+  // Scope: Changed if Firestore + RTDB both exposed
+  if (vulnerableFirestore.length > 0 && vulnerableRtdb.length > 0) { cvssScore += 1.0; cvssFactors.push("S:Changed — عدة خدمات مكشوفة"); }
+  // Confidentiality Impact
+  if (vulnerableRtdb.length > 0 || vulnerableFirestore.length > 0) { cvssScore += 0.56; cvssFactors.push("C:High — بيانات قابلة للقراءة"); }
+  // Integrity Impact
+  const hasWriteVuln = liveProbes.some(p => (p.service === "RTDB Write" || p.service === "Firestore Write" || p.service === "Storage Upload") && p.accessible);
+  if (hasWriteVuln) { cvssScore += 0.56; cvssFactors.push("I:High — كتابة/تعديل بدون مصادقة"); }
+  // Availability Impact
+  if (serviceAccountCount > 0) { cvssScore += 0.56; cvssFactors.push("A:High — Service Account يتيح حذف البيانات"); }
+
+  const normalizedScore = Math.min(10, Math.round(cvssScore * 10) / 10 * 2.2);
+  const cvssRating = normalizedScore >= 9 ? "حرج" : normalizedScore >= 7 ? "عالي" : normalizedScore >= 4 ? "متوسط" : normalizedScore >= 0.1 ? "منخفض" : "آمن";
+  layer12Findings.push(`─── تقييم CVSS-Like ───`);
+  layer12Findings.push(`📊 الدرجة: ${normalizedScore.toFixed(1)}/10 (${cvssRating})`);
+  for (const f of cvssFactors) layer12Findings.push(`   ${f}`);
+
   // Security recommendations
   layer12Findings.push("─── توصيات أمنية ───");
   if (vulnerableRtdb.length > 0) layer12Findings.push("🛡️ أغلق قواعد أمان RTDB: `\".read\": false, \".write\": false` ثم أضف قواعد مخصصة");
   if (vulnerableStorage.length > 0) layer12Findings.push("🛡️ عدّل قواعد Storage: `allow read, write: if request.auth != null;`");
+  if (vulnerableFirestore.length > 0) layer12Findings.push("🛡️ أغلق قواعد Firestore: `allow read, write: if request.auth != null;` مع قواعد مخصصة لكل مجموعة");
   if (vulnerableAuth.length > 0) layer12Findings.push("🛡️ عطّل Anonymous Auth إذا غير مطلوب. فعّل App Check لمنع إساءة الاستخدام");
   if (serviceAccountCount > 0) layer12Findings.push("🛡️ أزل Service Account من APK فوراً! استخدم Cloud Functions كوسيط");
   if (allApiKeysArr.length > 0) layer12Findings.push("🛡️ قيّد API Keys باستخدام App Restrictions في Google Cloud Console");
   if (vulnerableFunctions.length > 0) layer12Findings.push("🛡️ أضف التحقق من الهوية لـ Cloud Functions: `context.auth` check");
   if (vulnerableConfig.length > 0) layer12Findings.push("🛡️ لا تخزّن أسراراً في Remote Config — استخدم Secret Manager بدلاً من ذلك");
+  if (storageUploadVulns.length > 0) layer12Findings.push("🛡️ أضف Content-Type validation و size limits لـ Storage Rules");
+  if (authProbeVulns.length > 0) layer12Findings.push("🛡️ أضف Firestore/RTDB Security Rules تتحقق من auth.uid بدلاً من auth != null فقط");
+  // OWASP/CWE references
+  if (vulnerableRtdb.length > 0 || vulnerableFirestore.length > 0) layer12Findings.push("📋 OWASP: A01:2021 — Broken Access Control | CWE-284");
+  if (allApiKeysArr.length > 0) layer12Findings.push("📋 OWASP: A02:2021 — Cryptographic Failures (API Key exposure) | CWE-312");
+  if (serviceAccountCount > 0) layer12Findings.push("📋 OWASP: A07:2021 — Identification & Auth Failures (embedded SA) | CWE-798");
 
   if (layer12Findings.length <= 2) {
     layer12Findings.push("✅ لم يتم اكتشاف سلاسل ثغرات أو مخاطر مترابطة");
@@ -4971,7 +5330,7 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     },
     {
       layer: 4,
-      name: "فك التشفير والترميز (Base64/Hex Decoding)",
+      name: "فك التشفير والترميز (Base64/Hex/ROT13/Unicode/URL/Split-Key)",
       status: (layer4Findings.some(f => f.startsWith("🔓")) ? "found" : "empty") as "found" | "partial" | "empty",
       findings: layer4Findings,
       filesScanned: layer4Files,
