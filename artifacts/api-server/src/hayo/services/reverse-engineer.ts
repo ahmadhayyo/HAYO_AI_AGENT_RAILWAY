@@ -1063,15 +1063,19 @@ export async function rebuildAPK(sessionId: string): Promise<BuildReport> {
   const workDir = path.dirname(sess.decompDir);
 
   // ── STEP 1: Purge old META-INF signatures from decompiled source ──
+  // CRITICAL: Only delete actual signature files (.RSA/.SF/.DSA/.EC and MANIFEST.MF)
+  // Do NOT delete .version files or other META-INF content — they are needed by the app
   const t1 = Date.now();
   let purgedCount = 0;
   try {
-    const sigExts = [".SF", ".RSA", ".DSA", ".EC", ".MF"];
+    const sigExts = [".RSA", ".SF", ".DSA", ".EC"];
     for (const subDir of ["original/META-INF", "META-INF"]) {
       const metaDir = path.join(sess.decompDir, subDir);
       if (fs.existsSync(metaDir)) {
         for (const f of fs.readdirSync(metaDir)) {
-          if (sigExts.some(e => f.toUpperCase().endsWith(e))) {
+          const upper = f.toUpperCase();
+          // Only delete signature files and MANIFEST.MF — preserve .version and other files
+          if (sigExts.some(e => upper.endsWith(e)) || f === "MANIFEST.MF") {
             fs.unlinkSync(path.join(metaDir, f));
             purgedCount++;
           }
@@ -1087,28 +1091,82 @@ export async function rebuildAPK(sessionId: string): Promise<BuildReport> {
   }
 
   // ── STEP 2: APKTool rebuild ──
+  // CRITICAL FIX: Detect if smali files were modified.
+  // If NO smali changes, re-decompile with -s (raw DEX) to preserve byte-exact DEX.
+  // This prevents DEX re-encoding which changes file size and can break apps.
   const t2 = Date.now();
   const outputApk = path.join(workDir, "rebuilt.apk");
   try {
     const apkt = findApkTool();
     const apktJar = findApkToolJar();
     const javaAvail = isJavaAvailable();
-    const rebuildHelper = (args: string[]) => {
-      if (javaAvail && apktJar) return runCmd("java", ["-Xmx2G", "-jar", apktJar, ...args], workDir, 300_000);
-      return runCmd(apkt, args, workDir, 180_000);
+    const rebuildHelper = (args: string[], cwd: string) => {
+      if (javaAvail && apktJar) return runCmd("java", ["-Xmx2G", "-jar", apktJar, ...args], cwd, 300_000);
+      return runCmd(apkt, args, cwd, 180_000);
     };
 
+    // Check if any smali files were actually modified by the user
+    const modifiedPaths = Array.from(sess.fileBackups.keys());
+    const hasSmaliMods = modifiedPaths.some(p => p.endsWith(".smali"));
+
+    let buildDir = sess.decompDir;
+
+    if (!hasSmaliMods && sess.origFile && fs.existsSync(sess.origFile)) {
+      // No smali modifications → re-decompile with -s (skip smali, raw DEX copy)
+      // Then overlay only the user's modified non-smali files (manifest, resources, etc.)
+      const rawDecompDir = path.join(workDir, "rawdex_rebuild");
+      if (fs.existsSync(rawDecompDir)) fs.rmSync(rawDecompDir, { recursive: true, force: true });
+      const rDecomp = rebuildHelper(["d", "-f", "-s", "-o", rawDecompDir, sess.origFile], workDir);
+      if (fs.existsSync(rawDecompDir)) {
+        // Copy user modifications over the raw-DEX decompilation
+        for (const [relPath, _backup] of sess.fileBackups) {
+          const srcFile = path.join(sess.decompDir, relPath);
+          const dstFile = path.join(rawDecompDir, relPath);
+          if (fs.existsSync(srcFile)) {
+            fs.mkdirSync(path.dirname(dstFile), { recursive: true });
+            fs.copyFileSync(srcFile, dstFile);
+          }
+        }
+        // Also copy any NEW files added (e.g. network_security_config.xml)
+        const origStructure = new Set(readDirRecursive(rawDecompDir).map(f => path.relative(rawDecompDir, f)));
+        for (const f of readDirRecursive(sess.decompDir)) {
+          const rel = path.relative(sess.decompDir, f);
+          if (!origStructure.has(rel) && !rel.startsWith("smali")) {
+            const dstFile = path.join(rawDecompDir, rel);
+            fs.mkdirSync(path.dirname(dstFile), { recursive: true });
+            fs.copyFileSync(f, dstFile);
+          }
+        }
+        // Remove signature files from raw decompilation too
+        const rawSigExts = [".RSA", ".SF", ".DSA", ".EC"];
+        for (const sub of ["original/META-INF", "META-INF"]) {
+          const d = path.join(rawDecompDir, sub);
+          if (fs.existsSync(d)) {
+            for (const f of fs.readdirSync(d)) {
+              if (rawSigExts.some(e => f.toUpperCase().endsWith(e)) || f === "MANIFEST.MF") {
+                try { fs.unlinkSync(path.join(d, f)); } catch {}
+              }
+            }
+          }
+        }
+        buildDir = rawDecompDir;
+        steps.push({ name: "وضع البناء", status: "success", detail: "DEX محفوظ كما هو (لا تعديلات smali)", durationMs: 0 });
+      } else {
+        console.warn("[Rebuild] Raw DEX decompile failed, falling back to smali rebuild");
+      }
+    }
+
     // Try with --use-aapt2 first (modern), then fallback without
-    let r = rebuildHelper(["b", "--use-aapt2", "-o", outputApk, sess.decompDir]);
+    let r = rebuildHelper(["b", "--use-aapt2", "-o", outputApk, buildDir], workDir);
     if (!fs.existsSync(outputApk)) {
-      r = rebuildHelper(["b", "-o", outputApk, sess.decompDir]);
+      r = rebuildHelper(["b", "-o", outputApk, buildDir], workDir);
     }
     if (!fs.existsSync(outputApk)) {
       steps.push({ name: "إعادة بناء APK", status: "failed", detail: "APKTool فشل: " + (r.stderr || "").slice(0, 200), durationMs: Date.now() - t2 });
       return { success: false, signed: false, steps, error: "فشل إعادة بناء APK — " + (r.stderr || "").slice(0, 200) };
     }
     const apkSize = fs.statSync(outputApk).size;
-    steps.push({ name: "إعادة بناء APK", status: "success", detail: `APKTool → ${(apkSize / 1024 / 1024).toFixed(2)} MB`, durationMs: Date.now() - t2 });
+    steps.push({ name: "إعادة بناء APK", status: "success", detail: `APKTool → ${(apkSize / 1024 / 1024).toFixed(2)} MB${!hasSmaliMods ? " (DEX أصلي)" : " (DEX مُعاد تجميعه)"}`, durationMs: Date.now() - t2 });
   } catch (e: any) {
     steps.push({ name: "إعادة بناء APK", status: "failed", detail: e.message, durationMs: Date.now() - t2 });
     return { success: false, signed: false, steps, error: e.message };
@@ -1118,10 +1176,10 @@ export async function rebuildAPK(sessionId: string): Promise<BuildReport> {
   const t3 = Date.now();
   try {
     const listResult = runCmd("unzip", ["-l", outputApk], workDir, 10_000);
-    const sigExts = [".RSA", ".SF", ".DSA", ".EC", ".MF"];
+    const sigExts = [".RSA", ".SF", ".DSA", ".EC"];
     const metaEntries = (listResult.stdout || "").split("\n")
       .map(l => l.trim().split(/\s+/).pop() || "")
-      .filter(e => e.startsWith("META-INF/") && sigExts.some(x => e.toUpperCase().endsWith(x)));
+      .filter(e => e.startsWith("META-INF/") && (sigExts.some(x => e.toUpperCase().endsWith(x)) || e === "META-INF/MANIFEST.MF"));
     if (metaEntries.length > 0) {
       runCmd("zip", ["-d", outputApk, ...metaEntries], workDir, 15_000);
       steps.push({ name: "تنظيف التوقيعات من APK", status: "success", detail: `حُذف ${metaEntries.length} ملف: ${metaEntries.join(", ")}`, durationMs: Date.now() - t3 });
@@ -1520,12 +1578,12 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
     }
     if (!keystorePath) return null;
 
-    // Strip old signatures from APK
+    // Strip old signatures from APK (only actual sig files, not .version etc.)
     const listResult = runCmd("unzip", ["-l", apkPath], workDir, 10_000);
-    const sigExts = [".RSA", ".SF", ".DSA", ".EC", ".MF"];
+    const sigExts = [".RSA", ".SF", ".DSA", ".EC"];
     const metaEntries = (listResult.stdout || "").split("\n")
       .map(l => l.trim().split(/\s+/).pop() || "")
-      .filter(e => e.startsWith("META-INF/") && sigExts.some(x => e.toUpperCase().endsWith(x)));
+      .filter(e => e.startsWith("META-INF/") && (sigExts.some(x => e.toUpperCase().endsWith(x)) || e === "META-INF/MANIFEST.MF"));
     if (metaEntries.length > 0) runCmd("zip", ["-d", apkPath, ...metaEntries], workDir, 15_000);
 
     // zipalign
@@ -1639,21 +1697,21 @@ export async function cloneApp(
     const apkt = findApkTool();
     const apktJar = findApkToolJar();
     const javaAvail = isJavaAvailable();
-    let decompResult;
-    if (javaAvail && apktJar) {
-      decompResult = runCmd("java", ["-Xmx2G", "-jar", apktJar, "d", "-f", "-o", decompDir, inputPath], workDir, 300_000);
-    } else {
-      decompResult = runCmd(apkt, ["d", "-f", "-o", decompDir, inputPath], workDir, 180_000);
-    }
+    // CRITICAL: Use -s (skip smali) to preserve raw DEX files byte-for-byte
+    // This prevents DEX re-encoding which changes file size and breaks apps
+    const decompHelper = (args: string[]) => {
+      if (javaAvail && apktJar) return runCmd("java", ["-Xmx2G", "-jar", apktJar, ...args], workDir, 300_000);
+      return runCmd(apkt, args, workDir, 180_000);
+    };
+    let decompResult = decompHelper(["d", "-f", "-s", "-o", decompDir, inputPath]);
     if (!fs.existsSync(decompDir)) {
-      if (javaAvail && apktJar) {
-        decompResult = runCmd(apkt, ["d", "-f", "-o", decompDir, inputPath], workDir, 180_000);
-      }
+      // Fallback without -s
+      decompResult = decompHelper(["d", "-f", "-o", decompDir, inputPath]);
       if (!fs.existsSync(decompDir)) {
         return { success: false, modifications, error: "فشل APKTool في تفكيك الملف: " + decompResult.stderr.slice(0, 200) };
       }
     }
-    modifications.push("✅ تم تفكيك APK بنجاح باستخدام APKTool");
+    modifications.push("✅ تم تفكيك APK بنجاح باستخدام APKTool (DEX محفوظ كما هو)");
 
     // ── PHASE 1.5: Purge old META-INF signatures ──
     const metaInfDir = path.join(decompDir, "original", "META-INF");
