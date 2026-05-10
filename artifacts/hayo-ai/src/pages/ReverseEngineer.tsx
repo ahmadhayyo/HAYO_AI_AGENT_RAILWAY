@@ -803,12 +803,12 @@ export default function ReverseEngineer(){
     if(!cpFile){toast.error("ارفع ملف APK أولاً");return;}
     setCpLoading(true);setCpResult(null);setCpShowReport(false);setCpActiveStep(1);setCpStepsRevealed([]);
     const revealStep=(n:number)=>setCpStepsRevealed(prev=>[...prev,n]);
-    const stepTitles=["تفكيك APK","استخراج التوكن","المفاتيح","IDOR","استغلال","سحب DB","Telegram","سكريبت + تقرير"];
+    const stepTitles=["تفكيك APK","استخراج التوكن","المفاتيح","IDOR","استغلال","سحب DB","Telegram","سكريبت","تشفير Cipher-7","Firebase+","AWS","حمايات","تقرير استخباراتي","ترسانة الهجوم"];
     let stepTimer:any;
     const simulateSteps=()=>{
       let s=1;
       revealStep(1);setCpActiveStep(1);
-      stepTimer=setInterval(()=>{s++;if(s<=8){revealStep(s);setCpActiveStep(s);}else clearInterval(stepTimer);},2400);
+      stepTimer=setInterval(()=>{s++;if(s<=14){revealStep(s);setCpActiveStep(s);}else clearInterval(stepTimer);},1800);
     };
     simulateSteps();
     try{
@@ -817,8 +817,8 @@ export default function ReverseEngineer(){
       const d=await r.json();
       if(!r.ok)throw new Error(d.error);
       clearInterval(stepTimer);
-      setCpStepsRevealed([1,2,3,4,5,6,7,8]);setCpActiveStep(0);
-      setCpResult(d);setCpExpanded(new Set([1,2,3,4,5,6,7,8]));
+      setCpStepsRevealed([1,2,3,4,5,6,7,8,9,10,11,12,13,14]);setCpActiveStep(0);
+      setCpResult(d);setCpExpanded(new Set([1,2,3,4,5,6,7,8,9,10,11,12,13,14]));
       toast.success(`اكتمل اختبار الاختراق — درجة الخطورة: ${d.summary?.riskScore}/100`);
     }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setCpLoading(false);}
   };
@@ -935,7 +935,7 @@ export default function ReverseEngineer(){
         try{
           const data=JSON.parse(e.data);
           if(data.deepFirebase)setDfbResult(data.deepFirebase);
-          if(data.cloudPentest){setCpResult(data.cloudPentest);setCpStepsRevealed([1,2,3,4,5,6,7,8]);setCpExpanded(new Set([1,2,3,4,5,6,7,8]));}
+          if(data.cloudPentest){setCpResult(data.cloudPentest);setCpStepsRevealed([1,2,3,4,5,6,7,8,9,10,11,12,13,14]);setCpExpanded(new Set([1,2,3,4,5,6,7,8,9,10,11,12,13,14]));}
         }catch{}
         setSeqDone(true);setSeqPhase(0);setSeqRunning(false);
         toast.success("اكتمل الخط المتسلسل بالكامل!");
@@ -1574,7 +1574,7 @@ export default function ReverseEngineer(){
               <Shield className="w-10 h-10 text-cyan-400"/>
             </div>
             <h2 className="text-2xl font-bold bg-gradient-to-r from-cyan-300 to-blue-400 bg-clip-text text-transparent">اختبار اختراق سحابي تلقائي</h2>
-            <p className="text-sm text-muted-foreground max-w-lg mx-auto">ارفع ملف APK واضغط "ابدأ الاختبار" — سيتم تنفيذ 8 خطوات تلقائياً: تفكيك، مصادقة، مفاتيح، استغلال IDOR، تعديل Pro، سحب بيانات، إرسال Telegram، وسكريبت + تقرير</p>
+            <p className="text-sm text-muted-foreground max-w-lg mx-auto">ارفع ملف APK واضغط "ابدأ الاختبار" — سيتم تنفيذ 14 مرحلة Cipher-7 تلقائياً: تفكيك، مصادقة، مفاتيح، IDOR، استغلال، سحب بيانات، Telegram، سكريبت، تحليل تشفيري، Firebase معمّق، AWS، تجاوز حمايات، تقرير استخباراتي، وترسانة الهجوم</p>
           </div>
           <input type="file" ref={cpFileRef} accept=".apk" className="hidden" onChange={e=>{if(e.target.files?.[0])setCpFile(e.target.files[0]);}}/>
           <div className={`w-full max-w-xl border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${cpFile?"border-cyan-500/60 bg-cyan-500/5":"border-border/50 hover:border-cyan-500/40 hover:bg-cyan-500/5"}`} onClick={()=>cpFileRef.current?.click()}>
@@ -1593,7 +1593,7 @@ export default function ReverseEngineer(){
             {seqRunning?<Loader2 className="w-6 h-6 animate-spin"/>:<Rocket className="w-6 h-6"/>}
             {seqRunning?"جاري تنفيذ الخط المتسلسل...":"ابدأ الخط المتسلسل الكامل"}
           </Button>
-          {!seqRunning&&<div className="text-xs text-muted-foreground text-center max-w-lg">Firebase Audit → Cloud Pentest (8 مراحل) → Full Auto Clone (6 مراحل) — تلقائي بالكامل</div>}
+          {!seqRunning&&<div className="text-xs text-muted-foreground text-center max-w-lg">Firebase Audit → Cipher-7 Cloud Pentest (14 مرحلة) → Full Auto Clone (6 مراحل) — تلقائي بالكامل</div>}
           {/* Individual buttons — secondary */}
           <div className="flex items-center gap-3 flex-wrap justify-center">
             <Button onClick={doCloudPentestFull} disabled={!cpFile||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
@@ -1619,10 +1619,16 @@ export default function ReverseEngineer(){
             </div>
             <textarea value={facOpts.customInstructions} onChange={e=>setFacOpts(p=>({...p,customInstructions:e.target.value}))} placeholder="تعليمات إضافية للذكاء الاصطناعي..." rows={2} className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-right placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:border-emerald-500/50"/>
           </div>}
-          <div className="grid grid-cols-8 gap-1.5 w-full max-w-xl">
-            {["تفكيك","مصادقة","مفاتيح","IDOR","استغلال","سحب DB","Telegram","تقرير"].map((s,i)=><div key={i} className="text-center">
-              <div className="w-7 h-7 mx-auto rounded-full bg-muted/20 border border-border/50 flex items-center justify-center text-[10px] font-bold text-muted-foreground">{i+1}</div>
-              <div className="text-[8px] text-muted-foreground mt-1">{s}</div>
+          <div className="grid grid-cols-7 gap-1 w-full max-w-xl">
+            {["تفكيك","مصادقة","مفاتيح","IDOR","استغلال","سحب DB","Telegram"].map((s,i)=><div key={i} className="text-center">
+              <div className="w-6 h-6 mx-auto rounded-full bg-muted/20 border border-border/50 flex items-center justify-center text-[9px] font-bold text-muted-foreground">{i+1}</div>
+              <div className="text-[7px] text-muted-foreground mt-0.5">{s}</div>
+            </div>)}
+          </div>
+          <div className="grid grid-cols-7 gap-1 w-full max-w-xl">
+            {["سكريبت","تشفير","Firebase+","AWS","حمايات","استخبارات","ترسانة"].map((s,i)=><div key={i} className="text-center">
+              <div className="w-6 h-6 mx-auto rounded-full bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/30 flex items-center justify-center text-[9px] font-bold text-cyan-400">{i+8}</div>
+              <div className="text-[7px] text-cyan-400/70 mt-0.5">{s}</div>
             </div>)}
           </div>
         </div>}
@@ -1707,9 +1713,9 @@ export default function ReverseEngineer(){
               </div>
             </div>
             <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-1000" style={{width:`${(cpActiveStep/8)*100}%`}}/>
+              <div className="h-full bg-gradient-to-r from-cyan-500 via-violet-500 to-emerald-500 rounded-full transition-all duration-1000" style={{width:`${(cpActiveStep/14)*100}%`}}/>
             </div>
-            <div className="text-[11px] text-muted-foreground mt-2 text-left">{cpActiveStep}/8 خطوات</div>
+            <div className="text-[11px] text-muted-foreground mt-2 text-left">{cpActiveStep}/14 مرحلة Cipher-7</div>
           </div>
           {[
             {id:1,title:"تفكيك APK وتحليل الهيكل الداخلي",desc:"apktool + jadx + Manifest + google-services.json + smali",icon:"📦"},
@@ -1719,7 +1725,13 @@ export default function ReverseEngineer(){
             {id:5,title:"استغلال الحسابات — ترقية/تخفيض/تحويل/PIN",desc:"ترقية + تخفيض خطة + تحويل رصيد + إعادة تعيين PIN",icon:"💎"},
             {id:6,title:"سحب قاعدة البيانات السحابية بالكامل",desc:"Firebase RTDB dump + REST API pagination + S3/MongoDB",icon:"📡"},
             {id:7,title:"إرسال البيانات المسروقة إلى بوت Telegram",desc:"sendMessage + sendDocument + تقسيم 4096 حرف",icon:"🤖"},
-            {id:8,title:"السكريبت المتكامل + التقرير النهائي",desc:"Python script + تقرير احترافي + توصيات الإصلاح",icon:"⚙️"},
+            {id:8,title:"السكريبت المتكامل + التقرير",desc:"Python script + تقرير احترافي + توصيات الإصلاح",icon:"⚙️"},
+            {id:9,title:"Cipher-7: تحليل التشفير والفك",desc:"Base64 + JWT decode + Hex + XOR brute-force + Reverse-Base64",icon:"🔓"},
+            {id:10,title:"Cipher-7: استغلال Firebase المعمّق",desc:"12 طبقة + Anonymous Auth + Deep Path Enum (50+) + Firestore",icon:"🔥"},
+            {id:11,title:"Cipher-7: تقييم أمان AWS",desc:"IAM + S3 + Lambda + API Gateway + Cognito + DynamoDB + WAF bypass",icon:"☁️"},
+            {id:12,title:"Cipher-7: تجاوز الحمايات",desc:"SSL Pinning + Signature + Root + Anti-Debug + Emulator + SafetyNet + Frida",icon:"🛡️"},
+            {id:13,title:"Cipher-7: تقرير الاستخبارات الموحّد",desc:"CVSS + مصفوفة المخاطر + التوصيات + ملخص تنفيذي",icon:"📊"},
+            {id:14,title:"Cipher-7: ترسانة الهجوم الكاملة",desc:"Frida scripts + AWS commands + WAF bypass + أوامر الاستغلال",icon:"⚔️"},
           ].map(step=>{
             const revealed=cpStepsRevealed.includes(step.id);
             const active=cpActiveStep===step.id;
@@ -1990,7 +2002,7 @@ export default function ReverseEngineer(){
           <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
-                <h2 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-cyan-400"/>تقرير اختبار الاختراق السحابي</h2>
+                <h2 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-cyan-400"/>تقرير Cipher-7 — اختبار الاختراق السحابي (14 مرحلة)</h2>
                 <p className="text-xs text-muted-foreground mt-1">الملف: <span className="text-cyan-300 font-mono">{cpResult.fileName||cpFile?.name}</span> · {cpResult.fileSize?((cpResult.fileSize/1024/1024).toFixed(1)+" MB"):""} · {new Date(cpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
