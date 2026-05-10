@@ -278,7 +278,7 @@ router.post('/cloud-pentest/live-audit', async (req: Request, res: Response) => 
       return res.status(400).json({ success: false, error: 'يجب توفير project_id' });
     }
 
-    const ngrokUrl = ' https://gallinaceous-nonobediently-daleyza.ngrok-free.dev';
+    const ngrokUrl = 'https://gallinaceous-nonobediently-daleyza.ngrok-free.dev';
 
     const response = await fetch(`${ngrokUrl}/firebase-audit`, {
       method: 'POST',
