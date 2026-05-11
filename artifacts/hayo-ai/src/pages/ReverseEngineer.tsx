@@ -944,12 +944,12 @@ export default function ReverseEngineer(){
     if(!wpUrl.trim()){toast.error("أدخل رابط الموقع أولاً");return;}
     setWpLoading(true);setWpResult(null);setWpShowReport(false);setWpActiveStep(1);setWpStepsRevealed([]);
     const revealStep=(n:number)=>setWpStepsRevealed(prev=>[...prev,n]);
-    const webStepTitles=["استطلاع","أسرار","Firebase","IDOR","مسارات","قواعد بيانات","Webhooks","سكريبت","تشفير","Firebase+","AWS","ترويسات","استخبارات","ترسانة"];
+    const webStepTitles=["استطلاع","أسرار","Firebase","IDOR","مسارات","قواعد بيانات","Webhooks","سكريبت","تشفير","Firebase+","AWS","ترويسات","استخبارات","ترسانة","SQLi+XSS","SSRF+LFI","نطاقات","زاحف","كوكيز","DOM XSS","WAF","نماذج","SSTI+CmdI","HTTP+تسريب","مصادقة"];
     let stepTimer:any;
     const simulateSteps=()=>{
       let s=1;
       revealStep(1);setWpActiveStep(1);
-      stepTimer=setInterval(()=>{s++;if(s<=14){revealStep(s);setWpActiveStep(s);}else clearInterval(stepTimer);},2200);
+      stepTimer=setInterval(()=>{s++;if(s<=25){revealStep(s);setWpActiveStep(s);}else clearInterval(stepTimer);},1400);
     };
     simulateSteps();
     try{
@@ -957,8 +957,8 @@ export default function ReverseEngineer(){
       const d=await r.json();
       if(!r.ok)throw new Error(d.error);
       clearInterval(stepTimer);
-      setWpStepsRevealed([1,2,3,4,5,6,7,8,9,10,11,12,13,14]);setWpActiveStep(0);
-      setWpResult(d);setWpExpanded(new Set([1,2,3,4,5,6,7,8,9,10,11,12,13,14]));
+      setWpStepsRevealed(Array.from({length:25},(_,i)=>i+1));setWpActiveStep(0);
+      setWpResult(d);setWpExpanded(new Set(Array.from({length:25},(_,i)=>i+1)));
       toast.success(`اكتمل اختبار اختراق الويب — درجة الخطورة: ${d.summary?.riskScore}/100`);
     }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setWpLoading(false);}
   };
@@ -1801,8 +1801,8 @@ export default function ReverseEngineer(){
             <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-600/20 border border-purple-500/30 flex items-center justify-center">
               <Globe className="w-10 h-10 text-purple-400"/>
             </div>
-            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-300 to-pink-400 bg-clip-text text-transparent">اختبار اختراق ويب — Cipher-7</h2>
-            <p className="text-sm text-muted-foreground max-w-lg mx-auto">أدخل رابط الموقع واضغط "ابدأ العمل" — سيتم تنفيذ 14 مرحلة Cipher-7 تلقائياً: استطلاع، أسرار، Firebase، IDOR، مسارات حساسة، قواعد بيانات، Webhooks، سكريبت، تشفير، Firebase معمّق، AWS، ترويسات أمنية، تقرير استخباراتي، وترسانة الهجوم</p>
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-300 to-pink-400 bg-clip-text text-transparent">اختبار اختراق ويب — Cipher-7 v11.0</h2>
+            <p className="text-sm text-muted-foreground max-w-lg mx-auto">أدخل رابط الموقع واضغط "ابدأ العمل" — سيتم تنفيذ 25 مرحلة Cipher-7 v11.0 تلقائياً: استطلاع، أسرار، Firebase، IDOR، مسارات حساسة (80+)، قواعد بيانات، Webhooks، سكريبت، تشفير، Firebase معمّق، AWS، ترويسات، استخبارات، ترسانة، SQLi متقدم (Error/Blind/Time/Form)، XSS متقدم (WAF Bypass/DOM)، SSRF، LFI، زاحف عميق، كوكيز، SSTI، Command Injection، كشف WAF، HTTP Methods، واختبار المصادقة</p>
           </div>
           <div className="w-full max-w-xl space-y-3">
             <div className="relative">
@@ -1944,7 +1944,7 @@ export default function ReverseEngineer(){
           <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
-                <h2 className="text-xl font-bold flex items-center gap-2"><Globe className="w-6 h-6 text-purple-400"/>تقرير Cipher-7 — اختبار اختراق الويب (14 مرحلة)</h2>
+                <h2 className="text-xl font-bold flex items-center gap-2"><Globe className="w-6 h-6 text-purple-400"/>تقرير Cipher-7 v11.0 — اختبار اختراق الويب (25 مرحلة)</h2>
                 <p className="text-xs text-muted-foreground mt-1">الموقع: <span className="text-purple-300 font-mono">{wpResult.targetUrl}</span> · {new Date(wpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
@@ -2254,43 +2254,106 @@ export default function ReverseEngineer(){
             </div>
           </div>}
 
-          {/* ══ DEEP VULNERABILITY SCAN RESULTS ══ */}
-          {wpResult.deepScan&&(wpResult.deepScan.totalVulns>0||wpResult.deepScan.subdomains?.length>0)&&<div className="bg-gradient-to-r from-red-900/30 to-purple-900/30 border-2 border-red-500/40 rounded-2xl p-5 space-y-4">
-            <h3 className="text-lg font-bold text-red-300 flex items-center gap-2"><Scan className="w-5 h-5"/>نتائج الفحص العميق — Deep Vulnerability Scan</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {/* ══ DEEP VULNERABILITY SCAN RESULTS (v11.0 Enhanced) ══ */}
+          {wpResult.deepScan&&(wpResult.deepScan.totalVulns>0||wpResult.deepScan.subdomains?.length>0||wpResult.crawler?.pagesDiscovered>0||wpResult.cookieAnalysis?.totalCookies>0||wpResult.domXss?.totalSinks>0)&&<div className="bg-gradient-to-r from-red-900/30 to-purple-900/30 border-2 border-red-500/40 rounded-2xl p-5 space-y-4">
+            <h3 className="text-lg font-bold text-red-300 flex items-center gap-2"><Scan className="w-5 h-5"/>نتائج الفحص العميق v11.0 — Enhanced Deep Scan</h3>
+            {/* Summary grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
               <div className={`p-3 rounded-xl text-center border ${wpResult.deepScan.criticalVulns>0?"bg-red-500/20 border-red-500/40":"bg-muted/10 border-muted/20"}`}>
                 <div className="text-2xl font-bold text-red-400">{wpResult.deepScan.criticalVulns||0}</div>
-                <div className="text-[10px] text-muted-foreground">ثغرات حرجة</div>
+                <div className="text-[10px] text-muted-foreground">حرج</div>
               </div>
               <div className={`p-3 rounded-xl text-center border ${wpResult.deepScan.highVulns>0?"bg-yellow-500/20 border-yellow-500/40":"bg-muted/10 border-muted/20"}`}>
                 <div className="text-2xl font-bold text-yellow-400">{wpResult.deepScan.highVulns||0}</div>
-                <div className="text-[10px] text-muted-foreground">ثغرات عالية</div>
+                <div className="text-[10px] text-muted-foreground">عالي</div>
+              </div>
+              <div className={`p-3 rounded-xl text-center border ${(wpResult.deepScan.mediumVulns||0)>0?"bg-orange-500/20 border-orange-500/40":"bg-muted/10 border-muted/20"}`}>
+                <div className="text-2xl font-bold text-orange-400">{wpResult.deepScan.mediumVulns||0}</div>
+                <div className="text-[10px] text-muted-foreground">متوسط</div>
               </div>
               <div className="p-3 rounded-xl text-center border bg-purple-500/10 border-purple-500/20">
                 <div className="text-2xl font-bold text-purple-300">{wpResult.deepScan.totalVulns||0}</div>
-                <div className="text-[10px] text-muted-foreground">إجمالي الثغرات</div>
+                <div className="text-[10px] text-muted-foreground">إجمالي</div>
               </div>
               <div className="p-3 rounded-xl text-center border bg-cyan-500/10 border-cyan-500/20">
-                <div className="text-2xl font-bold text-cyan-300">{wpResult.deepScan.subdomains?.length||0}</div>
-                <div className="text-[10px] text-muted-foreground">نطاقات فرعية</div>
+                <div className="text-2xl font-bold text-cyan-300">{wpResult.crawler?.pagesDiscovered||0}</div>
+                <div className="text-[10px] text-muted-foreground">صفحات</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-blue-500/10 border-blue-500/20">
+                <div className="text-2xl font-bold text-blue-300">{wpResult.crawler?.formsDiscovered||0}</div>
+                <div className="text-[10px] text-muted-foreground">نماذج</div>
               </div>
             </div>
+            {/* Detailed breakdown */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+              <div className="bg-black/30 rounded-lg p-2 border border-muted/10"><span className="text-red-300">SQLi (Forms):</span> <span className="font-bold text-red-400">{wpResult.deepScan.formSqliCount||0}</span></div>
+              <div className="bg-black/30 rounded-lg p-2 border border-muted/10"><span className="text-yellow-300">XSS (Forms):</span> <span className="font-bold text-yellow-400">{wpResult.deepScan.formXssCount||0}</span></div>
+              <div className="bg-black/30 rounded-lg p-2 border border-muted/10"><span className="text-red-300">SSTI:</span> <span className="font-bold text-red-400">{wpResult.deepScan.sstiCount||0}</span></div>
+              <div className="bg-black/30 rounded-lg p-2 border border-muted/10"><span className="text-red-300">CmdI:</span> <span className="font-bold text-red-400">{wpResult.deepScan.cmdInjectionCount||0}</span></div>
+              <div className="bg-black/30 rounded-lg p-2 border border-muted/10"><span className="text-red-300">Blind SQLi:</span> <span className="font-bold text-red-400">{wpResult.deepScan.blindSqliCount||0}</span></div>
+              <div className="bg-black/30 rounded-lg p-2 border border-muted/10"><span className="text-purple-300">DOM XSS:</span> <span className="font-bold text-purple-400">{wpResult.domXss?.totalSinks||0}</span></div>
+              <div className="bg-black/30 rounded-lg p-2 border border-muted/10"><span className="text-orange-300">Cookies:</span> <span className="font-bold text-orange-400">{wpResult.cookieAnalysis?.insecureCookies||0}/{wpResult.cookieAnalysis?.totalCookies||0}</span></div>
+              <div className="bg-black/30 rounded-lg p-2 border border-muted/10"><span className="text-cyan-300">WAF:</span> <span className="font-bold text-cyan-400">{wpResult.wafDetection||"لا يوجد"}</span></div>
+            </div>
+            {/* Vulnerabilities list */}
             {wpResult.deepScan.vulnerabilities?.length>0&&<div className="space-y-2">
-              <div className="text-sm font-semibold text-red-300">الثغرات المكتشفة:</div>
-              <div className="bg-black/40 rounded-xl p-4 space-y-2 max-h-[300px] overflow-y-auto">
+              <div className="text-sm font-semibold text-red-300">الثغرات المكتشفة ({wpResult.deepScan.vulnerabilities.length}):</div>
+              <div className="bg-black/40 rounded-xl p-4 space-y-2 max-h-[400px] overflow-y-auto">
                 {wpResult.deepScan.vulnerabilities.map((v:any,i:number)=>(
-                  <div key={i} className={`p-3 rounded-lg border ${v.severity==="critical"?"bg-red-500/10 border-red-500/30":"bg-yellow-500/10 border-yellow-500/30"}`}>
+                  <div key={i} className={`p-3 rounded-lg border ${v.severity==="critical"?"bg-red-500/10 border-red-500/30":v.severity==="high"?"bg-yellow-500/10 border-yellow-500/30":"bg-orange-500/10 border-orange-500/30"}`}>
                     <div className="flex items-center justify-between mb-1">
-                      <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${v.severity==="critical"?"bg-red-500/30 text-red-300":"bg-yellow-500/30 text-yellow-300"}`}>{v.severity.toUpperCase()}</span>
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${v.severity==="critical"?"bg-red-500/30 text-red-300":v.severity==="high"?"bg-yellow-500/30 text-yellow-300":"bg-orange-500/30 text-orange-300"}`}>{v.severity.toUpperCase()}</span>
                       <span className="text-[11px] font-bold text-purple-300">{v.type}</span>
                     </div>
-                    <div className="text-[11px] text-muted-foreground mt-1">URL: <code className="text-red-200 text-[10px]">{v.url}</code></div>
-                    <div className="text-[11px] text-muted-foreground">Payload: <code className="text-yellow-200 text-[10px]">{v.payload}</code></div>
+                    <div className="text-[11px] text-muted-foreground mt-1">URL: <code className="text-red-200 text-[10px] break-all">{v.url}</code></div>
+                    {v.method&&<div className="text-[11px] text-muted-foreground">Method: <code className="text-blue-200 text-[10px]">{v.method}</code></div>}
+                    {v.param&&<div className="text-[11px] text-muted-foreground">Param: <code className="text-cyan-200 text-[10px]">{v.param}</code></div>}
+                    <div className="text-[11px] text-muted-foreground">Payload: <code className="text-yellow-200 text-[10px] break-all">{v.payload}</code></div>
                     <div className="text-[11px] text-muted-foreground">الدليل: <span className="text-green-300">{v.evidence}</span></div>
                   </div>
                 ))}
               </div>
             </div>}
+            {/* Auth weaknesses */}
+            {wpResult.authWeaknesses?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-red-300 flex items-center gap-2"><Lock className="w-4 h-4"/>نقاط ضعف المصادقة ({wpResult.authWeaknesses.length})</div>
+              <div className="bg-black/40 rounded-xl p-4 space-y-2 max-h-[200px] overflow-y-auto">
+                {wpResult.authWeaknesses.map((a:any,i:number)=>(
+                  <div key={i} className={`p-3 rounded-lg border ${a.severity==="critical"?"bg-red-500/10 border-red-500/30":"bg-yellow-500/10 border-yellow-500/30"}`}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${a.severity==="critical"?"bg-red-500/30 text-red-300":"bg-yellow-500/30 text-yellow-300"}`}>{a.severity.toUpperCase()}</span>
+                      <span className="text-[11px] font-bold text-orange-300">{a.type}</span>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">{a.detail}</div>
+                    <div className="text-[11px] text-muted-foreground">URL: <code className="text-red-200 text-[10px]">{a.url}</code></div>
+                  </div>
+                ))}
+              </div>
+            </div>}
+            {/* Info disclosures */}
+            {wpResult.infoDisclosures?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><AlertTriangle className="w-4 h-4"/>تسريب المعلومات ({wpResult.infoDisclosures.length})</div>
+              <div className="bg-black/40 rounded-xl p-4 space-y-2 max-h-[200px] overflow-y-auto">
+                {wpResult.infoDisclosures.map((d:any,i:number)=>(
+                  <div key={i} className="p-2 rounded-lg bg-orange-500/10 border border-orange-500/20 text-[11px]">
+                    <span className="font-bold text-orange-300">{d.type}</span> — <code className="text-muted-foreground text-[10px]">{d.url}</code>
+                    <div className="text-muted-foreground mt-1">{d.detail?.slice(0,200)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>}
+            {/* HTTP Methods */}
+            {wpResult.httpMethods?.filter((m:any)=>m.sensitive).length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-yellow-300">HTTP Methods خطيرة مسموحة:</div>
+              <div className="bg-black/40 rounded-xl p-3 space-y-1">
+                {wpResult.httpMethods.filter((m:any)=>m.sensitive).map((m:any,i:number)=>(
+                  <div key={i} className="text-[11px] p-2 rounded bg-yellow-500/10 border border-yellow-500/20">
+                    <span className="font-bold text-yellow-300">{m.method}</span> <code className="text-muted-foreground">{m.url}</code> — HTTP {m.status}
+                  </div>
+                ))}
+              </div>
+            </div>}
+            {/* Subdomains */}
             {wpResult.deepScan.subdomains?.length>0&&<div className="space-y-2">
               <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Globe className="w-4 h-4"/>النطاقات الفرعية النشطة ({wpResult.deepScan.subdomains.length})</div>
               <div className="bg-black/40 rounded-xl p-4 space-y-1 max-h-[200px] overflow-y-auto">
