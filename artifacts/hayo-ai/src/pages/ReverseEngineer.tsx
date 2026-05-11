@@ -531,6 +531,14 @@ export default function ReverseEngineer(){
   const[seqPhase,setSeqPhase]=useState(0); // 0=idle, 1=firebase, 2=pentest, 3=clone
   const[seqLogs,setSeqLogs]=useState<string[]>([]);
   const[seqDone,setSeqDone]=useState(false);
+  // Web Pentest
+  const[wpUrl,setWpUrl]=useState("");
+  const[wpLoading,setWpLoading]=useState(false);
+  const[wpResult,setWpResult]=useState<any>(null);
+  const[wpActiveStep,setWpActiveStep]=useState(0);
+  const[wpStepsRevealed,setWpStepsRevealed]=useState<number[]>([]);
+  const[wpExpanded,setWpExpanded]=useState<Set<number>>(new Set([1]));
+  const[wpShowReport,setWpShowReport]=useState(false);
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -821,6 +829,29 @@ export default function ReverseEngineer(){
       setCpResult(d);setCpExpanded(new Set([1,2,3,4,5,6,7,8,9,10,11,12,13,14]));
       toast.success(`اكتمل اختبار الاختراق — درجة الخطورة: ${d.summary?.riskScore}/100`);
     }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setCpLoading(false);}
+  };
+
+  const doWebPentest=async()=>{
+    if(!wpUrl.trim()){toast.error("أدخل رابط الموقع أولاً");return;}
+    setWpLoading(true);setWpResult(null);setWpShowReport(false);setWpActiveStep(1);setWpStepsRevealed([]);
+    const revealStep=(n:number)=>setWpStepsRevealed(prev=>[...prev,n]);
+    const webStepTitles=["استطلاع","أسرار","Firebase","IDOR","مسارات","قواعد بيانات","Webhooks","سكريبت","تشفير","Firebase+","AWS","ترويسات","استخبارات","ترسانة"];
+    let stepTimer:any;
+    const simulateSteps=()=>{
+      let s=1;
+      revealStep(1);setWpActiveStep(1);
+      stepTimer=setInterval(()=>{s++;if(s<=14){revealStep(s);setWpActiveStep(s);}else clearInterval(stepTimer);},2200);
+    };
+    simulateSteps();
+    try{
+      const r=await fetchRE("/api/reverse/web-pentest-full",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:wpUrl.trim()})});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.error);
+      clearInterval(stepTimer);
+      setWpStepsRevealed([1,2,3,4,5,6,7,8,9,10,11,12,13,14]);setWpActiveStep(0);
+      setWpResult(d);setWpExpanded(new Set([1,2,3,4,5,6,7,8,9,10,11,12,13,14]));
+      toast.success(`اكتمل اختبار اختراق الويب — درجة الخطورة: ${d.summary?.riskScore}/100`);
+    }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setWpLoading(false);}
   };
 
   const doDeepFirebaseAudit=async()=>{
@@ -1632,6 +1663,222 @@ export default function ReverseEngineer(){
             </div>)}
           </div>
         </div>}
+
+        {/* ══ WEB PENTEST — URL Input & Start ══ */}
+        {!wpResult&&!wpLoading&&<div className="flex-1 flex flex-col items-center justify-center gap-5 py-6">
+          <div className="text-center space-y-2">
+            <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-600/20 border border-purple-500/30 flex items-center justify-center">
+              <Globe className="w-10 h-10 text-purple-400"/>
+            </div>
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-300 to-pink-400 bg-clip-text text-transparent">اختبار اختراق ويب — Cipher-7</h2>
+            <p className="text-sm text-muted-foreground max-w-lg mx-auto">أدخل رابط الموقع واضغط "ابدأ العمل" — سيتم تنفيذ 14 مرحلة Cipher-7 تلقائياً: استطلاع، أسرار، Firebase، IDOR، مسارات حساسة، قواعد بيانات، Webhooks، سكريبت، تشفير، Firebase معمّق، AWS، ترويسات أمنية، تقرير استخباراتي، وترسانة الهجوم</p>
+          </div>
+          <div className="w-full max-w-xl space-y-3">
+            <div className="relative">
+              <Globe className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-purple-400"/>
+              <input value={wpUrl} onChange={e=>setWpUrl(e.target.value)} placeholder="أدخل رابط الموقع — مثال: https://example.com" className="w-full bg-muted/30 border-2 border-purple-500/30 rounded-2xl px-12 py-4 text-base text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-purple-500/60 transition-all font-mono" onKeyDown={e=>{if(e.key==="Enter"&&wpUrl.trim())doWebPentest();}}/>
+              <Link2 className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground"/>
+            </div>
+            <Button onClick={doWebPentest} disabled={!wpUrl.trim()||wpLoading} size="lg" className="gap-3 bg-gradient-to-r from-purple-600 via-pink-600 to-red-600 hover:from-purple-500 hover:via-pink-500 hover:to-red-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-purple-900/40 font-bold w-full">
+              {wpLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Zap className="w-6 h-6"/>}
+              {wpLoading?"جاري اختبار الموقع...":"ابدأ العمل — اختبار اختراق الويب"}
+            </Button>
+          </div>
+          <div className="grid grid-cols-7 gap-1 w-full max-w-xl">
+            {["استطلاع","أسرار","Firebase","IDOR","مسارات","قواعد بيانات","Webhooks"].map((s,i)=><div key={i} className="text-center">
+              <div className="w-6 h-6 mx-auto rounded-full bg-muted/20 border border-purple-500/30 flex items-center justify-center text-[9px] font-bold text-muted-foreground">{i+1}</div>
+              <div className="text-[7px] text-muted-foreground mt-0.5">{s}</div>
+            </div>)}
+          </div>
+          <div className="grid grid-cols-7 gap-1 w-full max-w-xl">
+            {["سكريبت","تشفير","Firebase+","AWS","ترويسات","استخبارات","ترسانة"].map((s,i)=><div key={i} className="text-center">
+              <div className="w-6 h-6 mx-auto rounded-full bg-gradient-to-br from-purple-500/20 to-pink-500/20 border border-purple-500/30 flex items-center justify-center text-[9px] font-bold text-purple-400">{i+8}</div>
+              <div className="text-[7px] text-purple-400/70 mt-0.5">{s}</div>
+            </div>)}
+          </div>
+        </div>}
+
+        {/* ══ WEB PENTEST — Live Execution Progress ══ */}
+        {wpLoading&&<div className="space-y-4">
+          <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-purple-400"/>
+              <div>
+                <h2 className="text-lg font-bold text-purple-300">جاري تنفيذ اختبار اختراق الويب...</h2>
+                <p className="text-xs text-muted-foreground">الموقع: <span className="text-purple-300 font-mono">{wpUrl}</span></p>
+              </div>
+            </div>
+            <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-purple-500 via-pink-500 to-red-500 rounded-full transition-all duration-1000" style={{width:`${(wpActiveStep/14)*100}%`}}/>
+            </div>
+            <div className="text-[11px] text-muted-foreground mt-2 text-left">{wpActiveStep}/14 مرحلة Cipher-7 Web</div>
+          </div>
+          {[
+            {id:1,title:"استطلاع الموقع (Reconnaissance)",desc:"HTTP status, technologies, redirects, scripts",icon:"🌐"},
+            {id:2,title:"استخراج الأسرار والمفاتيح",desc:"API keys, Firebase, AWS, JWT, Bearer tokens",icon:"🔑"},
+            {id:3,title:"اكتشاف Firebase",desc:"Project ID, API Key, RTDB URL, Storage Bucket",icon:"🔥"},
+            {id:4,title:"اكتشاف IDOR ونقاط API",desc:"API endpoints, IDOR candidates, external links",icon:"🌐"},
+            {id:5,title:"اكتشاف المسارات الحساسة",desc:"/.env, /admin, /.git/config, /debug, /robots.txt",icon:"📂"},
+            {id:6,title:"فحص قواعد البيانات المكشوفة",desc:"Firebase RTDB, Firestore, MongoDB, Storage",icon:"📡"},
+            {id:7,title:"اكتشاف Webhooks والاتصالات",desc:"Telegram bots, Slack webhooks, Discord",icon:"🤖"},
+            {id:8,title:"توليد سكريبت الاختبار",desc:"Python script for automated web testing",icon:"⚙️"},
+            {id:9,title:"Cipher-7: تحليل التشفير",desc:"Base64 + JWT decode + Hex analysis",icon:"🔓"},
+            {id:10,title:"Cipher-7: استغلال Firebase المعمّق",desc:"Anonymous Auth + RTDB enum + Firestore + Storage",icon:"🔥"},
+            {id:11,title:"Cipher-7: تقييم أمان AWS",desc:"IAM + S3 + Cognito + API Gateway + Lambda",icon:"☁️"},
+            {id:12,title:"Cipher-7: تحليل الحمايات الأمنية",desc:"CSP, HSTS, X-Frame-Options, CORS, headers",icon:"🛡️"},
+            {id:13,title:"Cipher-7: تقرير الاستخبارات الموحّد",desc:"CVSS + Risk Matrix + توصيات + ملخص تنفيذي",icon:"📊"},
+            {id:14,title:"Cipher-7: ترسانة الهجوم الكاملة",desc:"جميع الأوامر + سكريبتات + AWS + Exploits",icon:"⚔️"},
+          ].map(step=>{
+            const revealed=wpStepsRevealed.includes(step.id);
+            const active=wpActiveStep===step.id;
+            return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${!revealed?"opacity-20 border-border/20":"opacity-100"} ${active?"border-purple-500/60 bg-purple-500/5 shadow-lg shadow-purple-900/20":"border-border/40 bg-card/30"}`}>
+              <div className="flex items-center gap-3 p-4">
+                <span className={`w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0 ${active?"bg-purple-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-5 h-5 animate-spin text-purple-400"/>:revealed?"✅":step.icon}</span>
+                <div className="flex-1 text-right">
+                  <div className={`font-semibold text-sm ${active?"text-purple-300":"text-foreground/80"}`}>{step.title}</div>
+                  <div className="text-[11px] text-muted-foreground">{step.desc}</div>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full ${active?"bg-purple-500/20 text-purple-300 border border-purple-500/40":"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":revealed?"مكتمل":"في الانتظار"}</span>
+              </div>
+            </div>);
+          })}
+        </div>}
+
+        {/* ══ WEB PENTEST — Results ══ */}
+        {wpResult&&<>
+          <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h2 className="text-xl font-bold flex items-center gap-2"><Globe className="w-6 h-6 text-purple-400"/>تقرير Cipher-7 — اختبار اختراق الويب (14 مرحلة)</h2>
+                <p className="text-xs text-muted-foreground mt-1">الموقع: <span className="text-purple-300 font-mono">{wpResult.targetUrl}</span> · {new Date(wpResult.generatedAt).toLocaleString("ar-EG")}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button onClick={()=>{setWpResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
+                <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`web-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
+                <Button onClick={()=>setWpShowReport(v=>!v)} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><BookOpen className="w-4 h-4"/>{wpShowReport?"إخفاء التقرير":"التقرير الكامل"}</Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Risk Score Dashboard */}
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className={`p-4 rounded-xl border text-center ${wpResult.summary.riskScore>60?"bg-red-500/10 border-red-500/40 shadow-lg shadow-red-900/20":"bg-purple-500/10 border-purple-500/30"}`}>
+              <div className={`text-4xl font-black ${wpResult.summary.riskScore>60?"text-red-400":wpResult.summary.riskScore>30?"text-yellow-400":"text-emerald-400"}`}>{wpResult.summary.riskScore}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">درجة الخطورة /100</div>
+              <div className={`text-[11px] mt-1 font-semibold ${wpResult.summary.riskScore>60?"text-red-400":"text-emerald-400"}`}>{wpResult.summary.riskScore>60?"خطر مرتفع":wpResult.summary.riskScore>30?"خطر متوسط":"آمن نسبياً"}</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-red-500/10 border-red-500/30 text-center">
+              <div className="text-3xl font-bold text-red-400">{wpResult.summary.criticalCount}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">ثغرات حرجة</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-orange-500/10 border-orange-500/30 text-center">
+              <div className="text-3xl font-bold text-orange-400">{wpResult.summary.highCount}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">تحذيرات</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-blue-500/10 border-blue-500/30 text-center">
+              <div className="text-3xl font-bold text-blue-400">{wpResult.summary.extractedKeys?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">مفاتيح مستخرجة</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-violet-500/10 border-violet-500/30 text-center">
+              <div className="text-3xl font-bold text-violet-400">{wpResult.summary.extractedEndpoints?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">نقاط دخول API</div>
+            </div>
+          </div>
+
+          {/* Technologies & Cloud Providers */}
+          {(wpResult.summary?.technologies?.length>0||wpResult.summary?.cloudProviders?.length>0)&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-border/50 rounded-xl px-4 py-3">
+            <span className="text-xs text-muted-foreground font-semibold">تقنيات مكتشفة:</span>
+            {wpResult.summary.technologies?.map((t:string,i:number)=><span key={`t${i}`} className="text-[11px] px-3 py-1 rounded-full font-medium bg-purple-500/10 border border-purple-500/30 text-purple-300">{t}</span>)}
+            {wpResult.summary.cloudProviders?.map((p:string,i:number)=><span key={`c${i}`} className="text-[11px] px-3 py-1 rounded-full font-medium bg-cyan-500/10 border border-cyan-500/30 text-cyan-300">{p}</span>)}
+          </div>}
+
+          {/* Missing Headers */}
+          {wpResult.summary?.missingHeaders?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-red-500/20 rounded-xl px-4 py-3">
+            <span className="text-xs text-red-300 font-semibold">ترويسات أمنية مفقودة:</span>
+            {wpResult.summary.missingHeaders.map((h:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full font-medium bg-red-500/10 border border-red-500/30 text-red-300">{h}</span>)}
+          </div>}
+
+          {/* Accessible Paths */}
+          {wpResult.summary?.accessiblePaths?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-yellow-500/20 rounded-xl px-4 py-3">
+            <span className="text-xs text-yellow-300 font-semibold">مسارات حساسة متاحة:</span>
+            {wpResult.summary.accessiblePaths.map((p:string,i:number)=><code key={i} className="text-[11px] px-3 py-1 rounded-full bg-yellow-500/10 border border-yellow-500/30 text-yellow-200 font-mono">{p}</code>)}
+          </div>}
+
+          {/* AI Report */}
+          {wpShowReport&&wpResult.report&&<div className="bg-black/30 border border-purple-500/20 rounded-2xl p-5 max-h-[500px] overflow-y-auto">
+            <h3 className="text-sm font-bold text-purple-300 mb-3 flex items-center gap-2"><BookOpen className="w-4 h-4"/>التقرير الكامل — Cipher-7 Web Pentest</h3>
+            <div className="whitespace-pre-wrap text-[12px] text-muted-foreground leading-relaxed font-mono">{wpResult.report}</div>
+          </div>}
+
+          {/* 14 Steps with full details */}
+          <div className="space-y-3">
+            <div className="text-sm font-semibold text-purple-300 flex items-center gap-2"><Terminal className="w-4 h-4"/>مراحل اختبار اختراق الويب (14 مرحلة)</div>
+            {wpResult.steps.map((step:any)=>{
+              const isOpen=wpExpanded.has(step.id);
+              const statusColors:Record<string,string>={danger:"border-red-500/40 bg-red-500/5",critical:"border-red-500/40 bg-red-500/5",warning:"border-orange-500/30 bg-orange-500/5",info:"border-blue-500/20 bg-blue-500/5",success:"border-emerald-500/30 bg-emerald-500/5"};
+              const statusIcons:Record<string,string>={danger:"🔴",critical:"🔴",warning:"🟡",info:"🔵",success:"🟢"};
+              const statusLabels:Record<string,string>={danger:"خطر",critical:"حرج",warning:"تحذير",info:"معلومة",success:"آمن"};
+              return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all ${statusColors[step.status]||"border-border"}`}>
+                <button onClick={()=>{const n=new Set(wpExpanded);if(n.has(step.id))n.delete(step.id);else n.add(step.id);setWpExpanded(n);}} className="w-full flex items-center gap-3 p-4 hover:bg-white/5 transition-all text-right">
+                  <span className="w-10 h-10 rounded-full bg-muted/30 flex items-center justify-center text-sm font-bold text-purple-400 shrink-0">{step.id}</span>
+                  <div className="flex-1 text-right">
+                    <div className="font-semibold text-sm">{step.title}</div>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">{step.details}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[11px] px-2 py-1 rounded-full border bg-muted/20 font-medium">{statusIcons[step.status]} {statusLabels[step.status]}</span>
+                    <span className="text-[10px] text-muted-foreground bg-muted/10 px-2 py-0.5 rounded-full">{step.findings?.length||0} نتائج</span>
+                    {isOpen?<ChevronDown className="w-4 h-4 text-muted-foreground"/>:<ChevronRight className="w-4 h-4 text-muted-foreground"/>}
+                  </div>
+                </button>
+                {isOpen&&<div className="border-t border-border/30 p-4 space-y-3 bg-black/20">
+                  {step.findings?.length>0&&<div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-purple-300 flex items-center gap-1"><Search className="w-3 h-3"/>الاكتشافات ({step.findings.length})</div>
+                    <div className="bg-black/30 rounded-lg p-3 max-h-[400px] overflow-y-auto space-y-0.5">
+                      {step.findings.map((f:string,fi:number)=><div key={fi} className={`text-[11px] font-mono ${f.includes("🔴")||f.includes("CRITICAL")?"text-red-300":f.includes("✅")?"text-emerald-300":f.includes("⚠️")||f.includes("🟡")?"text-yellow-300":f.includes("═══")?"text-purple-300 font-bold":"text-muted-foreground"}`}>{f}</div>)}
+                    </div>
+                  </div>}
+                  {step.commands?.length>0&&<div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-purple-300 flex items-center gap-1"><Terminal className="w-3 h-3"/>أوامر الاختبار ({step.commands.length})</div>
+                    <div className="bg-black/40 rounded-lg p-3 space-y-1">
+                      {step.commands.map((cmd:string,ci:number)=><div key={ci} className="flex items-center gap-2 text-[11px] font-mono text-purple-200/80 hover:text-purple-100 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(cmd);toast.success("تم النسخ");}}><span className="text-purple-500">$</span>{cmd}</div>)}
+                    </div>
+                  </div>}
+                  {step.pythonScript&&<div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-purple-300 flex items-center gap-1"><Code className="w-3 h-3"/>Python Script</div>
+                    <div className="bg-black/40 rounded-lg p-3 max-h-48 overflow-y-auto">
+                      <pre className="text-[10px] text-green-300/80 font-mono whitespace-pre-wrap">{step.pythonScript}</pre>
+                    </div>
+                    <Button onClick={()=>{const b=new Blob([step.pythonScript],{type:"text/plain"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`cipher7_web_pentest.py`;a.click();URL.revokeObjectURL(u);}} variant="outline" size="sm" className="gap-1 text-[10px] border-purple-500/30 text-purple-300"><Download className="w-3 h-3"/>تحميل السكريبت</Button>
+                  </div>}
+                </div>}
+              </div>);
+            })}
+          </div>
+
+          {/* Cipher-7 Summary */}
+          {wpResult.cipher7&&<div className="bg-gradient-to-r from-purple-900/30 to-pink-900/30 border border-purple-500/30 rounded-2xl p-5 space-y-3">
+            <h3 className="text-sm font-bold text-purple-300 flex items-center gap-2"><Shield className="w-4 h-4"/>ملخص Cipher-7 Web Engine</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/20 text-center">
+                <div className="text-2xl font-bold text-purple-300">{wpResult.cipher7.totalFindings}</div>
+                <div className="text-[10px] text-muted-foreground">إجمالي الاكتشافات</div>
+              </div>
+              <div className="p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-center">
+                <div className="text-2xl font-bold text-cyan-300">{wpResult.cipher7.crypto?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">تشفير مفكوك</div>
+              </div>
+              <div className="p-3 rounded-xl bg-orange-500/10 border border-orange-500/20 text-center">
+                <div className="text-2xl font-bold text-orange-300">{wpResult.cipher7.aws?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">AWS findings</div>
+              </div>
+              <div className="p-3 rounded-xl bg-pink-500/10 border border-pink-500/20 text-center">
+                <div className="text-lg font-bold text-pink-300">v{wpResult.cipher7.engineVersion}</div>
+                <div className="text-[10px] text-muted-foreground">إصدار المحرك</div>
+              </div>
+            </div>
+          </div>}
+        </>}
 
         {/* ── Sequential Pipeline: Live Progress ── */}
         {seqRunning&&<div className="space-y-4 w-full">

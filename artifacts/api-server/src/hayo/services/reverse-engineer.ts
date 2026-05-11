@@ -7026,3 +7026,809 @@ Exported Activities: ${exportedActivities}
     generatedAt: new Date().toISOString(),
   };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// WEB PENTEST — Cipher-7 Web Penetration Testing Engine (14 Phases)
+// ═══════════════════════════════════════════════════════════════
+
+interface WebFetchResult {
+  url: string;
+  html: string;
+  headers: Record<string, string>;
+  scripts: string[];
+  status: number;
+  redirectChain: string[];
+  technologies: string[];
+}
+
+async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
+  const redirectChain: string[] = [];
+  let finalUrl = targetUrl;
+  let html = "";
+  const headers: Record<string, string> = {};
+  let status = 0;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const resp = await fetch(targetUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+      },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    status = resp.status;
+    finalUrl = resp.url || targetUrl;
+    html = await resp.text();
+    resp.headers.forEach((v, k) => { headers[k] = v; });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const technologies: string[] = [];
+  const lowerHtml = html.toLowerCase();
+  if (lowerHtml.includes("wp-content") || lowerHtml.includes("wordpress")) technologies.push("WordPress");
+  if (lowerHtml.includes("joomla")) technologies.push("Joomla");
+  if (lowerHtml.includes("drupal")) technologies.push("Drupal");
+  if (lowerHtml.includes("react") || lowerHtml.includes("__next_data__") || lowerHtml.includes("_next/")) technologies.push("React/Next.js");
+  if (lowerHtml.includes("ng-") || lowerHtml.includes("angular")) technologies.push("Angular");
+  if (lowerHtml.includes("vue") || lowerHtml.includes("__vue__")) technologies.push("Vue.js");
+  if (lowerHtml.includes("laravel") || (headers["x-powered-by"] || "").toLowerCase().includes("php")) technologies.push("Laravel/PHP");
+  if ((headers["x-powered-by"] || "").includes("Express")) technologies.push("Express.js");
+  if ((headers["x-powered-by"] || "").includes("ASP.NET")) technologies.push("ASP.NET");
+  if ((headers["server"] || "").toLowerCase().includes("nginx")) technologies.push("Nginx");
+  if ((headers["server"] || "").toLowerCase().includes("apache")) technologies.push("Apache");
+  if ((headers["server"] || "").toLowerCase().includes("cloudflare")) technologies.push("Cloudflare");
+  if (lowerHtml.includes("firebase") || lowerHtml.includes("firebaseio.com")) technologies.push("Firebase");
+  if (lowerHtml.includes("amazonaws.com") || lowerHtml.includes("aws-sdk")) technologies.push("AWS");
+  if (lowerHtml.includes("stripe")) technologies.push("Stripe");
+  if (lowerHtml.includes("jquery")) technologies.push("jQuery");
+  if (lowerHtml.includes("bootstrap")) technologies.push("Bootstrap");
+  if (lowerHtml.includes("tailwind")) technologies.push("Tailwind CSS");
+
+  const scriptUrls: string[] = [];
+  const scriptTagRegex = /<script[^>]+src=["']([^"']+)["']/gi;
+  let sm: RegExpExecArray | null;
+  while ((sm = scriptTagRegex.exec(html)) !== null) {
+    const src = sm[1];
+    if (src.startsWith("http")) scriptUrls.push(src);
+    else if (src.startsWith("//")) scriptUrls.push("https:" + src);
+    else { try { scriptUrls.push(new URL(src, finalUrl).href); } catch {} }
+  }
+
+  const scripts: string[] = [];
+  const inlineScriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+  let ism: RegExpExecArray | null;
+  while ((ism = inlineScriptRegex.exec(html)) !== null) {
+    if (ism[1].trim().length > 10) scripts.push(ism[1].trim());
+  }
+
+  const fetchPromises = scriptUrls.slice(0, 30).map(async (sUrl) => {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 10_000);
+      const r = await fetch(sUrl, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      if (r.ok) {
+        const text = await r.text();
+        if (text.length < 2_000_000) scripts.push(text);
+      }
+    } catch {}
+  });
+  await Promise.all(fetchPromises);
+
+  return { url: finalUrl, html, headers, scripts, status, redirectChain, technologies };
+}
+
+export async function runWebPentest(targetUrl: string): Promise<{
+  steps: any[];
+  summary: any;
+  report: string;
+  cipher7: { crypto: C7CryptoFinding[]; aws: C7AWSFinding[]; securityHeaders: any; totalFindings: number; phasesExecuted: number; engineVersion: string };
+  generatedAt: string;
+  targetUrl: string;
+}> {
+  if (!targetUrl.startsWith("http")) targetUrl = "https://" + targetUrl;
+
+  let webData: WebFetchResult;
+  try {
+    webData = await fetchWebTarget(targetUrl);
+  } catch (err: any) {
+    throw new Error(`فشل الاتصال بالموقع: ${err.message}`);
+  }
+
+  const allContent = [webData.html, ...webData.scripts].join("\n");
+  const domain = new URL(webData.url).hostname;
+
+  const WEB_SECRET_REGEX: Array<[string, RegExp]> = [
+    ["Firebase API Key",        /AIza[0-9A-Za-z\-_]{35}/g],
+    ["Firebase DB URL",         /https:\/\/[a-z0-9\-]+\.firebaseio\.com/gi],
+    ["Firebase Storage",        /gs:\/\/[a-z0-9\-]+\.appspot\.com/gi],
+    ["AWS Access Key",          /AKIA[0-9A-Z]{16}/g],
+    ["AWS Secret Key",          /(?:aws[_\-]?secret[_\-]?(?:access[_\-]?)?key)["\s:=]+([A-Za-z0-9/+=]{40})/gi],
+    ["JWT Token",               /eyJ[A-Za-z0-9\-_=]+\.eyJ[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_.+/=]+/g],
+    ["Google OAuth Client ID",  /[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com/g],
+    ["Stripe Secret Key",       /sk_(?:live|test)_[0-9a-zA-Z]{24,}/g],
+    ["Stripe Publishable Key",  /pk_(?:live|test)_[0-9a-zA-Z]{24,}/g],
+    ["SendGrid API Key",        /SG\.[A-Za-z0-9\-_]{22}\.[A-Za-z0-9\-_]{43}/g],
+    ["GitHub Token",            /gh[pousr]_[A-Za-z0-9]{36,}/g],
+    ["Slack Token",             /xox[baprs]-[0-9A-Za-z\-]{10,}/g],
+    ["Slack Webhook",           /https:\/\/hooks\.slack\.com\/services\/[A-Z0-9/]+/gi],
+    ["Telegram Bot Token",      /[0-9]{8,10}:[A-Za-z0-9\-_]{35}/g],
+    ["Private Key Header",      /-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----/g],
+    ["Hardcoded Password",      /(?:password|passwd|pwd|secret)["\s:=\'`]+([^\s"\'`<>]{6,60})/gi],
+    ["Hardcoded API Key",       /(?:api[_\-]?key|apikey)["\s:=\'`]+([A-Za-z0-9\-_\.]{16,80})/gi],
+    ["Bearer Token",            /Bearer\s+([A-Za-z0-9\-_\.+/=]{20,})/gi],
+    ["MongoDB URI",             /mongodb(?:\+srv)?:\/\/[^\s"\'<>]{10,}/gi],
+    ["GraphQL Endpoint",        /(?:graphql|gql)["\s:=\'`]*(https?:\/\/[^\s"\'`<>]{10,})/gi],
+    ["REST API Endpoint",       /https?:\/\/(?:api\.|backend\.|srv\.|service\.)[a-z0-9\-\.]+\/[^\s"\'`<>]{5,}/gi],
+    ["Google Maps API Key",     /AIzaSy[A-Za-z0-9\-_]{33}/g],
+    ["Mailgun API Key",         /key-[a-z0-9]{32}/g],
+    ["Twilio Account SID",      /AC[a-z0-9]{32}/g],
+  ];
+
+  interface WebSecret { type: string; value: string; source: string; }
+  const allSecrets: WebSecret[] = [];
+  const seenSecrets = new Set<string>();
+
+  const sources = [
+    { name: "HTML (main page)", content: webData.html },
+    ...webData.scripts.map((s, i) => ({ name: `Script #${i + 1}`, content: s })),
+  ];
+
+  for (const src of sources) {
+    for (const [stype, regex] of WEB_SECRET_REGEX) {
+      regex.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = regex.exec(src.content)) !== null) {
+        const value = (m[1] ?? m[0]).trim().replace(/^["'`]|["'`]$/g, "");
+        if (value.length < 8) continue;
+        const key = `${stype}:${value.slice(0, 20)}`;
+        if (seenSecrets.has(key)) continue;
+        seenSecrets.add(key);
+        allSecrets.push({ type: stype, value, source: src.name });
+      }
+    }
+  }
+
+  let firebaseProjectId = "", firebaseApiKey = "", firebaseDbUrl = "", firebaseAppId = "", firebaseStorageBucket = "", firebaseAuthDomain = "", firebaseMessagingSenderId = "";
+  const fbConfigRegex = /(?:firebase|fire)\s*(?:Config|config|Configuration)\s*=\s*\{([^}]{30,500})\}/gs;
+  for (const src of sources) {
+    fbConfigRegex.lastIndex = 0;
+    let fm: RegExpExecArray | null;
+    while ((fm = fbConfigRegex.exec(src.content)) !== null) {
+      const block = fm[1];
+      const extract = (k: string) => block.match(new RegExp(`${k}\\s*:\\s*["'\`]([^"'\`]+)["'\`]`))?.[1] || "";
+      if (!firebaseApiKey) firebaseApiKey = extract("apiKey");
+      if (!firebaseProjectId) firebaseProjectId = extract("projectId");
+      if (!firebaseDbUrl) firebaseDbUrl = extract("databaseURL");
+      if (!firebaseAppId) firebaseAppId = extract("appId");
+      if (!firebaseStorageBucket) firebaseStorageBucket = extract("storageBucket");
+      if (!firebaseAuthDomain) firebaseAuthDomain = extract("authDomain");
+      if (!firebaseMessagingSenderId) firebaseMessagingSenderId = extract("messagingSenderId");
+    }
+  }
+  if (!firebaseApiKey) {
+    const directApiKey = allContent.match(/AIza[0-9A-Za-z\-_]{35}/)?.[0] || "";
+    if (directApiKey) firebaseApiKey = directApiKey;
+  }
+  if (!firebaseProjectId) {
+    const pidMatch = allContent.match(/["']([a-z0-9\-]{5,30})\.firebaseapp\.com["']/)?.[1] ||
+                     allContent.match(/["']([a-z0-9\-]{5,30})\.firebaseio\.com["']/)?.[1] || "";
+    if (pidMatch) firebaseProjectId = pidMatch;
+  }
+
+  const endpointRegex = /["'`](https?:\/\/[a-zA-Z0-9\-\.]+(?:\/[^\s"'`<>?#]{1,200})?)["'`]/g;
+  const allEndpoints: string[] = [];
+  const seenEp = new Set<string>();
+  for (const src of sources) {
+    endpointRegex.lastIndex = 0;
+    let em: RegExpExecArray | null;
+    while ((em = endpointRegex.exec(src.content)) !== null) {
+      const url = em[1];
+      if (!seenEp.has(url) && url.length > 10) { seenEp.add(url); allEndpoints.push(url); }
+    }
+  }
+
+  const apiEndpoints = allEndpoints.filter(u => /\/api\/|\/v[12]\/|\/graphql|\/rest\/|\/auth\//.test(u));
+  const firebaseEndpoints = allEndpoints.filter(u => /firebaseio\.com|googleapis\.com|firebase/.test(u));
+  const externalEndpoints = allEndpoints.filter(u => !u.includes(domain) && !firebaseEndpoints.includes(u));
+
+  const idorCandidates = apiEndpoints.filter(u =>
+    /\/\{?(?:id|userId|user_id|accountId|account_id|uid)\}?/.test(u) ||
+    /\/\d+/.test(u) || /\/[a-z]+\/:[a-z]+/.test(u)
+  );
+
+  const secHeaders = {
+    csp: webData.headers["content-security-policy"] || null,
+    hsts: webData.headers["strict-transport-security"] || null,
+    xFrameOptions: webData.headers["x-frame-options"] || null,
+    xContentType: webData.headers["x-content-type-options"] || null,
+    xXssProtection: webData.headers["x-xss-protection"] || null,
+    referrerPolicy: webData.headers["referrer-policy"] || null,
+    permissionsPolicy: webData.headers["permissions-policy"] || null,
+    cors: webData.headers["access-control-allow-origin"] || null,
+    server: webData.headers["server"] || null,
+    poweredBy: webData.headers["x-powered-by"] || null,
+  };
+
+  const missingHeaders: string[] = [];
+  if (!secHeaders.csp) missingHeaders.push("Content-Security-Policy");
+  if (!secHeaders.hsts) missingHeaders.push("Strict-Transport-Security");
+  if (!secHeaders.xFrameOptions) missingHeaders.push("X-Frame-Options");
+  if (!secHeaders.xContentType) missingHeaders.push("X-Content-Type-Options");
+  if (!secHeaders.referrerPolicy) missingHeaders.push("Referrer-Policy");
+  if (!secHeaders.permissionsPolicy) missingHeaders.push("Permissions-Policy");
+
+  const cloudProviders: string[] = [];
+  if (/firebase|firebaseio|firestore/i.test(allContent)) cloudProviders.push("Firebase");
+  if (/AKIA|amazonaws|aws-sdk|s3\.amazonaws/i.test(allContent)) cloudProviders.push("AWS");
+  if (/googleapis\.com|google-cloud|gcloud/i.test(allContent)) cloudProviders.push("GCP");
+  if (/azure|microsoft\.com\/azure/i.test(allContent)) cloudProviders.push("Azure");
+  if (/heroku/i.test(allContent)) cloudProviders.push("Heroku");
+  if (/vercel/i.test(allContent)) cloudProviders.push("Vercel");
+  if (/supabase/i.test(allContent)) cloudProviders.push("Supabase");
+
+  const webCipher7Crypto: C7CryptoFinding[] = [];
+  const cryptoSeen = new Set<string>();
+  const cryptoKw = ["api", "key", "token", "secret", "http", "firebase", "aws", "password", "auth", "user", "admin", "database"];
+
+  for (const src of sources) {
+    const b64Matches = src.content.match(/[A-Za-z0-9+/]{20,}={0,2}/g) || [];
+    for (const str of b64Matches.slice(0, 100)) {
+      if (cryptoSeen.has(str) || str.length > 500) continue;
+      cryptoSeen.add(str);
+      try {
+        const decoded = Buffer.from(str, "base64").toString("utf-8");
+        if (/[\x00-\x08\x0e-\x1f]/.test(decoded)) continue;
+        if (cryptoKw.some(kw => decoded.toLowerCase().includes(kw))) {
+          webCipher7Crypto.push({ type: "base64", original: str.slice(0, 80), decoded: decoded.slice(0, 300), file: src.name });
+        }
+      } catch {}
+    }
+
+    const jwtMatches = src.content.match(/eyJ[A-Za-z0-9\-_=]+\.eyJ[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_.+/=]+/g) || [];
+    for (const token of jwtMatches) {
+      if (cryptoSeen.has(token)) continue;
+      cryptoSeen.add(token);
+      const parts = token.split(".");
+      try {
+        const hdr = JSON.parse(Buffer.from(parts[0].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
+        const pay = JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
+        webCipher7Crypto.push({
+          type: "jwt", original: token.slice(0, 60) + "...",
+          decoded: JSON.stringify({ header: hdr, payload: pay }, null, 2),
+          metadata: { algorithm: hdr.alg, issuer: pay.iss, subject: pay.sub, expiry: pay.exp ? new Date(pay.exp * 1000).toISOString() : undefined },
+          file: src.name,
+        });
+      } catch {}
+    }
+
+    const hexMatches = src.content.match(/(?:0x)?[0-9a-fA-F]{32,}/g) || [];
+    for (const hex of hexMatches.slice(0, 20)) {
+      if (cryptoSeen.has(hex)) continue;
+      cryptoSeen.add(hex);
+      try {
+        const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+        if (clean.length > 128 || clean.length % 2 !== 0) continue;
+        const decoded = Buffer.from(clean, "hex").toString("utf-8");
+        if (/[\x00-\x08\x0e-\x1f]/.test(decoded)) continue;
+        if (cryptoKw.some(kw => decoded.toLowerCase().includes(kw))) {
+          webCipher7Crypto.push({ type: "hex", original: hex.slice(0, 80), decoded: decoded.slice(0, 200), file: src.name });
+        }
+      } catch {}
+    }
+  }
+
+  const webCipher7AWS: C7AWSFinding[] = [];
+  for (const key of [...new Set(allContent.match(/AKIA[0-9A-Z]{16}/g) || [])]) {
+    webCipher7AWS.push({ category: "iam_key", severity: "critical", value: key, detail: "AWS IAM Access Key مكشوف في كود الموقع", file: "web source", command: `aws sts get-caller-identity --access-key-id ${key}` });
+  }
+  for (const bucket of [...new Set((allContent.match(/[a-z0-9\-]{3,63}\.s3[.\-][a-z0-9\-]+\.amazonaws\.com/gi) || []))]) {
+    webCipher7AWS.push({ category: "s3_bucket", severity: "high", value: bucket, detail: "S3 bucket مكشوف", file: "web source", command: `aws s3 ls s3://${bucket.split(".s3")[0]} --no-sign-request` });
+  }
+  for (const pool of [...new Set((allContent.match(/[a-z]{2}-[a-z]+-\d:[a-f0-9\-]{36}/g) || []))]) {
+    webCipher7AWS.push({ category: "cognito", severity: "high", value: pool, detail: "Cognito Identity Pool مكشوف", file: "web source", command: `aws cognito-identity get-id --identity-pool-id ${pool}` });
+  }
+  for (const gw of [...new Set((allContent.match(/https:\/\/[a-z0-9]+\.execute-api\.[a-z0-9\-]+\.amazonaws\.com\/[^\s"'`<>]{3,}/gi) || []))]) {
+    webCipher7AWS.push({ category: "api_gateway", severity: "medium", value: gw, detail: "API Gateway endpoint مكشوف", file: "web source" });
+  }
+  for (const fn of [...new Set((allContent.match(/https:\/\/[a-z0-9]+\.lambda-url\.[a-z0-9\-]+\.on\.aws/gi) || []))]) {
+    webCipher7AWS.push({ category: "lambda", severity: "medium", value: fn, detail: "Lambda Function URL مكشوفة", file: "web source" });
+  }
+
+  const sensitivePaths = [
+    "/.env", "/wp-admin", "/admin", "/login", "/api/config", "/debug",
+    "/.git/config", "/server-status", "/phpinfo.php", "/backup",
+    "/robots.txt", "/sitemap.xml", "/.well-known/security.txt",
+    "/graphql", "/api/swagger", "/api/docs", "/swagger-ui.html",
+  ];
+  interface PathCheckResult { path: string; status: number; accessible: boolean; size: number; }
+  const pathResults: PathCheckResult[] = [];
+  const baseUrl = new URL(webData.url).origin;
+
+  const pathCheckPromises = sensitivePaths.map(async (p) => {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8_000);
+      const r = await fetch(baseUrl + p, {
+        method: "GET", headers: { "User-Agent": "Mozilla/5.0" }, redirect: "follow", signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      const body = await r.text();
+      pathResults.push({ path: p, status: r.status, accessible: r.status < 400, size: body.length });
+    } catch {
+      pathResults.push({ path: p, status: 0, accessible: false, size: 0 });
+    }
+  });
+  await Promise.all(pathCheckPromises);
+  const accessiblePaths = pathResults.filter(p => p.accessible);
+
+  const telegramBots = [...new Set((allContent.match(/[0-9]{8,10}:[A-Za-z0-9\-_]{35}/g) || []))];
+  const slackWebhooks = [...new Set((allContent.match(/https:\/\/hooks\.slack\.com\/services\/[A-Z0-9/]+/gi) || []))];
+  const discordWebhooks = [...new Set((allContent.match(/https:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_-]+/gi) || []))];
+
+  let riskScore = 0;
+  const criticalCount = allSecrets.filter(s => s.type.includes("AWS") || s.type.includes("Secret Key") || s.type.includes("Private Key")).length;
+  const highCount = allSecrets.filter(s => s.type.includes("Firebase") || s.type.includes("JWT") || s.type.includes("Bearer")).length;
+  riskScore += criticalCount * 20;
+  riskScore += highCount * 10;
+  riskScore += allSecrets.length * 2;
+  riskScore += missingHeaders.length * 5;
+  riskScore += accessiblePaths.filter(p => ["/.env", "/.git/config", "/debug", "/phpinfo.php"].includes(p.path)).length * 15;
+  riskScore += idorCandidates.length * 5;
+  if (secHeaders.cors === "*") riskScore += 15;
+  if (secHeaders.poweredBy) riskScore += 5;
+  riskScore = Math.min(100, riskScore);
+
+  const pythonScript = `#!/usr/bin/env python3
+"""Cipher-7 Web Pentest Script — auto-generated for ${domain}"""
+import requests, json, sys
+
+TARGET = "${webData.url}"
+HEADERS = {"User-Agent": "Cipher7-WebPentest/1.0"}
+
+def check_headers():
+    r = requests.get(TARGET, headers=HEADERS, timeout=10)
+    missing = []
+    for h in ["Content-Security-Policy","Strict-Transport-Security","X-Frame-Options","X-Content-Type-Options","Referrer-Policy"]:
+        if h.lower() not in [k.lower() for k in r.headers]: missing.append(h)
+    print(f"[HEADERS] Missing: {', '.join(missing) or 'None'}")
+
+def check_sensitive_paths():
+    paths = ["/.env","/admin","/api/config","/.git/config","/debug","/robots.txt","/graphql","/swagger-ui.html"]
+    for p in paths:
+        try:
+            r = requests.get(TARGET.rstrip("/")+p, headers=HEADERS, timeout=5, allow_redirects=True)
+            if r.status_code < 400: print(f"[PATH] {p} — {r.status_code} ({len(r.text)} bytes)")
+        except: pass
+
+def check_cors():
+    r = requests.options(TARGET, headers={**HEADERS, "Origin": "https://evil.com"}, timeout=5)
+    acao = r.headers.get("access-control-allow-origin","")
+    if acao == "*" or acao == "https://evil.com": print(f"[CORS] VULNERABLE — ACAO: {acao}")
+    else: print(f"[CORS] OK — ACAO: {acao or 'not set'}")
+
+if __name__ == "__main__":
+    print(f"[*] Target: {TARGET}")
+    check_headers()
+    check_sensitive_paths()
+    check_cors()
+    print("[*] Done")
+`;
+
+  interface FirebaseLiveResult { rtdb: string | null; firestore: string | null; anonAuth: string | null; storage: string | null; }
+  const firebaseLive: FirebaseLiveResult = { rtdb: null, firestore: null, anonAuth: null, storage: null };
+
+  if (firebaseApiKey || firebaseProjectId || firebaseDbUrl) {
+    const probes: Promise<void>[] = [];
+    if (firebaseDbUrl) {
+      probes.push((async () => {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 10_000);
+          const r = await fetch(`${firebaseDbUrl}/.json?shallow=true`, { signal: ctrl.signal });
+          clearTimeout(t);
+          firebaseLive.rtdb = `${r.status}: ${(await r.text()).slice(0, 500)}`;
+        } catch (e: any) { firebaseLive.rtdb = `Error: ${e.message}`; }
+      })());
+    }
+    if (firebaseProjectId) {
+      probes.push((async () => {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 10_000);
+          const r = await fetch(`https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/(default)/documents`, { signal: ctrl.signal });
+          clearTimeout(t);
+          firebaseLive.firestore = `${r.status}: ${(await r.text()).slice(0, 500)}`;
+        } catch (e: any) { firebaseLive.firestore = `Error: ${e.message}`; }
+      })());
+    }
+    if (firebaseApiKey) {
+      probes.push((async () => {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 10_000);
+          const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseApiKey}`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", signal: ctrl.signal,
+          });
+          clearTimeout(t);
+          firebaseLive.anonAuth = `${r.status}: ${(await r.text()).slice(0, 500)}`;
+        } catch (e: any) { firebaseLive.anonAuth = `Error: ${e.message}`; }
+      })());
+    }
+    if (firebaseStorageBucket) {
+      probes.push((async () => {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 10_000);
+          const r = await fetch(`https://firebasestorage.googleapis.com/v0/b/${firebaseStorageBucket}/o`, { signal: ctrl.signal });
+          clearTimeout(t);
+          firebaseLive.storage = `${r.status}: ${(await r.text()).slice(0, 500)}`;
+        } catch (e: any) { firebaseLive.storage = `Error: ${e.message}`; }
+      })());
+    }
+    await Promise.all(probes);
+  }
+
+  let corsVulnerable = false;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8_000);
+    const corsResp = await fetch(webData.url, {
+      method: "OPTIONS",
+      headers: { "User-Agent": "Mozilla/5.0", "Origin": "https://evil-attacker.com", "Access-Control-Request-Method": "GET" },
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    const acao = corsResp.headers.get("access-control-allow-origin") || "";
+    if (acao === "*" || acao === "https://evil-attacker.com") corsVulnerable = true;
+  } catch {}
+
+  // ═══ BUILD 14 STEPS ═══
+  const webSteps: any[] = [
+    {
+      id: 1, title: "استطلاع الموقع (Reconnaissance)",
+      details: `HTTP ${webData.status} — ${webData.technologies.length} تقنية مكتشفة — ${webData.redirectChain.length} إعادة توجيه`,
+      status: "success",
+      findings: [
+        `═══ استطلاع الموقع ═══`,
+        `🌐 URL: ${webData.url}`,
+        `📡 HTTP Status: ${webData.status}`,
+        `🔄 Redirects: ${webData.redirectChain.length > 0 ? webData.redirectChain.join(" → ") : "لا يوجد"}`,
+        `🖥️ Server: ${secHeaders.server || "غير مكشوف"}`,
+        `⚙️ Powered By: ${secHeaders.poweredBy || "غير مكشوف"}`,
+        ``, `═══ التقنيات المكتشفة (${webData.technologies.length}) ═══`,
+        ...webData.technologies.map(t => `   🔧 ${t}`),
+        webData.technologies.length === 0 ? `   ℹ️ لم يتم كشف تقنيات محددة` : "",
+        ``, `═══ إحصائيات ═══`,
+        `📄 حجم HTML: ${(webData.html.length / 1024).toFixed(1)} KB`,
+        `📜 ملفات JavaScript: ${webData.scripts.length}`,
+        `🔗 نقاط نهاية مكتشفة: ${allEndpoints.length}`,
+      ].filter(Boolean),
+      commands: [`curl -I "${webData.url}"`, `nmap -sV -p 80,443,8080,8443 ${domain}`],
+    },
+    {
+      id: 2, title: "استخراج الأسرار والمفاتيح",
+      details: `${allSecrets.length} سر مكتشف — ${criticalCount} حرج, ${highCount} عالي`,
+      status: criticalCount > 0 ? "danger" : allSecrets.length > 0 ? "warning" : "success",
+      findings: [
+        `═══ الأسرار المستخرجة (${allSecrets.length}) ═══`,
+        ...allSecrets.slice(0, 30).map(s => `   🔑 [${s.type}] ${s.value.slice(0, 60)}${s.value.length > 60 ? "..." : ""} — ${s.source}`),
+        allSecrets.length === 0 ? `   ✅ لم يتم العثور على أسرار مكشوفة` : "",
+        allSecrets.length > 30 ? `   ... +${allSecrets.length - 30} سر إضافي` : "",
+      ].filter(Boolean),
+      commands: [`curl -s "${webData.url}" | grep -oE "AIza[0-9A-Za-z_-]{35}"`, `curl -s "${webData.url}" | grep -oE "sk_(live|test)_[0-9a-zA-Z]{24,}"`],
+    },
+    {
+      id: 3, title: "اكتشاف Firebase",
+      details: firebaseProjectId ? `مشروع Firebase مكتشف: ${firebaseProjectId}` : "لم يتم العثور على Firebase",
+      status: firebaseProjectId ? "success" : "info",
+      findings: [
+        `═══ Firebase Configuration ═══`,
+        `🔥 Project ID: ${firebaseProjectId || "غير مكتشف"}`,
+        `🔑 API Key: ${firebaseApiKey || "غير مكتشف"}`,
+        `📡 RTDB URL: ${firebaseDbUrl || "غير مكتشف"}`,
+        `🌐 Auth Domain: ${firebaseAuthDomain || "غير مكتشف"}`,
+        `📦 Storage: ${firebaseStorageBucket || "غير مكتشف"}`,
+        `📱 App ID: ${firebaseAppId || "غير مكتشف"}`,
+        `📨 Messaging Sender ID: ${firebaseMessagingSenderId || "غير مكتشف"}`,
+      ].filter(Boolean),
+      commands: [
+        firebaseApiKey ? `curl -s -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseApiKey}" -H "Content-Type: application/json" -d '{}'` : "",
+        firebaseDbUrl ? `curl -s "${firebaseDbUrl}/.json?shallow=true"` : "",
+      ].filter(Boolean),
+    },
+    {
+      id: 4, title: "اكتشاف IDOR ونقاط API",
+      details: `${apiEndpoints.length} نقطة API — ${idorCandidates.length} IDOR محتمل`,
+      status: idorCandidates.length > 0 ? "warning" : apiEndpoints.length > 0 ? "success" : "info",
+      findings: [
+        `═══ نقاط API المكتشفة (${apiEndpoints.length}) ═══`,
+        ...apiEndpoints.slice(0, 20).map(u => `   🌐 ${u}`),
+        apiEndpoints.length > 20 ? `   ... +${apiEndpoints.length - 20} نقطة إضافية` : "",
+        ``, `═══ IDOR Candidates (${idorCandidates.length}) ═══`,
+        ...idorCandidates.slice(0, 10).map(u => `   ⚠️ ${u}`),
+        idorCandidates.length === 0 ? `   ✅ لا يوجد IDOR واضح` : "",
+        ``, `═══ نقاط خارجية (${externalEndpoints.length}) ═══`,
+        ...externalEndpoints.slice(0, 10).map(u => `   🔗 ${u}`),
+      ].filter(Boolean),
+      commands: idorCandidates.slice(0, 5).map(u => `curl -s "${u}" | head -50`),
+    },
+    {
+      id: 5, title: "اكتشاف المسارات الحساسة",
+      details: `${accessiblePaths.length}/${sensitivePaths.length} مسار متاح`,
+      status: accessiblePaths.some(p => p.path === "/.env" || p.path === "/.git/config") ? "danger" : accessiblePaths.length > 3 ? "warning" : "success",
+      findings: [
+        `═══ فحص المسارات الحساسة ═══`,
+        ...pathResults.map(p => `   ${p.accessible ? "🔴" : "✅"} ${p.path} — ${p.status} ${p.accessible ? `(${(p.size / 1024).toFixed(1)} KB)` : ""}`),
+      ].filter(Boolean),
+      commands: sensitivePaths.slice(0, 10).map(p => `curl -s -o /dev/null -w "%{http_code}" "${baseUrl}${p}"`),
+    },
+    {
+      id: 6, title: "فحص قواعد البيانات المكشوفة",
+      details: `Firebase ${firebaseLive.rtdb ? "RTDB" : ""} ${firebaseLive.firestore ? "Firestore" : ""} — فحص مباشر`,
+      status: (firebaseLive.rtdb || "").startsWith("200") || allSecrets.some(s => s.type.includes("MongoDB")) ? "danger" : "info",
+      findings: [
+        `═══ Firebase RTDB ═══`, firebaseLive.rtdb ? `   📡 نتيجة: ${firebaseLive.rtdb}` : `   ℹ️ لا يوجد RTDB URL مكتشف`,
+        ``, `═══ Firestore ═══`, firebaseLive.firestore ? `   📡 نتيجة: ${firebaseLive.firestore}` : `   ℹ️ لا يوجد Project ID مكتشف`,
+        ``, `═══ Firebase Storage ═══`, firebaseLive.storage ? `   📡 نتيجة: ${firebaseLive.storage}` : `   ℹ️ لا يوجد Storage Bucket`,
+        ``, `═══ قواعد بيانات أخرى ═══`,
+        ...allSecrets.filter(s => s.type.includes("MongoDB")).map(s => `   🔴 MongoDB URI: ${s.value.slice(0, 60)}...`),
+        allSecrets.filter(s => s.type.includes("MongoDB")).length === 0 ? `   ✅ لا يوجد قواعد بيانات مكشوفة مباشرة` : "",
+      ].filter(Boolean),
+      commands: [
+        firebaseDbUrl ? `curl -s "${firebaseDbUrl}/.json?shallow=true"` : "",
+        firebaseProjectId ? `curl -s "https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/(default)/documents"` : "",
+      ].filter(Boolean),
+    },
+    {
+      id: 7, title: "اكتشاف Webhooks والاتصالات",
+      details: `${telegramBots.length} Telegram — ${slackWebhooks.length} Slack — ${discordWebhooks.length} Discord`,
+      status: (telegramBots.length + slackWebhooks.length + discordWebhooks.length) > 0 ? "warning" : "info",
+      findings: [
+        `═══ Telegram Bots ═══`, ...telegramBots.map(t => `   🤖 ${t.slice(0, 20)}...`), telegramBots.length === 0 ? `   ✅ لا يوجد` : "",
+        ``, `═══ Slack Webhooks ═══`, ...slackWebhooks.map(w => `   💬 ${w}`), slackWebhooks.length === 0 ? `   ✅ لا يوجد` : "",
+        ``, `═══ Discord Webhooks ═══`, ...discordWebhooks.map(w => `   🎮 ${w}`), discordWebhooks.length === 0 ? `   ✅ لا يوجد` : "",
+      ].filter(Boolean),
+      commands: telegramBots.map(t => `curl -s "https://api.telegram.org/bot${t}/getMe"`),
+    },
+    {
+      id: 8, title: "توليد سكريبت الاختبار",
+      details: `Python script جاهز — ${domain}`,
+      status: "success",
+      findings: [
+        `═══ سكريبت Python جاهز ═══`,
+        `📜 الملف: cipher7_web_pentest_${domain.replace(/\./g, "_")}.py`,
+        `🔧 الوظائف:`, `   • فحص Security Headers`, `   • فحص المسارات الحساسة`, `   • اختبار CORS`,
+        firebaseApiKey ? `   • اختبار Firebase Anonymous Auth` : "",
+      ].filter(Boolean),
+      commands: [`python3 cipher7_web_pentest_${domain.replace(/\./g, "_")}.py`],
+      pythonScript,
+    },
+    {
+      id: 9, title: "Cipher-7: تحليل التشفير (Phase 2)",
+      details: `Base64, JWT, Hex — ${webCipher7Crypto.length} اكتشاف`,
+      status: webCipher7Crypto.length > 0 ? "success" : "info",
+      findings: [
+        `═══ محرك التحليل التشفيري Cipher-7 (ويب) ═══`,
+        `🔐 إجمالي الاكتشافات: ${webCipher7Crypto.length}`,
+        `   Base64 مفكوك: ${webCipher7Crypto.filter(f => f.type === "base64").length}`,
+        `   JWT محلل: ${webCipher7Crypto.filter(f => f.type === "jwt").length}`,
+        `   Hex مفكوك: ${webCipher7Crypto.filter(f => f.type === "hex").length}`,
+        ``,
+        ...webCipher7Crypto.slice(0, 20).map(f =>
+          f.type === "jwt" ? `🔑 [JWT] ${f.original} → alg:${f.metadata?.algorithm || "?"}` :
+          `🔓 [${f.type.toUpperCase()}] ${f.original.slice(0, 40)} → ${f.decoded.slice(0, 60)}`
+        ),
+      ].filter(Boolean),
+      commands: [`echo "BASE64_STRING" | base64 -d`, `echo "JWT_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool`],
+    },
+    {
+      id: 10, title: "Cipher-7: استغلال Firebase المعمّق (Phase 3+)",
+      details: `${firebaseProjectId ? "مشروع مكتشف" : "لا يوجد"} — فحص مباشر للسحابة`,
+      status: (firebaseLive.rtdb || "").startsWith("200") || (firebaseLive.anonAuth || "").startsWith("200") ? "danger" : firebaseProjectId ? "success" : "info",
+      findings: [
+        `═══ Firebase Live Probes ═══`,
+        `🔥 Anonymous Auth: ${firebaseLive.anonAuth || "لم يتم الفحص"}`,
+        `📡 RTDB Access: ${firebaseLive.rtdb || "لم يتم الفحص"}`,
+        `📋 Firestore: ${firebaseLive.firestore || "لم يتم الفحص"}`,
+        `📦 Storage: ${firebaseLive.storage || "لم يتم الفحص"}`,
+        ``, `═══ هجمات Firebase المتقدمة ═══`,
+        ...(firebaseDbUrl ? [
+          `🔴 RTDB Deep Enumeration:`,
+          `   ${firebaseDbUrl}/users.json`, `   ${firebaseDbUrl}/admin.json`, `   ${firebaseDbUrl}/config.json`,
+          `   ${firebaseDbUrl}/secrets.json`, `   ${firebaseDbUrl}/accounts.json`, `   ${firebaseDbUrl}/payments.json`,
+        ] : [`   ⚠️ لا يوجد RTDB URL`]),
+        ``, `🔴 Firestore Document Enumeration:`,
+        firebaseProjectId ? `   https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/(default)/documents` : `   ⚠️ لا يوجد Project ID`,
+      ].filter(Boolean),
+      commands: [
+        firebaseApiKey ? `curl -s -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseApiKey}" -H "Content-Type: application/json" -d '{}'` : "",
+        firebaseDbUrl ? `for p in users admin config secrets accounts payments; do echo "--- $p ---"; curl -s "${firebaseDbUrl}/$p.json"; done` : "",
+        firebaseProjectId ? `curl -s "https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/(default)/documents"` : "",
+      ].filter(Boolean),
+    },
+    {
+      id: 11, title: "Cipher-7: تقييم أمان AWS (Phase 4)",
+      details: `${webCipher7AWS.length} اكتشاف — IAM, S3, Cognito, API Gateway, Lambda`,
+      status: webCipher7AWS.filter(f => f.severity === "critical").length > 0 ? "danger" : webCipher7AWS.length > 0 ? "success" : "info",
+      findings: [
+        `═══ محرك تقييم AWS Cipher-7 ═══`,
+        `☁️ إجمالي الاكتشافات: ${webCipher7AWS.length}`,
+        `   🔴 حرج: ${webCipher7AWS.filter(f => f.severity === "critical").length}`,
+        `   🟡 عالي: ${webCipher7AWS.filter(f => f.severity === "high").length}`,
+        `   🟠 متوسط: ${webCipher7AWS.filter(f => f.severity === "medium").length}`,
+        ``,
+        ...webCipher7AWS.map(f => `   ${f.severity === "critical" ? "🔴" : f.severity === "high" ? "🟡" : "🟠"} [${f.category}] ${f.value.slice(0, 80)} — ${f.detail}`),
+        webCipher7AWS.length === 0 ? `   ✅ لم يتم اكتشاف موارد AWS مكشوفة` : "",
+      ].filter(Boolean),
+      commands: webCipher7AWS.filter(f => f.command).map(f => f.command!),
+    },
+    {
+      id: 12, title: "Cipher-7: تحليل الحمايات الأمنية (Phase 5)",
+      details: `${missingHeaders.length} ترويسة مفقودة — CORS: ${corsVulnerable ? "ثغرة" : "آمن"}`,
+      status: missingHeaders.length > 3 || corsVulnerable ? "danger" : missingHeaders.length > 1 ? "warning" : "success",
+      findings: [
+        `═══ ترويسات الأمان ═══`,
+        secHeaders.csp ? `   ✅ Content-Security-Policy: ${secHeaders.csp.slice(0, 100)}` : `   🔴 Content-Security-Policy: مفقود`,
+        secHeaders.hsts ? `   ✅ Strict-Transport-Security: ${secHeaders.hsts}` : `   🔴 Strict-Transport-Security: مفقود`,
+        secHeaders.xFrameOptions ? `   ✅ X-Frame-Options: ${secHeaders.xFrameOptions}` : `   🔴 X-Frame-Options: مفقود (عرضة لـ Clickjacking)`,
+        secHeaders.xContentType ? `   ✅ X-Content-Type-Options: ${secHeaders.xContentType}` : `   🟡 X-Content-Type-Options: مفقود`,
+        secHeaders.referrerPolicy ? `   ✅ Referrer-Policy: ${secHeaders.referrerPolicy}` : `   🟡 Referrer-Policy: مفقود`,
+        secHeaders.permissionsPolicy ? `   ✅ Permissions-Policy: ${secHeaders.permissionsPolicy.slice(0, 100)}` : `   🟡 Permissions-Policy: مفقود`,
+        ``, `═══ CORS ═══`,
+        corsVulnerable ? `   🔴 CORS مفتوح — Access-Control-Allow-Origin: ${secHeaders.cors || "*"}` : `   ✅ CORS: ${secHeaders.cors || "غير مُعيّن"}`,
+        ``, `═══ تسريب معلومات ═══`,
+        secHeaders.server ? `   ⚠️ Server header مكشوف: ${secHeaders.server}` : `   ✅ Server header مخفي`,
+        secHeaders.poweredBy ? `   ⚠️ X-Powered-By مكشوف: ${secHeaders.poweredBy}` : `   ✅ X-Powered-By مخفي`,
+        ``, `═══ ملخص ═══`,
+        `   ترويسات مفقودة: ${missingHeaders.length}/6`,
+        missingHeaders.length === 0 ? `   ✅ جميع الترويسات الأمنية موجودة` : `   🔴 مفقودة: ${missingHeaders.join(", ")}`,
+      ].filter(Boolean),
+      commands: [
+        `curl -I "${webData.url}" 2>/dev/null | grep -iE "content-security|strict-transport|x-frame|x-content|referrer-policy|permissions-policy|access-control"`,
+        `curl -H "Origin: https://evil.com" -I "${webData.url}" 2>/dev/null | grep -i "access-control"`,
+      ],
+    },
+    {
+      id: 13, title: "Cipher-7: تقرير الاستخبارات الموحّد (Phase 6)",
+      details: `درجة الخطورة: ${riskScore}/100 — CVSS + مصفوفة المخاطر`,
+      status: "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 WEB PENTEST — CONSOLIDATED INTELLIGENCE REPORT   ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `═══ ملخص تنفيذي ═══`,
+        `🌐 الموقع: ${webData.url}`,
+        `⚠️ درجة الخطورة: ${riskScore}/100 (${riskScore > 70 ? "🔴 حرج" : riskScore > 40 ? "🟡 عالي" : riskScore > 20 ? "🟠 متوسط" : "🟢 منخفض"})`,
+        `🔑 أسرار مكتشفة: ${allSecrets.length} (${criticalCount} حرج, ${highCount} عالي)`,
+        `🌐 نقاط نهاية: ${allEndpoints.length} (${apiEndpoints.length} API)`,
+        `🔐 تشفير مفكوك: ${webCipher7Crypto.length}`,
+        `☁️ AWS findings: ${webCipher7AWS.length}`,
+        `🛡️ ترويسات مفقودة: ${missingHeaders.length}/6`,
+        `🔥 Firebase: ${firebaseProjectId ? "مشروع مكتشف" : "لا يوجد"}`,
+        `📊 IDOR Candidates: ${idorCandidates.length}`,
+        `🔓 مسارات حساسة متاحة: ${accessiblePaths.length}`,
+        ``, `═══ مصفوفة المخاطر (Risk Matrix) ═══`,
+        allSecrets.some(s => s.type.includes("AWS")) ? `🔴 CRITICAL: AWS credentials مكشوفة في كود الموقع` : "",
+        allSecrets.some(s => s.type.includes("Private Key")) ? `🔴 CRITICAL: مفتاح خاص مكشوف` : "",
+        corsVulnerable ? `🔴 CRITICAL: CORS مفتوح — يمكن سرقة بيانات المستخدمين` : "",
+        accessiblePaths.some(p => p.path === "/.env") ? `🔴 CRITICAL: ملف .env متاح — جميع الأسرار مكشوفة` : "",
+        accessiblePaths.some(p => p.path === "/.git/config") ? `🔴 CRITICAL: .git مكشوف — يمكن استنساخ الكود` : "",
+        !secHeaders.csp ? `🟡 HIGH: لا يوجد CSP — عرضة لهجمات XSS` : "",
+        !secHeaders.hsts ? `🟡 HIGH: لا يوجد HSTS — عرضة لهجمات SSL downgrade` : "",
+        !secHeaders.xFrameOptions ? `🟡 HIGH: لا يوجد X-Frame-Options — عرضة لـ Clickjacking` : "",
+        idorCandidates.length > 0 ? `🟠 MEDIUM: ${idorCandidates.length} IDOR candidate` : "",
+        secHeaders.poweredBy ? `🟠 MEDIUM: X-Powered-By مكشوف` : "",
+        ``, `═══ التوصيات الأمنية (بالأولوية) ═══`,
+        allSecrets.length > 0 ? `1️⃣ [حرج] احذف جميع ${allSecrets.length} سر من كود الموقع` : "",
+        corsVulnerable ? `2️⃣ [حرج] أصلح CORS — لا تستخدم wildcard (*)` : "",
+        missingHeaders.length > 0 ? `3️⃣ [عالي] أضف الترويسات المفقودة: ${missingHeaders.join(", ")}` : "",
+        accessiblePaths.some(p => p.path === "/.env" || p.path === "/.git/config") ? `4️⃣ [حرج] احجب الملفات الحساسة (.env, .git)` : "",
+        idorCandidates.length > 0 ? `5️⃣ [متوسط] أضف التحقق من الصلاحيات في API endpoints` : "",
+      ].filter(Boolean),
+      commands: [`python3 -c "import json; print(json.dumps(CIPHER7_WEB_REPORT, indent=2, ensure_ascii=False))" > cipher7_web_report.json`],
+    },
+    {
+      id: 14, title: "Cipher-7: ترسانة الهجوم الكاملة (Phase 7)",
+      details: `جميع أوامر الاختبار + سكريبتات + أوامر AWS + Exploits`,
+      status: "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║     CIPHER-7 WEB ATTACK ARSENAL — COMPLETE TOOLKIT           ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `═══ Reconnaissance ═══`,
+        `   $ curl -I "${webData.url}"`, `   $ nmap -sV ${domain}`, `   $ whatweb "${webData.url}"`, `   $ nikto -h "${webData.url}"`,
+        ``, `═══ Secret Extraction ═══`,
+        `   $ curl -s "${webData.url}" | grep -oE "AIza[0-9A-Za-z_-]{35}"`,
+        `   $ curl -s "${webData.url}" | grep -oE "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"`,
+        ``, `═══ Path Bruteforce ═══`,
+        `   $ dirb ${baseUrl} /usr/share/dirb/wordlists/common.txt`,
+        `   $ gobuster dir -u ${baseUrl} -w /usr/share/wordlists/dirb/common.txt`,
+        ``, `═══ AWS Commands (${webCipher7AWS.filter(f => f.command).length}) ═══`,
+        ...webCipher7AWS.filter(f => f.command).slice(0, 10).map(f => `   $ ${f.command!.slice(0, 100)}`),
+        ``, `═══ Firebase Commands ═══`,
+        firebaseApiKey ? `   $ curl -s -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseApiKey}" -H "Content-Type: application/json" -d '{}'` : "",
+        firebaseDbUrl ? `   $ curl -s "${firebaseDbUrl}/.json?shallow=true"` : "",
+        ``, `═══ XSS / Injection Payloads ═══`,
+        `   <script>alert(document.cookie)</script>`,
+        `   "><img src=x onerror=alert(1)>`,
+        `   {{7*7}} (SSTI test)`,
+        `   ' OR '1'='1' -- (SQLi test)`,
+        ``, `═══ الأدوات المستخدمة ═══`,
+        `   ✅ Cipher-7 Web Engine v7.0 — 14 مرحلة`,
+        `   ✅ HTTP Header Analyzer`, `   ✅ JavaScript Source Scanner`,
+        `   ✅ Firebase Live Prober`, `   ✅ AWS Resource Detector`,
+        `   ✅ CORS Vulnerability Tester`, `   ✅ Sensitive Path Scanner`,
+      ].filter(Boolean),
+      commands: [
+        `python3 cipher7_web_pentest_${domain.replace(/\./g, "_")}.py`,
+        `nikto -h "${webData.url}"`,
+        `sqlmap -u "${baseUrl}/api/search?q=test" --batch --level=3`,
+        ...webCipher7AWS.filter(f => f.command && f.severity === "critical").map(f => f.command!),
+      ].filter(Boolean),
+      pythonScript,
+    },
+  ];
+
+  let aiReport = "";
+  try {
+    const prompt = `أنت خبير أمني معتمد (OSCP/CEH). اكتب تقرير اختبار اختراق ويب احترافي شامل باللغة العربية لهذا الموقع:
+
+الموقع: ${webData.url}
+درجة الخطورة: ${riskScore}/100
+الأسرار المكتشفة: ${allSecrets.length} سر
+التقنيات: ${webData.technologies.join(", ") || "غير محددة"}
+ترويسات أمنية مفقودة: ${missingHeaders.join(", ") || "لا يوجد"}
+CORS: ${corsVulnerable ? "ثغرة" : "آمن"}
+Firebase: ${firebaseProjectId || "لا يوجد"}
+AWS: ${webCipher7AWS.length} اكتشاف
+مسارات حساسة متاحة: ${accessiblePaths.map(p => p.path).join(", ") || "لا يوجد"}
+IDOR Candidates: ${idorCandidates.length}
+
+اكتب تقريراً يشمل:
+1. ملخص تنفيذي
+2. الثغرات الحرجة مع التفاصيل التقنية
+3. تحليل السطح الهجومي للويب
+4. نتائج فحص الترويسات الأمنية
+5. نتائج فحص Firebase/AWS
+6. توصيات الإصلاح بالأولوية
+7. خلاصة المخاطر`;
+
+    const reportResult = await callPowerAI(prompt, "", 6000);
+    aiReport = reportResult.content;
+  } catch (e: any) {
+    aiReport = `تقرير اختبار اختراق الويب\n\nالموقع: ${webData.url}\nدرجة الخطورة: ${riskScore}/100\nالأسرار المكتشفة: ${allSecrets.length}\n\nملاحظة: فشل توليد التقرير التفصيلي — ${e.message}`;
+  }
+
+  return {
+    steps: webSteps,
+    summary: {
+      riskScore, criticalCount, highCount,
+      extractedKeys: allSecrets,
+      extractedEndpoints: allEndpoints.slice(0, 100),
+      cloudProviders, domain,
+      technologies: webData.technologies,
+      missingHeaders,
+      accessiblePaths: accessiblePaths.map(p => p.path),
+    },
+    report: aiReport,
+    cipher7: {
+      crypto: webCipher7Crypto,
+      aws: webCipher7AWS,
+      securityHeaders: secHeaders,
+      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length,
+      phasesExecuted: 7,
+      engineVersion: "7.0-web",
+    },
+    generatedAt: new Date().toISOString(),
+    targetUrl: webData.url,
+  };
+}

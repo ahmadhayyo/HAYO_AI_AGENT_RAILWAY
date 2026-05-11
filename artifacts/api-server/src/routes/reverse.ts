@@ -690,6 +690,29 @@ router.post("/cloud-pentest-full", upload.single("file"), async (req: Request, r
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ WEB PENTEST — Cipher-7 Web Penetration Testing ═══
+router.post("/web-pentest-full", async (req: Request, res: Response) => {
+  extendTimeout(req, res, 600_000);
+  const { url } = req.body as { url?: string };
+  if (!url || typeof url !== "string" || url.trim().length < 4) {
+    res.status(400).json({ error: "أدخل رابط الموقع أولاً" });
+    return;
+  }
+  try {
+    const { runWebPentest } = await import("../hayo/services/reverse-engineer.js");
+    const pentestResult = await runWebPentest(url.trim());
+
+    try {
+      await sendPentestToTelegram(pentestResult);
+      console.log("[WebPentest-TG] ✅ Sent to Telegram");
+    } catch (tgErr: any) {
+      console.log("[WebPentest-TG] ❌ Error:", tgErr.message);
+    }
+
+    res.json(pentestResult);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 async function sendPentestToTelegram(result: any) {
   const botToken = process.env.PENTEST_BOT_TOKEN;
   const chatId = process.env.PENTEST_CHAT_ID;
