@@ -5935,7 +5935,7 @@ export async function runCloudPentest(sessionId: string): Promise<{
       while ((m = regex.exec(content)) !== null) {
         const value = (m[1] ?? m[0]).trim().replace(/^["'`]|["'`]$/g, "");
         if (value.length < 8) continue;
-        const key = `${stype}:${value.slice(0, 20)}`;
+        const key = `${stype}:${value}`;
         if (seenSecrets.has(key)) continue;
         seenSecrets.add(key);
         const line = content.slice(0, m.index).split("\n").length;
@@ -7046,6 +7046,7 @@ interface CrawledPage {
   forms: DiscoveredForm[];
   links: string[];
   inputs: number;
+  html: string;
 }
 
 interface CookieInfo {
@@ -7231,6 +7232,7 @@ async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
     forms: mainPageForms,
     links: mainPageLinks,
     inputs: mainPageForms.reduce((sum, f) => sum + f.inputs.length, 0),
+    html,
   });
 
   // Crawl discovered links (up to 25 pages)
@@ -7261,6 +7263,7 @@ async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
         forms: pageForms,
         links: pageLinks,
         inputs: pageForms.reduce((sum, f) => sum + f.inputs.length, 0),
+        html: pageHtml,
       });
       // Second-level crawl (discover more links from crawled pages)
       for (const subLink of pageLinks.slice(0, 10)) {
@@ -7453,6 +7456,29 @@ export async function runWebPentest(targetUrl: string): Promise<{
     ["Google Maps API Key",     /AIzaSy[A-Za-z0-9\-_]{33}/g],
     ["Mailgun API Key",         /key-[a-z0-9]{32}/g],
     ["Twilio Account SID",      /AC[a-z0-9]{32}/g],
+    ["Twilio Auth Token",       /(?:twilio[_\-]?auth[_\-]?token|TWILIO_AUTH_TOKEN)["\s:=]+([a-f0-9]{32})/gi],
+    ["Discord Webhook",         /https:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_\-]+/gi],
+    ["Discord Bot Token",       /(?:discord[_\-]?(?:bot[_\-]?)?token)["\s:=\'`]+([A-Za-z0-9\-_.]{50,80})/gi],
+    ["OpenAI API Key",          /sk-[A-Za-z0-9]{20,}/g],
+    ["Anthropic API Key",       /sk-ant-[A-Za-z0-9\-_]{20,}/g],
+    ["Database URL",            /(?:postgres|mysql|mariadb|mssql):\/\/[^\s"\'<>]{10,}/gi],
+    ["Redis URL",               /redis:\/\/[^\s"\'<>]{10,}/gi],
+    ["SMTP Credentials",        /smtp:\/\/[^\s"\'<>]{10,}/gi],
+    ["Email Address",           /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g],
+    ["Internal URL",            /https?:\/\/(?:localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)[:\d\/][^\s"\'<>]*/gi],
+    ["Supabase Key",            /eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_.+/=]*/g],
+    ["Algolia API Key",         /(?:algolia[_\-]?(?:api[_\-]?)?key|ALGOLIA_API_KEY)["\s:=\'`]+([a-f0-9]{32})/gi],
+    ["Mapbox Token",            /pk\.[a-zA-Z0-9]{60,}/g],
+    ["Heroku API Key",          /(?:heroku[_\-]?api[_\-]?key|HEROKU_API_KEY)["\s:=\'`]+([a-f0-9\-]{36})/gi],
+    ["PayPal Client ID",        /(?:paypal[_\-]?client[_\-]?id|PAYPAL_CLIENT_ID)["\s:=\'`]+([A-Za-z0-9\-_]{20,80})/gi],
+    ["Square Access Token",     /sq0[a-z]{3}-[A-Za-z0-9\-_]{22,}/g],
+    ["Shopify Token",           /shpat_[a-fA-F0-9]{32}/g],
+    ["NPM Token",               /npm_[A-Za-z0-9]{36}/g],
+    ["Docker Auth",             /(?:docker[_\-]?(?:auth|password|token))["\s:=\'`]+([^\s"\'`<>]{8,})/gi],
+    ["SSH Private Key",         /-----BEGIN (?:DSA|ECDSA|ED25519) PRIVATE KEY-----/g],
+    ["PGP Private Key",         /-----BEGIN PGP PRIVATE KEY BLOCK-----/g],
+    ["Secret in Comment",       /(?:\/\/|\/\*|#)\s*(?:secret|password|token|key|api.?key)\s*[:=]\s*([^\s*\/]{6,})/gi],
+    ["Hardcoded Credential",    /(?:credentials?|cred|auth_token|access_token|secret_key|private_key)["\s:=\'`]+([^\s"\'`<>]{8,80})/gi],
   ];
 
   interface WebSecret { type: string; value: string; source: string; }
@@ -7462,6 +7488,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
   const sources = [
     { name: "HTML (main page)", content: webData.html },
     ...webData.scripts.map((s, i) => ({ name: `Script #${i + 1}`, content: s })),
+    ...webData.crawledPages.filter(p => p.html && p.html !== webData.html).map(p => ({ name: `Page: ${p.url}`, content: p.html })),
   ];
 
   for (const src of sources) {
@@ -7471,7 +7498,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
       while ((m = regex.exec(src.content)) !== null) {
         const value = (m[1] ?? m[0]).trim().replace(/^["'`]|["'`]$/g, "");
         if (value.length < 8) continue;
-        const key = `${stype}:${value.slice(0, 20)}`;
+        const key = `${stype}:${value}`;
         if (seenSecrets.has(key)) continue;
         seenSecrets.add(key);
         allSecrets.push({ type: stype, value, source: src.name });
@@ -7570,7 +7597,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
         const decoded = Buffer.from(str, "base64").toString("utf-8");
         if (/[\x00-\x08\x0e-\x1f]/.test(decoded)) continue;
         if (cryptoKw.some(kw => decoded.toLowerCase().includes(kw))) {
-          webCipher7Crypto.push({ type: "base64", original: str.slice(0, 80), decoded: decoded.slice(0, 300), file: src.name });
+          webCipher7Crypto.push({ type: "base64", original: str, decoded: decoded, file: src.name });
         }
       } catch {}
     }
@@ -7602,7 +7629,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
         const decoded = Buffer.from(clean, "hex").toString("utf-8");
         if (/[\x00-\x08\x0e-\x1f]/.test(decoded)) continue;
         if (cryptoKw.some(kw => decoded.toLowerCase().includes(kw))) {
-          webCipher7Crypto.push({ type: "hex", original: hex.slice(0, 80), decoded: decoded.slice(0, 200), file: src.name });
+          webCipher7Crypto.push({ type: "hex", original: hex, decoded: decoded, file: src.name });
         }
       } catch {}
     }
@@ -8100,7 +8127,7 @@ if __name__ == "__main__":
     const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?file=${encodeURIComponent(payload)}`;
     const r = await probeFetch(testUrl);
     if (r && /root:x:|root:.*:0:0|localhost|127\.0\.0\.1|\[boot loader\]|\/bin\/bash|shadow:.*:\d/i.test(r.body)) {
-      vulnResults.push({ type: "Directory Traversal / LFI", severity: "critical", url: testUrl, payload, evidence: r.body.slice(0, 300), exploitable: true });
+      vulnResults.push({ type: "Directory Traversal / LFI", severity: "critical", url: testUrl, payload, evidence: r.body.slice(0, 800), exploitable: true });
     }
   }));
 
@@ -8208,7 +8235,7 @@ if __name__ == "__main__":
     const r = await probeFetch(url);
     if (r) {
       if (/stack trace|traceback|at\s+\w+\.\w+\s*\(|File\s+"[^"]+",\s+line\s+\d+|Exception in thread|System\.NullReferenceException/i.test(r.body)) {
-        infoDisclosures.push({ url, type: "Stack Trace Exposure", detail: r.body.slice(0, 500), severity: "high" });
+        infoDisclosures.push({ url, type: "Stack Trace Exposure", detail: r.body.slice(0, 1500), severity: "high" });
         vulnResults.push({ type: "Information Disclosure (Stack Trace)", severity: "high", url, payload: "Error trigger", evidence: "تسريب Stack Trace — يكشف بنية الكود وملفات المصدر", exploitable: false });
       }
       if (/debug\s*=\s*true|DJANGO_SETTINGS_MODULE|settings\.py|node_modules|vendor\/laravel/i.test(r.body)) {
@@ -8721,7 +8748,7 @@ if __name__ == "__main__":
         ``,
         ...webCipher7Crypto.slice(0, 20).map(f =>
           f.type === "jwt" ? `🔑 [JWT] ${f.original} → alg:${f.metadata?.algorithm || "?"}` :
-          `🔓 [${f.type.toUpperCase()}] ${f.original.slice(0, 40)} → ${f.decoded.slice(0, 60)}`
+          `🔓 [${f.type.toUpperCase()}] ${f.original} → ${f.decoded}`
         ),
       ].filter(Boolean),
       commands: [`echo "BASE64_STRING" | base64 -d`, `echo "JWT_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool`],
@@ -8762,7 +8789,7 @@ if __name__ == "__main__":
         `   🟡 عالي: ${webCipher7AWS.filter(f => f.severity === "high").length}`,
         `   🟠 متوسط: ${webCipher7AWS.filter(f => f.severity === "medium").length}`,
         ``,
-        ...webCipher7AWS.map(f => `   ${f.severity === "critical" ? "🔴" : f.severity === "high" ? "🟡" : "🟠"} [${f.category}] ${f.value.slice(0, 80)} — ${f.detail}`),
+        ...webCipher7AWS.map(f => `   ${f.severity === "critical" ? "🔴" : f.severity === "high" ? "🟡" : "🟠"} [${f.category}] ${f.value} — ${f.detail}`),
         webCipher7AWS.length === 0 ? `   ✅ لم يتم اكتشاف موارد AWS مكشوفة` : "",
       ].filter(Boolean),
       commands: webCipher7AWS.filter(f => f.command).map(f => f.command!),
@@ -8773,12 +8800,12 @@ if __name__ == "__main__":
       status: missingHeaders.length > 3 || corsVulnerable ? "danger" : missingHeaders.length > 1 ? "warning" : "success",
       findings: [
         `═══ ترويسات الأمان ═══`,
-        secHeaders.csp ? `   ✅ Content-Security-Policy: ${secHeaders.csp.slice(0, 100)}` : `   🔴 Content-Security-Policy: مفقود`,
+        secHeaders.csp ? `   ✅ Content-Security-Policy: ${secHeaders.csp}` : `   🔴 Content-Security-Policy: مفقود`,
         secHeaders.hsts ? `   ✅ Strict-Transport-Security: ${secHeaders.hsts}` : `   🔴 Strict-Transport-Security: مفقود`,
         secHeaders.xFrameOptions ? `   ✅ X-Frame-Options: ${secHeaders.xFrameOptions}` : `   🔴 X-Frame-Options: مفقود (عرضة لـ Clickjacking)`,
         secHeaders.xContentType ? `   ✅ X-Content-Type-Options: ${secHeaders.xContentType}` : `   🟡 X-Content-Type-Options: مفقود`,
         secHeaders.referrerPolicy ? `   ✅ Referrer-Policy: ${secHeaders.referrerPolicy}` : `   🟡 Referrer-Policy: مفقود`,
-        secHeaders.permissionsPolicy ? `   ✅ Permissions-Policy: ${secHeaders.permissionsPolicy.slice(0, 100)}` : `   🟡 Permissions-Policy: مفقود`,
+        secHeaders.permissionsPolicy ? `   ✅ Permissions-Policy: ${secHeaders.permissionsPolicy}` : `   🟡 Permissions-Policy: مفقود`,
         ``, `═══ CORS ═══`,
         corsVulnerable ? `   🔴 CORS مفتوح — Access-Control-Allow-Origin: ${secHeaders.cors || "*"}` : `   ✅ CORS: ${secHeaders.cors || "غير مُعيّن"}`,
         ``, `═══ تسريب معلومات ═══`,
@@ -8849,7 +8876,7 @@ if __name__ == "__main__":
         `   $ dirb ${baseUrl} /usr/share/dirb/wordlists/common.txt`,
         `   $ gobuster dir -u ${baseUrl} -w /usr/share/wordlists/dirb/common.txt`,
         ``, `═══ AWS Commands (${webCipher7AWS.filter(f => f.command).length}) ═══`,
-        ...webCipher7AWS.filter(f => f.command).slice(0, 10).map(f => `   $ ${f.command!.slice(0, 100)}`),
+        ...webCipher7AWS.filter(f => f.command).slice(0, 10).map(f => `   $ ${f.command!}`),
         ``, `═══ Firebase Commands ═══`,
         firebaseApiKey ? `   $ curl -s -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseApiKey}" -H "Content-Type: application/json" -d '{}'` : "",
         firebaseDbUrl ? `   $ curl -s "${firebaseDbUrl}/.json?shallow=true"` : "",
@@ -8928,7 +8955,7 @@ if __name__ == "__main__":
         `═══ فحص Directory Traversal / LFI ═══`,
         `🎯 النقاط المفحوصة: ${traversalTargets.length}`,
         ...vulnResults.filter(v => v.type === "Directory Traversal / LFI").map(v =>
-          `   🔴 [CRITICAL] LFI في: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence.slice(0, 100)}`
+          `   🔴 [CRITICAL] LFI في: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence}`
         ),
         vulnResults.filter(v => v.type === "Directory Traversal / LFI").length === 0 ? `   ✅ لم يتم اكتشاف ثغرات LFI` : "",
         ``,
@@ -9025,7 +9052,7 @@ if __name__ == "__main__":
         ``,
         ...webData.cookies.map(c => [
           `═══ ${c.name} ═══`,
-          `   القيمة: ${c.value.slice(0, 50)}${c.value.length > 50 ? "..." : ""}`,
+          `   القيمة: ${c.value}`,
           `   HttpOnly: ${c.httpOnly ? "✅ نعم" : "❌ لا"}`,
           `   Secure: ${c.secure ? "✅ نعم" : "❌ لا"}`,
           `   SameSite: ${c.sameSite || "غير محدد"}`,
@@ -9057,7 +9084,7 @@ if __name__ == "__main__":
         ``,
         `═══ DOM XSS Sinks المكتشفة ═══`,
         ...webData.domXssSinks.slice(0, 30).map(s =>
-          `   ${s.severity === "critical" ? "🔴" : s.severity === "high" ? "🟡" : "🟠"} [${s.severity.toUpperCase()}] ${s.sink}\n      الملف: ${s.file}\n      السياق: ${s.context.slice(0, 120)}`
+          `   ${s.severity === "critical" ? "🔴" : s.severity === "high" ? "🟡" : "🟠"} [${s.severity.toUpperCase()}] ${s.sink}\n      الملف: ${s.file}\n      السياق: ${s.context}`
         ),
         ``,
         webData.domXssSinks.length > 0 ? `⚠️ هذه النقاط تمثل مواقع محتملة لهجمات DOM-based XSS — إذا وصل إدخال المستخدم لأي من هذه النقاط بدون تنقية، يمكن تنفيذ JavaScript خبيث` : `✅ لم يتم اكتشاف DOM sinks خطيرة`,
@@ -9174,7 +9201,7 @@ if __name__ == "__main__":
         ``,
         `═══ تسريب المعلومات ═══`,
         ...infoDisclosures.map(d =>
-          `   ${d.severity === "high" ? "🔴" : "🟡"} [${d.type}] ${d.url}\n      ${d.detail.slice(0, 200)}`
+          `   ${d.severity === "high" ? "🔴" : "🟡"} [${d.type}] ${d.url}\n      ${d.detail}`
         ),
         infoDisclosures.length === 0 ? `   ✅ لم يتم اكتشاف تسريب معلومات` : "",
       ].filter(Boolean),
