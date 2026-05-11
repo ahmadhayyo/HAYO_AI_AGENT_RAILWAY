@@ -394,6 +394,109 @@ function BinaryHexViewer({file,sessionId}:{file:{name:string;size:number;extensi
   );
 }
 
+// ═══ Helper: Build exposed secrets text report ═══
+function buildExposedSecretsText(result: any): string {
+  const lines: string[] = [];
+  lines.push("══════════════════════════════════════════════════════════════");
+  lines.push("   HAYO AI — تقرير الأسرار والمفاتيح المكشوفة (بدون تشفير)");
+  lines.push("══════════════════════════════════════════════════════════════");
+  lines.push(`الموقع: ${result.targetUrl}`);
+  lines.push(`التاريخ: ${new Date(result.generatedAt).toLocaleString("ar-EG")}`);
+  lines.push(`درجة الخطورة: ${result.summary?.riskScore}/100`);
+  lines.push("");
+
+  if (result.exposedSecrets?.secrets?.length > 0) {
+    lines.push("━━━ المفاتيح والأسرار المكتشفة ━━━");
+    for (const s of result.exposedSecrets.secrets) {
+      lines.push(`  النوع: ${s.type}`);
+      lines.push(`  القيمة: ${s.value}`);
+      lines.push(`  المصدر: ${s.source}`);
+      lines.push("");
+    }
+  } else if (result.summary?.extractedKeys?.length > 0) {
+    lines.push("━━━ المفاتيح والأسرار المكتشفة ━━━");
+    for (const s of result.summary.extractedKeys) {
+      if (typeof s === "string") { lines.push(`  ${s}`); }
+      else { lines.push(`  النوع: ${s.type}`); lines.push(`  القيمة: ${s.value}`); lines.push(`  المصدر: ${s.source}`); }
+      lines.push("");
+    }
+  }
+
+  if (result.exposedSecrets?.firebase && Object.values(result.exposedSecrets.firebase).some(Boolean)) {
+    lines.push("━━━ إعدادات Firebase المكشوفة ━━━");
+    for (const [k, v] of Object.entries(result.exposedSecrets.firebase)) {
+      if (v) lines.push(`  ${k}: ${v}`);
+    }
+    lines.push("");
+  }
+
+  if (result.exposedSecrets?.webhooks) {
+    const wh = result.exposedSecrets.webhooks;
+    if (wh.telegram?.length > 0 || wh.slack?.length > 0 || wh.discord?.length > 0) {
+      lines.push("━━━ Webhooks والتوكنات ━━━");
+      for (const t of wh.telegram || []) lines.push(`  Telegram Bot: ${t}`);
+      for (const s of wh.slack || []) lines.push(`  Slack Webhook: ${s}`);
+      for (const d of wh.discord || []) lines.push(`  Discord Webhook: ${d}`);
+      lines.push("");
+    }
+  }
+
+  if (result.exposedSecrets?.aws?.length > 0) {
+    lines.push("━━━ موارد AWS المكشوفة ━━━");
+    for (const f of result.exposedSecrets.aws) {
+      lines.push(`  [${f.severity}] ${f.category}: ${f.value}`);
+      lines.push(`  ${f.detail}`);
+      lines.push("");
+    }
+  }
+
+  lines.push("══════════════════════════════════════════════════════════════");
+  lines.push("  تم إنشاء هذا التقرير بواسطة HAYO AI — Cipher-7 Engine");
+  lines.push("══════════════════════════════════════════════════════════════");
+  return lines.join("\n");
+}
+
+// ═══ Helper: Fallback developer message (when backend doesn't provide one) ═══
+function buildDeveloperMessageFallback(result: any): string {
+  const lines: string[] = [];
+  lines.push("╔══════════════════════════════════════════════════════════════╗");
+  lines.push("║   تنبيه أمني عاجل — رسالة إلى مطوّر/مبرمج الموقع          ║");
+  lines.push("╚══════════════════════════════════════════════════════════════╝");
+  lines.push("");
+  lines.push(`الموقع: ${result.targetUrl}`);
+  lines.push(`درجة الخطورة: ${result.summary?.riskScore}/100`);
+  lines.push("");
+
+  const secrets = result.exposedSecrets?.secrets || result.summary?.extractedKeys || [];
+  if (secrets.length > 0) {
+    lines.push("━━━ الأسرار المكتشفة في كود موقعك ━━━");
+    for (const s of secrets) {
+      if (typeof s === "string") lines.push(`  ${s}`);
+      else lines.push(`  [${s.type}] ${s.value}`);
+    }
+    lines.push("");
+    lines.push("━━━ ماذا يمكن للمخترقين فعله بهذه الأسرار ━━━");
+    lines.push("  - الوصول إلى قواعد البيانات وسرقة بيانات المستخدمين");
+    lines.push("  - التحكم في البنية التحتية السحابية");
+    lines.push("  - انتحال هوية المستخدمين والإدارة");
+    lines.push("  - إرسال رسائل من حساباتك");
+    lines.push("  - تعديل أو حذف البيانات");
+    lines.push("");
+    lines.push("━━━ الإجراءات المطلوبة فوراً ━━━");
+    lines.push("  1. احذف جميع الأسرار من كود الموقع فوراً");
+    lines.push("  2. استخدم متغيرات البيئة (environment variables)");
+    lines.push("  3. قم بتدوير (rotate) جميع المفاتيح المكشوفة");
+    lines.push("  4. أضف ترويسات أمنية للموقع");
+    lines.push("  5. استخدم أدوات فحص الأسرار في CI/CD pipeline");
+  } else {
+    lines.push("لم يتم اكتشاف أسرار مكشوفة في كود الموقع.");
+  }
+
+  lines.push("");
+  lines.push("— تم إنشاء هذا التقرير بواسطة HAYO AI — Cipher-7 Engine");
+  return lines.join("\n");
+}
+
 // ══════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════
@@ -539,6 +642,8 @@ export default function ReverseEngineer(){
   const[wpStepsRevealed,setWpStepsRevealed]=useState<number[]>([]);
   const[wpExpanded,setWpExpanded]=useState<Set<number>>(new Set([1]));
   const[wpShowReport,setWpShowReport]=useState(false);
+  const[wpShowDevMsg,setWpShowDevMsg]=useState(false);
+  const[wpShowExposedSecrets,setWpShowExposedSecrets]=useState(false);
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -1753,9 +1858,11 @@ export default function ReverseEngineer(){
                 <p className="text-xs text-muted-foreground mt-1">الموقع: <span className="text-purple-300 font-mono">{wpResult.targetUrl}</span> · {new Date(wpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
-                <Button onClick={()=>{setWpResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
+                <Button onClick={()=>{setWpResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);setWpShowDevMsg(false);setWpShowExposedSecrets(false);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
                 <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`web-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
                 <Button onClick={()=>setWpShowReport(v=>!v)} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><BookOpen className="w-4 h-4"/>{wpShowReport?"إخفاء التقرير":"التقرير الكامل"}</Button>
+                <Button onClick={()=>setWpShowExposedSecrets(v=>!v)} variant="outline" className="gap-2 border-red-500/30 text-red-300"><Key className="w-4 h-4"/>{wpShowExposedSecrets?"إخفاء الأسرار":"الأسرار المكشوفة"}</Button>
+                <Button onClick={()=>setWpShowDevMsg(v=>!v)} variant="outline" className="gap-2 border-yellow-500/30 text-yellow-300"><AlertTriangle className="w-4 h-4"/>{wpShowDevMsg?"إخفاء رسالة المبرمج":"رسالة للمبرمج"}</Button>
               </div>
             </div>
           </div>
@@ -1876,6 +1983,134 @@ export default function ReverseEngineer(){
                 <div className="text-lg font-bold text-pink-300">v{wpResult.cipher7.engineVersion}</div>
                 <div className="text-[10px] text-muted-foreground">إصدار المحرك</div>
               </div>
+            </div>
+          </div>}
+
+          {/* ══ EXPOSED SECRETS — Full plaintext display ══ */}
+          {wpShowExposedSecrets&&<div className="bg-gradient-to-r from-red-900/40 to-orange-900/40 border-2 border-red-500/50 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-red-300 flex items-center gap-2"><Key className="w-5 h-5"/>الأسرار والمفاتيح المكشوفة — بدون تشفير</h3>
+              <div className="flex items-center gap-2">
+                <Button onClick={()=>{
+                  const report=buildExposedSecretsText(wpResult);
+                  const blob=new Blob([report],{type:"text/plain;charset=utf-8"});
+                  const url=URL.createObjectURL(blob);
+                  const a=document.createElement("a");a.href=url;a.download=`exposed-secrets-${Date.now()}.txt`;a.click();URL.revokeObjectURL(url);
+                }} variant="outline" size="sm" className="gap-1 text-[10px] border-red-500/30 text-red-300"><Download className="w-3 h-3"/>تحميل التقرير</Button>
+                <Button onClick={()=>{
+                  const report=buildExposedSecretsText(wpResult);
+                  navigator.clipboard.writeText(report);toast.success("تم نسخ تقرير الأسرار");
+                }} variant="outline" size="sm" className="gap-1 text-[10px] border-red-500/30 text-red-300"><Copy className="w-3 h-3"/>نسخ</Button>
+              </div>
+            </div>
+            <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-3">
+              <div className="text-[11px] text-red-300/80 flex items-center gap-2 mb-2"><AlertTriangle className="w-4 h-4"/>هذا القسم يعرض جميع المفاتيح والأسرار المكتشفة بدون أي تشفير — كدليل على ضعف أمان الموقع</div>
+            </div>
+
+            {/* API Keys & Secrets */}
+            {wpResult.exposedSecrets?.secrets?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-red-300 flex items-center gap-2"><Key className="w-4 h-4"/>المفاتيح والأسرار ({wpResult.exposedSecrets.secrets.length})</div>
+              <div className="bg-black/40 rounded-xl p-4 max-h-[400px] overflow-y-auto space-y-2">
+                {wpResult.exposedSecrets.secrets.map((s:any,i:number)=>(
+                  <div key={i} className="flex flex-col gap-1 p-3 rounded-lg bg-red-500/5 border border-red-500/20 hover:border-red-500/40 transition-all cursor-pointer" onClick={()=>{navigator.clipboard.writeText(s.value);toast.success("تم نسخ القيمة");}}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-red-400">{s.type}</span>
+                      <span className="text-[9px] text-muted-foreground bg-muted/20 px-2 py-0.5 rounded-full">{s.source}</span>
+                    </div>
+                    <code className="text-[12px] text-red-200 font-mono break-all select-all">{s.value}</code>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* Firebase Config */}
+            {wpResult.exposedSecrets?.firebase&&Object.values(wpResult.exposedSecrets.firebase).some(Boolean)&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><Flame className="w-4 h-4"/>إعدادات Firebase المكشوفة</div>
+              <div className="bg-black/40 rounded-xl p-4 space-y-1">
+                {Object.entries(wpResult.exposedSecrets.firebase).filter(([,v])=>v).map(([k,v]:any)=>(
+                  <div key={k} className="flex items-center justify-between p-2 rounded-lg hover:bg-orange-500/5 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(v);toast.success("تم نسخ القيمة");}}>
+                    <span className="text-[11px] text-orange-400 font-semibold">{k}</span>
+                    <code className="text-[12px] text-orange-200 font-mono select-all">{v}</code>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* Webhooks */}
+            {wpResult.exposedSecrets?.webhooks&&(wpResult.exposedSecrets.webhooks.telegram?.length>0||wpResult.exposedSecrets.webhooks.slack?.length>0||wpResult.exposedSecrets.webhooks.discord?.length>0)&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-yellow-300 flex items-center gap-2"><Globe className="w-4 h-4"/>Webhooks والتوكنات المكشوفة</div>
+              <div className="bg-black/40 rounded-xl p-4 space-y-1">
+                {wpResult.exposedSecrets.webhooks.telegram?.map((t:string,i:number)=>(
+                  <div key={`tg${i}`} className="flex items-center gap-2 p-2 rounded-lg hover:bg-yellow-500/5 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(t);toast.success("تم نسخ التوكن");}}>
+                    <span className="text-[11px] text-yellow-400 font-semibold">Telegram Bot:</span>
+                    <code className="text-[12px] text-yellow-200 font-mono select-all">{t}</code>
+                  </div>
+                ))}
+                {wpResult.exposedSecrets.webhooks.slack?.map((s:string,i:number)=>(
+                  <div key={`sl${i}`} className="flex items-center gap-2 p-2 rounded-lg hover:bg-yellow-500/5 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(s);toast.success("تم النسخ");}}>
+                    <span className="text-[11px] text-yellow-400 font-semibold">Slack:</span>
+                    <code className="text-[12px] text-yellow-200 font-mono select-all break-all">{s}</code>
+                  </div>
+                ))}
+                {wpResult.exposedSecrets.webhooks.discord?.map((d:string,i:number)=>(
+                  <div key={`dc${i}`} className="flex items-center gap-2 p-2 rounded-lg hover:bg-yellow-500/5 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(d);toast.success("تم النسخ");}}>
+                    <span className="text-[11px] text-yellow-400 font-semibold">Discord:</span>
+                    <code className="text-[12px] text-yellow-200 font-mono select-all break-all">{d}</code>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* AWS Resources */}
+            {wpResult.exposedSecrets?.aws?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Database className="w-4 h-4"/>موارد AWS المكشوفة</div>
+              <div className="bg-black/40 rounded-xl p-4 space-y-2">
+                {wpResult.exposedSecrets.aws.map((f:any,i:number)=>(
+                  <div key={i} className="flex flex-col gap-1 p-2 rounded-lg bg-cyan-500/5 border border-cyan-500/20 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(f.value);toast.success("تم النسخ");}}>
+                    <div className="flex items-center justify-between">
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${f.severity==="critical"?"bg-red-500/20 text-red-300 border border-red-500/40":"bg-yellow-500/20 text-yellow-300 border border-yellow-500/40"}`}>{f.severity.toUpperCase()}</span>
+                      <span className="text-[10px] text-cyan-400">{f.category}</span>
+                    </div>
+                    <code className="text-[12px] text-cyan-200 font-mono select-all break-all">{f.value}</code>
+                    <span className="text-[10px] text-muted-foreground">{f.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* Fallback: show extractedKeys from summary if exposedSecrets not available */}
+            {!wpResult.exposedSecrets&&wpResult.summary?.extractedKeys?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-red-300 flex items-center gap-2"><Key className="w-4 h-4"/>المفاتيح والأسرار ({wpResult.summary.extractedKeys.length})</div>
+              <div className="bg-black/40 rounded-xl p-4 max-h-[400px] overflow-y-auto space-y-2">
+                {wpResult.summary.extractedKeys.map((s:any,i:number)=>(
+                  <div key={i} className="flex flex-col gap-1 p-3 rounded-lg bg-red-500/5 border border-red-500/20 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(typeof s==="string"?s:s.value);toast.success("تم نسخ القيمة");}}>
+                    <span className="text-[11px] font-bold text-red-400">{typeof s==="string"?"Secret":s.type}</span>
+                    <code className="text-[12px] text-red-200 font-mono break-all select-all">{typeof s==="string"?s:s.value}</code>
+                  </div>
+                ))}
+              </div>
+            </div>}
+          </div>}
+
+          {/* ══ DEVELOPER WARNING MESSAGE ══ */}
+          {wpShowDevMsg&&<div className="bg-gradient-to-r from-yellow-900/40 to-red-900/40 border-2 border-yellow-500/50 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-yellow-300 flex items-center gap-2"><AlertTriangle className="w-5 h-5"/>رسالة إلى المبرمج / المطوّر</h3>
+              <div className="flex items-center gap-2">
+                <Button onClick={()=>{
+                  const msg=wpResult.developerMessage||buildDeveloperMessageFallback(wpResult);
+                  const blob=new Blob([msg],{type:"text/plain;charset=utf-8"});
+                  const url=URL.createObjectURL(blob);
+                  const a=document.createElement("a");a.href=url;a.download=`developer-warning-${Date.now()}.txt`;a.click();URL.revokeObjectURL(url);
+                }} variant="outline" size="sm" className="gap-1 text-[10px] border-yellow-500/30 text-yellow-300"><Download className="w-3 h-3"/>تحميل الرسالة</Button>
+                <Button onClick={()=>{
+                  const msg=wpResult.developerMessage||buildDeveloperMessageFallback(wpResult);
+                  navigator.clipboard.writeText(msg);toast.success("تم نسخ رسالة المبرمج");
+                }} variant="outline" size="sm" className="gap-1 text-[10px] border-yellow-500/30 text-yellow-300"><Copy className="w-3 h-3"/>نسخ</Button>
+              </div>
+            </div>
+            <div className="bg-black/30 border border-yellow-500/20 rounded-2xl p-5 max-h-[600px] overflow-y-auto">
+              <pre className="whitespace-pre-wrap text-[12px] text-yellow-100/90 leading-relaxed font-mono" dir="rtl">{wpResult.developerMessage||buildDeveloperMessageFallback(wpResult)}</pre>
             </div>
           </div>}
         </>}

@@ -7520,9 +7520,8 @@ if __name__ == "__main__":
       status: criticalCount > 0 ? "danger" : allSecrets.length > 0 ? "warning" : "success",
       findings: [
         `═══ الأسرار المستخرجة (${allSecrets.length}) ═══`,
-        ...allSecrets.slice(0, 30).map(s => `   🔑 [${s.type}] ${s.value.slice(0, 60)}${s.value.length > 60 ? "..." : ""} — ${s.source}`),
-        allSecrets.length === 0 ? `   ✅ لم يتم العثور على أسرار مكشوفة` : "",
-        allSecrets.length > 30 ? `   ... +${allSecrets.length - 30} سر إضافي` : "",
+        ...allSecrets.map(s => `   🔑 [${s.type}] ${s.value} — المصدر: ${s.source}`),
+        allSecrets.length === 0 ? `   ✅ لم يتم العثور على أسرار مكشوفة` : ``,
       ].filter(Boolean),
       commands: [`curl -s "${webData.url}" | grep -oE "AIza[0-9A-Za-z_-]{35}"`, `curl -s "${webData.url}" | grep -oE "sk_(live|test)_[0-9a-zA-Z]{24,}"`],
     },
@@ -7593,7 +7592,7 @@ if __name__ == "__main__":
       details: `${telegramBots.length} Telegram — ${slackWebhooks.length} Slack — ${discordWebhooks.length} Discord`,
       status: (telegramBots.length + slackWebhooks.length + discordWebhooks.length) > 0 ? "warning" : "info",
       findings: [
-        `═══ Telegram Bots ═══`, ...telegramBots.map(t => `   🤖 ${t.slice(0, 20)}...`), telegramBots.length === 0 ? `   ✅ لا يوجد` : "",
+        `═══ Telegram Bots ═══`, ...telegramBots.map(t => `   🤖 ${t}`), telegramBots.length === 0 ? `   ✅ لا يوجد` : ``,
         ``, `═══ Slack Webhooks ═══`, ...slackWebhooks.map(w => `   💬 ${w}`), slackWebhooks.length === 0 ? `   ✅ لا يوجد` : "",
         ``, `═══ Discord Webhooks ═══`, ...discordWebhooks.map(w => `   🎮 ${w}`), discordWebhooks.length === 0 ? `   ✅ لا يوجد` : "",
       ].filter(Boolean),
@@ -7778,6 +7777,24 @@ if __name__ == "__main__":
     },
   ];
 
+  // Build exposed secrets listing for the report
+  const exposedSecretsListing = allSecrets.map(s => `• [${s.type}] ${s.value} — المصدر: ${s.source}`).join("\n");
+  const firebaseSecretsListing = [
+    firebaseApiKey ? `• Firebase API Key: ${firebaseApiKey}` : "",
+    firebaseProjectId ? `• Firebase Project ID: ${firebaseProjectId}` : "",
+    firebaseDbUrl ? `• Firebase RTDB URL: ${firebaseDbUrl}` : "",
+    firebaseAuthDomain ? `• Firebase Auth Domain: ${firebaseAuthDomain}` : "",
+    firebaseStorageBucket ? `• Firebase Storage Bucket: ${firebaseStorageBucket}` : "",
+    firebaseAppId ? `• Firebase App ID: ${firebaseAppId}` : "",
+    firebaseMessagingSenderId ? `• Firebase Messaging Sender ID: ${firebaseMessagingSenderId}` : "",
+  ].filter(Boolean).join("\n");
+  const webhookSecretsListing = [
+    ...telegramBots.map(t => `• Telegram Bot Token: ${t}`),
+    ...slackWebhooks.map(w => `• Slack Webhook: ${w}`),
+    ...discordWebhooks.map(w => `• Discord Webhook: ${w}`),
+  ].join("\n");
+  const awsSecretsListing = webCipher7AWS.map(f => `• [${f.category}] ${f.value} — ${f.detail}`).join("\n");
+
   let aiReport = "";
   try {
     const prompt = `أنت خبير أمني معتمد (OSCP/CEH). اكتب تقرير اختبار اختراق ويب احترافي شامل باللغة العربية لهذا الموقع:
@@ -7793,20 +7810,44 @@ AWS: ${webCipher7AWS.length} اكتشاف
 مسارات حساسة متاحة: ${accessiblePaths.map(p => p.path).join(", ") || "لا يوجد"}
 IDOR Candidates: ${idorCandidates.length}
 
+الأسرار والمفاتيح المكتشفة (بدون تشفير — كدليل على ضعف الموقع):
+${exposedSecretsListing || "لم يتم العثور على أسرار"}
+
+إعدادات Firebase المكتشفة:
+${firebaseSecretsListing || "لا يوجد"}
+
+Webhooks مكتشفة:
+${webhookSecretsListing || "لا يوجد"}
+
+نتائج AWS:
+${awsSecretsListing || "لا يوجد"}
+
 اكتب تقريراً يشمل:
 1. ملخص تنفيذي
 2. الثغرات الحرجة مع التفاصيل التقنية
 3. تحليل السطح الهجومي للويب
 4. نتائج فحص الترويسات الأمنية
 5. نتائج فحص Firebase/AWS
-6. توصيات الإصلاح بالأولوية
-7. خلاصة المخاطر`;
+6. جميع الأسرار والمفاتيح المكتشفة مكتوبة بالكامل بدون أي تشفير أو إخفاء
+7. توصيات الإصلاح بالأولوية
+8. خلاصة المخاطر
 
-    const reportResult = await callPowerAI(prompt, "", 6000);
+هام جداً: اكتب قسماً خاصاً بعنوان "رسالة إلى المبرمج/المطوّر" موجّهة لمطوّر الموقع تشرح فيها:
+- ما هي الأسرار والمفاتيح التي تم اكتشافها (اذكرها كاملة بدون أي تشفير أو إخفاء)
+- ماذا يمكن للمخترقين فعله بهذه الأسرار والمفاتيح المكشوفة (سيناريوهات هجوم واقعية)
+- ما الخطوات التي يجب اتخاذها فوراً لإصلاح هذه الثغرات
+- تحذير واضح بأن الموقع قابل للاختراق باستخدام هذه الأسرار المكشوفة`;
+
+    const reportResult = await callPowerAI(prompt, "", 8000);
     aiReport = reportResult.content;
   } catch (e: any) {
     aiReport = `تقرير اختبار اختراق الويب\n\nالموقع: ${webData.url}\nدرجة الخطورة: ${riskScore}/100\nالأسرار المكتشفة: ${allSecrets.length}\n\nملاحظة: فشل توليد التقرير التفصيلي — ${e.message}`;
   }
+
+  // Build developer warning message with full exposed secrets
+  const developerMessage = buildDeveloperMessage(webData.url, riskScore, allSecrets, {
+    firebaseApiKey, firebaseProjectId, firebaseDbUrl, firebaseAuthDomain, firebaseStorageBucket, firebaseAppId, firebaseMessagingSenderId,
+  }, telegramBots, slackWebhooks, discordWebhooks, webCipher7AWS, missingHeaders, accessiblePaths, corsVulnerable, idorCandidates);
 
   return {
     steps: webSteps,
@@ -7820,6 +7861,25 @@ IDOR Candidates: ${idorCandidates.length}
       accessiblePaths: accessiblePaths.map(p => p.path),
     },
     report: aiReport,
+    developerMessage,
+    exposedSecrets: {
+      secrets: allSecrets.map(s => ({ type: s.type, value: s.value, source: s.source })),
+      firebase: {
+        apiKey: firebaseApiKey || null,
+        projectId: firebaseProjectId || null,
+        databaseURL: firebaseDbUrl || null,
+        authDomain: firebaseAuthDomain || null,
+        storageBucket: firebaseStorageBucket || null,
+        appId: firebaseAppId || null,
+        messagingSenderId: firebaseMessagingSenderId || null,
+      },
+      webhooks: {
+        telegram: telegramBots,
+        slack: slackWebhooks,
+        discord: discordWebhooks,
+      },
+      aws: webCipher7AWS.map(f => ({ category: f.category, severity: f.severity, value: f.value, detail: f.detail })),
+    },
     cipher7: {
       crypto: webCipher7Crypto,
       aws: webCipher7AWS,
@@ -7831,4 +7891,123 @@ IDOR Candidates: ${idorCandidates.length}
     generatedAt: new Date().toISOString(),
     targetUrl: webData.url,
   };
+}
+
+function buildDeveloperMessage(
+  url: string, riskScore: number,
+  secrets: { type: string; value: string; source: string }[],
+  firebase: { firebaseApiKey: string; firebaseProjectId: string; firebaseDbUrl: string; firebaseAuthDomain: string; firebaseStorageBucket: string; firebaseAppId: string; firebaseMessagingSenderId: string },
+  telegramBots: string[], slackWebhooks: string[], discordWebhooks: string[],
+  awsFindings: C7AWSFinding[], missingHeaders: string[],
+  accessiblePaths: { path: string; status: number; accessible: boolean; size: number }[],
+  corsVulnerable: boolean, idorCandidates: string[],
+): string {
+  const lines: string[] = [];
+  lines.push(`╔══════════════════════════════════════════════════════════════════════════════╗`);
+  lines.push(`║   ⚠️ تنبيه أمني عاجل — رسالة إلى مطوّر/مبرمج الموقع                          ║`);
+  lines.push(`║   HAYO AI — Cipher-7 Web Penetration Testing Report                           ║`);
+  lines.push(`╚══════════════════════════════════════════════════════════════════════════════╝`);
+  lines.push(``);
+  lines.push(`عزيزي المطوّر/المبرمج،`);
+  lines.push(``);
+  lines.push(`تم إجراء اختبار اختراق أمني على موقعك: ${url}`);
+  lines.push(`درجة الخطورة الإجمالية: ${riskScore}/100 ${riskScore > 60 ? "🔴 خطر مرتفع" : riskScore > 30 ? "🟡 خطر متوسط" : "🟢 خطر منخفض"}`);
+  lines.push(``);
+
+  if (secrets.length > 0) {
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`🔑 الأسرار والمفاتيح المكشوفة في كود الموقع (${secrets.length} سر):`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    for (const s of secrets) {
+      lines.push(`   🔑 النوع: ${s.type}`);
+      lines.push(`      القيمة: ${s.value}`);
+      lines.push(`      المصدر: ${s.source}`);
+      lines.push(``);
+    }
+  }
+
+  if (firebase.firebaseApiKey || firebase.firebaseProjectId) {
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`🔥 إعدادات Firebase المكشوفة:`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    if (firebase.firebaseApiKey) lines.push(`   API Key: ${firebase.firebaseApiKey}`);
+    if (firebase.firebaseProjectId) lines.push(`   Project ID: ${firebase.firebaseProjectId}`);
+    if (firebase.firebaseDbUrl) lines.push(`   Database URL: ${firebase.firebaseDbUrl}`);
+    if (firebase.firebaseAuthDomain) lines.push(`   Auth Domain: ${firebase.firebaseAuthDomain}`);
+    if (firebase.firebaseStorageBucket) lines.push(`   Storage Bucket: ${firebase.firebaseStorageBucket}`);
+    if (firebase.firebaseAppId) lines.push(`   App ID: ${firebase.firebaseAppId}`);
+    if (firebase.firebaseMessagingSenderId) lines.push(`   Messaging Sender ID: ${firebase.firebaseMessagingSenderId}`);
+    lines.push(``);
+  }
+
+  if (telegramBots.length > 0 || slackWebhooks.length > 0 || discordWebhooks.length > 0) {
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`🤖 Webhooks والتوكنات المكشوفة:`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    for (const t of telegramBots) lines.push(`   🤖 Telegram Bot Token: ${t}`);
+    for (const s of slackWebhooks) lines.push(`   💬 Slack Webhook: ${s}`);
+    for (const d of discordWebhooks) lines.push(`   🎮 Discord Webhook: ${d}`);
+    lines.push(``);
+  }
+
+  if (awsFindings.length > 0) {
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`☁️ موارد AWS المكشوفة:`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    for (const f of awsFindings) lines.push(`   [${f.severity.toUpperCase()}] ${f.category}: ${f.value}`);
+    lines.push(``);
+  }
+
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`⚔️ ماذا يمكن للمخترقين فعله بهذه الأسرار المكشوفة:`);
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  const attacks: string[] = [];
+  if (secrets.some(s => s.type.includes("AWS"))) attacks.push(`   🔴 استخدام مفاتيح AWS للوصول إلى البنية التحتية السحابية والسيرفرات وقواعد البيانات والملفات`);
+  if (secrets.some(s => s.type.includes("Firebase"))) attacks.push(`   🔴 الوصول إلى قاعدة بيانات Firebase وقراءة/كتابة/حذف بيانات المستخدمين`);
+  if (secrets.some(s => s.type.includes("JWT") || s.type.includes("Bearer"))) attacks.push(`   🔴 انتحال هوية المستخدمين باستخدام التوكنات المكشوفة والوصول إلى حساباتهم`);
+  if (secrets.some(s => s.type.includes("Stripe"))) attacks.push(`   🔴 الوصول إلى بيانات الدفع وعمليات Stripe المالية`);
+  if (secrets.some(s => s.type.includes("MongoDB"))) attacks.push(`   🔴 الاتصال المباشر بقاعدة البيانات MongoDB وسرقة أو تعديل جميع البيانات`);
+  if (telegramBots.length > 0) attacks.push(`   🔴 التحكم في بوتات Telegram — إرسال رسائل، قراءة محادثات، سرقة بيانات`);
+  if (slackWebhooks.length > 0) attacks.push(`   🔴 إرسال رسائل عبر Slack Webhooks — هجمات تصيّد داخلي`);
+  if (secrets.some(s => s.type.includes("Private Key"))) attacks.push(`   🔴 استخدام المفتاح الخاص للوصول إلى السيرفرات وفك تشفير الاتصالات`);
+  if (secrets.some(s => s.type.includes("GitHub"))) attacks.push(`   🔴 الوصول إلى مستودعات GitHub الخاصة وقراءة/تعديل الكود المصدري`);
+  if (secrets.some(s => s.type.includes("SendGrid"))) attacks.push(`   🔴 إرسال رسائل بريد إلكتروني من حسابك — هجمات تصيّد بإسم شركتك`);
+  if (secrets.some(s => s.type.includes("Password"))) attacks.push(`   🔴 استخدام كلمات المرور المكشوفة لتسجيل الدخول إلى الأنظمة الداخلية`);
+  if (corsVulnerable) attacks.push(`   🔴 سرقة بيانات المستخدمين عبر ثغرة CORS من أي موقع خارجي`);
+  if (accessiblePaths.some(p => p.path === "/.env")) attacks.push(`   🔴 قراءة ملف .env والحصول على جميع المتغيرات البيئية والأسرار`);
+  if (accessiblePaths.some(p => p.path === "/.git/config")) attacks.push(`   🔴 استنساخ الكود المصدري الكامل من .git المكشوف`);
+  if (idorCandidates.length > 0) attacks.push(`   🟡 استغلال ثغرات IDOR للوصول إلى بيانات مستخدمين آخرين`);
+  if (attacks.length === 0) attacks.push(`   ✅ لم يتم اكتشاف سيناريوهات هجوم خطيرة`);
+  lines.push(...attacks);
+  lines.push(``);
+
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`🛠️ الإجراءات المطلوبة فوراً:`);
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  const fixes: string[] = [];
+  let fixNum = 1;
+  if (secrets.length > 0) { fixes.push(`   ${fixNum}. [حرج] احذف جميع الأسرار والمفاتيح (${secrets.length}) من كود الموقع فوراً واستخدم متغيرات البيئة (environment variables)`); fixNum++; }
+  if (secrets.some(s => s.type.includes("AWS"))) { fixes.push(`   ${fixNum}. [حرج] قم بتدوير (rotate) جميع مفاتيح AWS المكشوفة فوراً من AWS Console`); fixNum++; }
+  if (secrets.some(s => s.type.includes("Firebase"))) { fixes.push(`   ${fixNum}. [حرج] أضف Firebase Security Rules لمنع الوصول غير المصرّح`); fixNum++; }
+  if (secrets.some(s => s.type.includes("JWT") || s.type.includes("Bearer"))) { fixes.push(`   ${fixNum}. [حرج] أبطل جميع التوكنات المكشوفة وأعد إصدار توكنات جديدة`); fixNum++; }
+  if (corsVulnerable) { fixes.push(`   ${fixNum}. [حرج] أصلح إعدادات CORS — لا تستخدم wildcard (*) واحدد النطاقات المسموحة`); fixNum++; }
+  if (missingHeaders.length > 0) { fixes.push(`   ${fixNum}. [عالي] أضف الترويسات الأمنية المفقودة: ${missingHeaders.join(", ")}`); fixNum++; }
+  if (accessiblePaths.some(p => p.path === "/.env" || p.path === "/.git/config")) { fixes.push(`   ${fixNum}. [حرج] احجب الملفات الحساسة (.env, .git) في إعدادات السيرفر`); fixNum++; }
+  if (telegramBots.length > 0) { fixes.push(`   ${fixNum}. [حرج] قم بإعادة توليد توكنات Telegram Bot عبر @BotFather`); fixNum++; }
+  if (idorCandidates.length > 0) { fixes.push(`   ${fixNum}. [متوسط] أضف التحقق من الصلاحيات (authorization) في جميع API endpoints`); fixNum++; }
+  fixes.push(`   ${fixNum}. [عام] استخدم أدوات فحص الأسرار (secret scanning) في CI/CD pipeline`);
+  lines.push(...fixes);
+  lines.push(``);
+
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`⚠️ تحذير: موقعك قابل للاختراق!`);
+  lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  lines.push(`هذا التقرير يُثبت أن الأسرار والمفاتيح أعلاه يمكن لأي مخترق الوصول إليها.`);
+  lines.push(`يجب اتخاذ الإجراءات الواردة أعلاه فوراً لحماية موقعك وبيانات المستخدمين.`);
+  lines.push(`كل يوم تأخير يزيد من خطر الاختراق وسرقة البيانات.`);
+  lines.push(``);
+  lines.push(`— تم إنشاء هذا التقرير بواسطة HAYO AI — Cipher-7 Web Penetration Testing Engine`);
+  lines.push(`— التاريخ: ${new Date().toLocaleString("ar-EG")}`);
+
+  return lines.join("\n");
 }
