@@ -7610,7 +7610,7 @@ if __name__ == "__main__":
   });
 
   // --- Header Injection / CRLF ---
-  const crlfProbes = [async () => {
+  const crlfProbes = [(async () => {
     try {
       const testUrl = `${baseUrl}/%0d%0aSet-Cookie:%20hacked=true`;
       const ctrl = new AbortController();
@@ -7622,7 +7622,7 @@ if __name__ == "__main__":
         vulnResults.push({ type: "CRLF Injection", severity: "high", url: testUrl, payload: "%0d%0aSet-Cookie: hacked=true", evidence: "Injected header reflected in response", exploitable: true });
       }
     } catch {}
-  }()];
+  })()];
 
   // --- Run all probes in parallel ---
   await Promise.allSettled([...sqliProbes, ...xssProbes, ...redirectProbes, ...traversalProbes, ...ssrfProbes, ...subdomainProbes, ...crlfProbes]);
