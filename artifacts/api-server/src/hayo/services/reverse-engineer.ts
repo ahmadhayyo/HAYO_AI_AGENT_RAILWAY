@@ -5909,8 +5909,9 @@ export async function runCloudPentest(sessionId: string): Promise<{
     ["Slack Webhook",           /https:\/\/hooks\.slack\.com\/services\/[A-Z0-9/]+/gi],
     ["Telegram Bot Token",      /[0-9]{8,10}:[A-Za-z0-9\-_]{35}/g],
     ["Private Key Header",      /-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----/g],
-    ["Hardcoded Password",      /(?:password|passwd|pwd|secret)["\s:=\'`]+([^\s"\'`<>]{6,60})/gi],
-    ["Hardcoded API Key",       /(?:api[_\-]?key|apikey)["\s:=\'`]+([A-Za-z0-9\-_\.]{16,80})/gi],
+    ["Hardcoded Password",      /(?:password|passwd|pwd)\s*[=:]\s*["'`]([A-Za-z0-9!@#$%^&*\-_+=.]{8,60})["'`]/gi],
+    ["Hardcoded Secret",        /(?:secret|secret_key|secretKey)\s*[=:]\s*["'`]([A-Za-z0-9!@#$%^&*\-_+=.]{8,80})["'`]/gi],
+    ["Hardcoded API Key",       /(?:api[_\-]?key|apikey|apiKey|API_KEY)\s*[=:]\s*["'`]([A-Za-z0-9\-_\.]{16,80})["'`]/gi],
     ["Bearer Token",            /Bearer\s+([A-Za-z0-9\-_\.+/=]{20,})/gi],
     ["JDBC URL",                /jdbc:[a-z]+:\/\/[^\s"\'<>]{10,}/gi],
     ["MongoDB URI",             /mongodb(?:\+srv)?:\/\/[^\s"\'<>]{10,}/gi],
@@ -7431,7 +7432,37 @@ export async function runWebPentest(targetUrl: string): Promise<{
   const allContent = [webData.html, ...webData.scripts].join("\n");
   const domain = new URL(webData.url).hostname;
 
+  // ═══ FALSE-POSITIVE FILTER — rejects JS code snippets from secret results ═══
+  const JS_CODE_INDICATORS = /(?:function\s*[\(\{]|=>\s*[\{\(]|\breturn\s|\.(?:map|filter|reduce|forEach|push|pop|join|split|replace|match|test|exec|call|apply|bind|prototype|constructor|toString|valueOf|length|slice|indexOf|includes|then|catch|finally|async|await)\b|(?:var|let|const|this|new|delete|typeof|void|class|extends|import|export|require|module|if|else|for|while|do|switch|case|break|continue|throw|try|catch|finally)\b|\{\s*(?:get|set)\s|[;{}()\[\]].*[;{}()\[\]]|[!=]==|&&|\|\||<<|>>|\?\.|\.\.\.)/;
+  const JS_NOISE_VALUES = new Set(["same-origin", "no-cors", "include", "omit", "no-referrer", "no-cache", "reload", "force-cache", "navigate", "cors", "undefined", "null", "true", "false", "anonymous", "use-credentials"]);
+  const PLACEHOLDER_EMAILS = new Set(["name@example.com", "user@example.com", "test@example.com", "admin@example.com", "info@example.com", "noreply@example.com", "mail@example.com", "email@example.com", "sample@example.com", "demo@example.com", "hello@example.com"]);
+  function isRealSecret(value: string, type: string): boolean {
+    if (JS_NOISE_VALUES.has(value.toLowerCase())) return false;
+    if (value.length < 8 && type !== "Email Address") return false;
+    // Filter placeholder/generic emails
+    if (type === "Email Address") {
+      if (PLACEHOLDER_EMAILS.has(value.toLowerCase())) return false;
+      if (/@example\.(com|org|net)$/i.test(value)) return false;
+      if (value.length < 5) return false;
+      return true;
+    }
+    // Allow specific high-confidence patterns through without JS check
+    const highConfidenceTypes = ["Firebase API Key", "Firebase DB URL", "Firebase Storage", "AWS Access Key", "JWT Token", "Stripe Secret Key", "Stripe Publishable Key", "SendGrid API Key", "GitHub Token", "Telegram Bot Token", "Private Key Header", "SSH Private Key", "PGP Private Key", "Bearer Token", "MongoDB URI", "Database URL", "Redis URL", "SMTP Credentials", "PostHog API Key", "Convex Cloud URL", "Convex Deploy Key", "Supabase Key", "OpenAI API Key", "Anthropic API Key", "Slack Token", "Slack Webhook", "Discord Webhook", "Mapbox Token", "Square Access Token", "Shopify Token", "NPM Token", "Clerk Publishable Key", "Vercel Token", "Vercel Deploy ID", "Sentry DSN", "LaunchDarkly SDK Key", "Google Maps API Key", "Google OAuth Client ID", "Mailgun API Key", "Twilio Account SID", "Twilio Auth Token", "AWS Secret Key", "Internal URL", "GraphQL Endpoint", "REST API Endpoint"];
+    if (highConfidenceTypes.includes(type)) return true;
+    // For generic patterns, reject if it looks like JS code
+    if (JS_CODE_INDICATORS.test(value)) return false;
+    // Reject if value has too many special JS chars relative to its length
+    const specialChars = (value.match(/[{}()\[\];=><,!?:]/g) || []).length;
+    if (specialChars > value.length * 0.15) return false;
+    // Reject if starts with common JS patterns
+    if (/^[,;.!?{}()\[\]=>]/.test(value)) return false;
+    // Reject if contains common JS keywords as standalone
+    if (/\b(?:function|return|var|let|const|this|new|null|undefined|true|false|class|import|export|require)\b/i.test(value)) return false;
+    return true;
+  }
+
   const WEB_SECRET_REGEX: Array<[string, RegExp]> = [
+    // ═══ HIGH-CONFIDENCE: Unique token formats (very low false positive rate) ═══
     ["Firebase API Key",        /AIza[0-9A-Za-z\-_]{35}/g],
     ["Firebase DB URL",         /https:\/\/[a-z0-9\-]+\.firebaseio\.com/gi],
     ["Firebase Storage",        /gs:\/\/[a-z0-9\-]+\.appspot\.com/gi],
@@ -7447,38 +7478,61 @@ export async function runWebPentest(targetUrl: string): Promise<{
     ["Slack Webhook",           /https:\/\/hooks\.slack\.com\/services\/[A-Z0-9/]+/gi],
     ["Telegram Bot Token",      /[0-9]{8,10}:[A-Za-z0-9\-_]{35}/g],
     ["Private Key Header",      /-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----/g],
-    ["Hardcoded Password",      /(?:password|passwd|pwd|secret)["\s:=\'`]+([^\s"\'`<>]{6,60})/gi],
-    ["Hardcoded API Key",       /(?:api[_\-]?key|apikey)["\s:=\'`]+([A-Za-z0-9\-_\.]{16,80})/gi],
+    ["SSH Private Key",         /-----BEGIN (?:DSA|ECDSA|ED25519) PRIVATE KEY-----/g],
+    ["PGP Private Key",         /-----BEGIN PGP PRIVATE KEY BLOCK-----/g],
     ["Bearer Token",            /Bearer\s+([A-Za-z0-9\-_\.+/=]{20,})/gi],
     ["MongoDB URI",             /mongodb(?:\+srv)?:\/\/[^\s"\'<>]{10,}/gi],
-    ["GraphQL Endpoint",        /(?:graphql|gql)["\s:=\'`]*(https?:\/\/[^\s"\'`<>]{10,})/gi],
-    ["REST API Endpoint",       /https?:\/\/(?:api\.|backend\.|srv\.|service\.)[a-z0-9\-\.]+\/[^\s"\'`<>]{5,}/gi],
+    ["Database URL",            /(?:postgres|mysql|mariadb|mssql):\/\/[^\s"\'<>]{10,}/gi],
+    ["Redis URL",               /redis:\/\/[^\s"\'<>]{10,}/gi],
+    ["SMTP Credentials",        /smtp:\/\/[^\s"\'<>]{10,}/gi],
     ["Google Maps API Key",     /AIzaSy[A-Za-z0-9\-_]{33}/g],
     ["Mailgun API Key",         /key-[a-z0-9]{32}/g],
     ["Twilio Account SID",      /AC[a-z0-9]{32}/g],
     ["Twilio Auth Token",       /(?:twilio[_\-]?auth[_\-]?token|TWILIO_AUTH_TOKEN)["\s:=]+([a-f0-9]{32})/gi],
     ["Discord Webhook",         /https:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_\-]+/gi],
-    ["Discord Bot Token",       /(?:discord[_\-]?(?:bot[_\-]?)?token)["\s:=\'`]+([A-Za-z0-9\-_.]{50,80})/gi],
     ["OpenAI API Key",          /sk-[A-Za-z0-9]{20,}/g],
     ["Anthropic API Key",       /sk-ant-[A-Za-z0-9\-_]{20,}/g],
-    ["Database URL",            /(?:postgres|mysql|mariadb|mssql):\/\/[^\s"\'<>]{10,}/gi],
-    ["Redis URL",               /redis:\/\/[^\s"\'<>]{10,}/gi],
-    ["SMTP Credentials",        /smtp:\/\/[^\s"\'<>]{10,}/gi],
-    ["Email Address",           /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g],
-    ["Internal URL",            /https?:\/\/(?:localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)[:\d\/][^\s"\'<>]*/gi],
     ["Supabase Key",            /eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_.+/=]*/g],
-    ["Algolia API Key",         /(?:algolia[_\-]?(?:api[_\-]?)?key|ALGOLIA_API_KEY)["\s:=\'`]+([a-f0-9]{32})/gi],
     ["Mapbox Token",            /pk\.[a-zA-Z0-9]{60,}/g],
-    ["Heroku API Key",          /(?:heroku[_\-]?api[_\-]?key|HEROKU_API_KEY)["\s:=\'`]+([a-f0-9\-]{36})/gi],
-    ["PayPal Client ID",        /(?:paypal[_\-]?client[_\-]?id|PAYPAL_CLIENT_ID)["\s:=\'`]+([A-Za-z0-9\-_]{20,80})/gi],
     ["Square Access Token",     /sq0[a-z]{3}-[A-Za-z0-9\-_]{22,}/g],
     ["Shopify Token",           /shpat_[a-fA-F0-9]{32}/g],
     ["NPM Token",               /npm_[A-Za-z0-9]{36}/g],
-    ["Docker Auth",             /(?:docker[_\-]?(?:auth|password|token))["\s:=\'`]+([^\s"\'`<>]{8,})/gi],
-    ["SSH Private Key",         /-----BEGIN (?:DSA|ECDSA|ED25519) PRIVATE KEY-----/g],
-    ["PGP Private Key",         /-----BEGIN PGP PRIVATE KEY BLOCK-----/g],
-    ["Secret in Comment",       /(?:\/\/|\/\*|#)\s*(?:secret|password|token|key|api.?key)\s*[:=]\s*([^\s*\/]{6,})/gi],
-    ["Hardcoded Credential",    /(?:credentials?|cred|auth_token|access_token|secret_key|private_key)["\s:=\'`]+([^\s"\'`<>]{8,80})/gi],
+    // ═══ NEW: Modern SaaS/Cloud service tokens ═══
+    ["PostHog API Key",         /phc_[A-Za-z0-9]{20,}/g],
+    ["Convex Cloud URL",        /https:\/\/[a-z0-9\-]+\.convex\.cloud/gi],
+    ["Convex Deploy Key",       /prod:[a-z0-9\-]+:[A-Za-z0-9\-_]{20,}/g],
+    ["Clerk Publishable Key",   /pk_(?:live|test)_[A-Za-z0-9]{20,}/g],
+    ["Vercel Token",            /(?:VERCEL_TOKEN|vercel[_\-]?token)["\s:=]+([A-Za-z0-9\-_]{24,})/gi],
+    ["Vercel Deploy ID",        /dpl_[A-Za-z0-9]{20,}/g],
+    ["Sentry DSN",              /https:\/\/[a-f0-9]+@[a-z0-9]+\.ingest\.sentry\.io\/[0-9]+/gi],
+    ["Datadog API Key",         /(?:dd[_\-]?api[_\-]?key|DATADOG_API_KEY)["\s:=]+([a-f0-9]{32})/gi],
+    ["LaunchDarkly SDK Key",    /sdk-[a-f0-9\-]{32,}/g],
+    ["Mixpanel Token",          /(?:mixpanel[_\-]?token|MIXPANEL_TOKEN)["\s:=\'`]+([a-f0-9]{32})/gi],
+    ["Segment Write Key",       /(?:segment[_\-]?(?:write[_\-]?)?key|SEGMENT_WRITE_KEY)["\s:=\'`]+([A-Za-z0-9]{20,})/gi],
+    ["Amplitude API Key",       /(?:amplitude[_\-]?(?:api[_\-]?)?key|AMPLITUDE_API_KEY)["\s:=\'`]+([a-f0-9]{32})/gi],
+    ["Intercom App ID",         /(?:intercom[_\-]?app[_\-]?id|INTERCOM_APP_ID)["\s:=\'`]+([a-z0-9]{8,})/gi],
+    ["Crisp Website ID",        /(?:crisp[_\-]?website[_\-]?id|CRISP_WEBSITE_ID)["\s:=\'`]+([a-f0-9\-]{36})/gi],
+    ["Pusher Key",              /(?:pusher[_\-]?(?:app[_\-]?)?key|PUSHER_KEY)["\s:=\'`]+([a-f0-9]{20})/gi],
+    ["Algolia API Key",         /(?:algolia[_\-]?(?:api[_\-]?)?key|ALGOLIA_API_KEY)["\s:=\'`]+([a-f0-9]{32})/gi],
+    ["Algolia App ID",          /(?:algolia[_\-]?(?:app[_\-]?)?id|ALGOLIA_APP_ID)["\s:=\'`]+([A-Z0-9]{10})/gi],
+    // ═══ MEDIUM-CONFIDENCE: Key=value patterns (validated by isRealSecret filter) ═══
+    ["Hardcoded Password",      /(?:password|passwd|pwd)\s*[=:]\s*["'`]([A-Za-z0-9!@#$%^&*\-_+=.]{8,60})["'`]/gi],
+    ["Hardcoded Secret",        /(?:secret|secret_key|secretKey)\s*[=:]\s*["'`]([A-Za-z0-9!@#$%^&*\-_+=.]{8,80})["'`]/gi],
+    ["Hardcoded API Key",       /(?:api[_\-]?key|apikey|apiKey|API_KEY)\s*[=:]\s*["'`]([A-Za-z0-9\-_\.]{16,80})["'`]/gi],
+    ["Hardcoded Token",         /(?:(?:auth|access|refresh|session|api)[_\-]?token)\s*[=:]\s*["'`]([A-Za-z0-9\-_\.+/=]{16,})["'`]/gi],
+    ["Hardcoded Credential",    /(?:credentials?|private_key|secret_key)\s*[=:]\s*["'`]([A-Za-z0-9\-_+=/.]{16,80})["'`]/gi],
+    ["Secret in Comment",       /(?:\/\/|\/\*|#)\s*(?:secret|password|token|key|api.?key)\s*[:=]\s*["'`]?([A-Za-z0-9\-_+=/.!@#$%^&*]{8,})["'`]?/gi],
+    // ═══ INFRASTRUCTURE: URLs, emails, endpoints ═══
+    ["Email Address",           /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g],
+    ["Internal URL",            /https?:\/\/(?:localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)[:\d\/][^\s"\'<>]*/gi],
+    ["GraphQL Endpoint",        /(?:graphql|gql)["\s:=\'`]*(https?:\/\/[^\s"\'`<>]{10,})/gi],
+    ["REST API Endpoint",       /https?:\/\/(?:api\.|backend\.|srv\.|service\.)[a-z0-9\-\.]+\/[^\s"\'`<>]{5,}/gi],
+    ["Discord Bot Token",       /(?:discord[_\-]?(?:bot[_\-]?)?token)\s*[=:]\s*["'`]([A-Za-z0-9\-_.]{50,80})["'`]/gi],
+    ["Docker Auth",             /(?:docker[_\-]?(?:auth|password|token))\s*[=:]\s*["'`]([A-Za-z0-9\-_+=/.]{8,})["'`]/gi],
+    ["Heroku API Key",          /(?:heroku[_\-]?api[_\-]?key|HEROKU_API_KEY)\s*[=:]\s*["'`]([a-f0-9\-]{36})["'`]/gi],
+    ["PayPal Client ID",        /(?:paypal[_\-]?client[_\-]?id|PAYPAL_CLIENT_ID)\s*[=:]\s*["'`]([A-Za-z0-9\-_]{20,80})["'`]/gi],
+    // ═══ ENV VARIABLES embedded in JS bundles ═══
+    ["Env Variable",            /(?:process\.env\.|import\.meta\.env\.|NEXT_PUBLIC_|REACT_APP_|VITE_|VUE_APP_|NUXT_)([A-Z_]{3,})\s*[=:]\s*["'`]([^"'`]{5,})["'`]/gi],
   ];
 
   interface WebSecret { type: string; value: string; source: string; }
@@ -7496,12 +7550,17 @@ export async function runWebPentest(targetUrl: string): Promise<{
       regex.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = regex.exec(src.content)) !== null) {
-        const value = (m[1] ?? m[0]).trim().replace(/^["'`]|["'`]$/g, "");
-        if (value.length < 8) continue;
-        const key = `${stype}:${value}`;
+        // For Env Variable pattern, use group 2 (value) and prepend env name
+        const rawValue = stype === "Env Variable" && m[2] ? m[2].trim() : (m[1] ?? m[0]).trim();
+        const value = rawValue.replace(/^["'`]|["'`]$/g, "");
+        if (value.length < 8 && stype !== "Email Address") continue;
+        // Apply false-positive filter
+        if (!isRealSecret(value, stype)) continue;
+        const displayType = stype === "Env Variable" && m[1] ? `Env: ${m[1]}` : stype;
+        const key = `${displayType}:${value}`;
         if (seenSecrets.has(key)) continue;
         seenSecrets.add(key);
-        allSecrets.push({ type: stype, value, source: src.name });
+        allSecrets.push({ type: displayType, value, source: src.name });
       }
     }
   }
@@ -8583,6 +8642,95 @@ if __name__ == "__main__":
           "أضف حدود استخدام (Quotas) يومية",
           "راقب الاستخدام في Google Cloud Console",
         ],
+      });
+    }
+    if (s.type.includes("PostHog")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "مفتاح PostHog API يكشف بيانات تحليلات المستخدمين والأحداث",
+        steps: [
+          "1. يقوم المخترق بنسخ مفتاح PostHog من كود JavaScript",
+          "2. يستخدم PostHog API لاستخراج بيانات المستخدمين والأحداث",
+          "3. يمكنه معرفة سلوك المستخدمين وتفاصيل الجلسات",
+          "4. يمكنه حقن أحداث وهمية لتشويه البيانات التحليلية",
+        ],
+        commands: [
+          `curl -H "Authorization: Bearer ${s.value}" "https://app.posthog.com/api/projects/"`,
+          `curl -H "Authorization: Bearer ${s.value}" "https://app.posthog.com/api/event/?limit=10"`,
+        ],
+        impact: "كشف بيانات المستخدمين، تتبع السلوك، تشويه التحليلات",
+        remediation: ["لا تعرض مفتاح PostHog في الكود الأمامي", "استخدم PostHog Proxy لإخفاء المفتاح", "قيّد صلاحيات المفتاح"],
+      });
+    }
+    if (s.type.includes("Convex")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "رابط Convex Cloud يكشف نقطة اتصال قاعدة البيانات الخلفية",
+        steps: [
+          "1. يقوم المخترق بنسخ رابط Convex Cloud من كود الموقع",
+          "2. يستخدم Convex Client للاتصال مباشرة بقاعدة البيانات",
+          "3. يستعلم عن البيانات والجداول المتاحة",
+          "4. إذا لم تكن القواعد الأمنية مُعدة بشكل صحيح — يمكنه قراءة/كتابة البيانات",
+        ],
+        commands: [
+          `npx convex dev --url ${s.value}`,
+          `curl "${s.value}/api/query" -d '{"path":"messages:list","args":{}}'`,
+        ],
+        impact: "الوصول إلى قاعدة البيانات، قراءة/كتابة البيانات، حذف السجلات",
+        remediation: ["أضف قواعد أمنية صارمة في Convex", "لا تسمح بالقراءة/الكتابة بدون مصادقة", "استخدم Row-Level Security"],
+      });
+    }
+    if (s.type.includes("OpenAI") || s.type.includes("Anthropic")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "مفتاح AI API يسمح باستخدام خدمات الذكاء الاصطناعي على حسابك",
+        steps: [
+          "1. يقوم المخترق بنسخ مفتاح API من كود الموقع",
+          "2. يستخدم المفتاح لإجراء آلاف الطلبات على نماذج AI",
+          "3. يستنزف رصيدك المالي بسرعة (GPT-4, Claude تكلفتهم عالية)",
+          "4. يمكنه استخدام المفتاح في تطبيقاته الخاصة",
+        ],
+        commands: [
+          `curl https://api.openai.com/v1/models -H "Authorization: Bearer ${s.value}"`,
+          `curl https://api.openai.com/v1/chat/completions -H "Authorization: Bearer ${s.value}" -d '{"model":"gpt-4","messages":[{"role":"user","content":"test"}]}'`,
+        ],
+        impact: "فاتورة مالية كبيرة، استنزاف الرصيد، استخدام غير مصرح به",
+        remediation: ["أعد توليد المفتاح فوراً", "لا تضع مفتاح AI API في الكود الأمامي", "استخدم Backend Proxy", "أضف Rate Limiting"],
+      });
+    }
+    if (s.type.includes("Database URL") || s.type.includes("Redis URL") || s.type.includes("SMTP")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "رابط اتصال مباشر بالبنية التحتية — قاعدة بيانات أو خادم بريد أو ذاكرة تخزين مؤقت",
+        steps: [
+          "1. يقوم المخترق بنسخ رابط الاتصال",
+          "2. يتصل مباشرة بالخدمة من أي مكان",
+          "3. يقرأ/يعدل/يحذف البيانات",
+          "4. يمكنه تصدير قاعدة البيانات كاملة",
+        ],
+        commands: [`# الاتصال المباشر:\n${s.value}`],
+        impact: "سرقة قاعدة البيانات كاملة، تعديل/حذف البيانات، تنفيذ أوامر على الخادم",
+        remediation: ["لا تعرض رابط الاتصال في الكود الأمامي أبداً", "استخدم متغيرات البيئة على الخادم فقط", "قيّد الوصول بـ IP Whitelist"],
+      });
+    }
+    if (s.type.includes("Sentry DSN")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "رابط Sentry DSN يسمح بإرسال أخطاء وهمية وقراءة معلومات المشروع",
+        steps: ["1. نسخ DSN", "2. إرسال أخطاء وهمية لتشويه بيانات Sentry", "3. كشف بنية المشروع الداخلية"],
+        commands: [`curl -X POST "${s.value}" -d '{"exception":{"values":[{"type":"Error","value":"Hacked"}]}}'`],
+        impact: "تشويه بيانات الأخطاء، كشف بنية التطبيق الداخلية",
+        remediation: ["قيّد DSN على domains محددة", "استخدم Rate Limiting في Sentry"],
+      });
+    }
+    if (s.type.includes("Vercel")) {
+      exploitGuides.push({
+        secretType: s.type, secretValue: s.value,
+        description: "توكن/معرف Vercel يكشف تفاصيل النشر والمشروع",
+        steps: ["1. نسخ المعرف", "2. استعلام Vercel API عن تفاصيل المشروع", "3. كشف متغيرات البيئة والإعدادات"],
+        commands: [`curl -H "Authorization: Bearer ${s.value}" "https://api.vercel.com/v9/projects"`],
+        impact: "كشف إعدادات المشروع، متغيرات البيئة، تاريخ النشر",
+        remediation: ["لا تعرض Vercel tokens في الكود", "استخدم Vercel Environment Variables"],
       });
     }
   }
