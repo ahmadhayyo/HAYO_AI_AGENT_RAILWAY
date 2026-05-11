@@ -7610,7 +7610,7 @@ if __name__ == "__main__":
   });
 
   // --- Header Injection / CRLF ---
-  const crlfProbes = [async () => {
+  const crlfProbes = [(async () => {
     try {
       const testUrl = `${baseUrl}/%0d%0aSet-Cookie:%20hacked=true`;
       const ctrl = new AbortController();
@@ -7622,7 +7622,7 @@ if __name__ == "__main__":
         vulnResults.push({ type: "CRLF Injection", severity: "high", url: testUrl, payload: "%0d%0aSet-Cookie: hacked=true", evidence: "Injected header reflected in response", exploitable: true });
       }
     } catch {}
-  }()];
+  })()];
 
   // --- Run all probes in parallel ---
   await Promise.allSettled([...sqliProbes, ...xssProbes, ...redirectProbes, ...traversalProbes, ...ssrfProbes, ...subdomainProbes, ...crlfProbes]);
@@ -8590,4 +8590,165 @@ function buildDeveloperMessage(
   lines.push(`— التاريخ: ${new Date().toLocaleString("ar-EG")}`);
 
   return lines.join("\n");
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// WEBSITE CLONING — استنساخ المواقع
+// ═══════════════════════════════════════════════════════════════
+
+export interface ClonedFile {
+  path: string;
+  type: "html" | "css" | "js" | "font" | "image" | "manifest" | "other";
+  size: number;
+  url: string;
+}
+
+export interface WebsiteCloneResult {
+  success: boolean;
+  url: string;
+  clonedAt: string;
+  totalFiles: number;
+  totalSizeBytes: number;
+  totalSizeFormatted: string;
+  files: ClonedFile[];
+  htmlContent: string;
+  technologies: string[];
+  cloneDir: string;
+}
+
+export async function cloneWebsite(targetUrl: string): Promise<WebsiteCloneResult> {
+  let url: URL;
+  try {
+    url = new URL(targetUrl.startsWith("http") ? targetUrl : `https://${targetUrl}`);
+  } catch {
+    throw new Error("رابط غير صالح");
+  }
+
+  const hostname = url.hostname;
+  const cloneId = `clone_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const cloneDir = path.join(os.tmpdir(), "hayo_clones", cloneId);
+  fs.mkdirSync(cloneDir, { recursive: true });
+
+  const files: ClonedFile[] = [];
+  const technologies: string[] = [];
+
+  // Step 1: Download main HTML
+  const mainHtml = await fetchWithTimeout(url.href, 15000);
+  if (!mainHtml.ok) throw new Error(`فشل في الوصول إلى الموقع: HTTP ${mainHtml.status}`);
+  const htmlText = await mainHtml.text();
+  const mainHeaders = Object.fromEntries(mainHtml.headers.entries());
+
+  // Detect technologies from headers
+  if (mainHeaders["server"]) technologies.push(`Server: ${mainHeaders["server"]}`);
+  if (mainHeaders["x-powered-by"]) technologies.push(mainHeaders["x-powered-by"]);
+  if (mainHeaders["x-workos-middleware"]) technologies.push("WorkOS AuthKit");
+  if (htmlText.includes("__NEXT_DATA__") || htmlText.includes("_next/static")) technologies.push("Next.js");
+  if (htmlText.includes("__NUXT__")) technologies.push("Nuxt.js");
+  if (htmlText.includes("react") || htmlText.includes("React")) technologies.push("React");
+  if (htmlText.includes("vue") || htmlText.includes("Vue")) technologies.push("Vue.js");
+  if (htmlText.includes("angular") || htmlText.includes("Angular")) technologies.push("Angular");
+
+  fs.writeFileSync(path.join(cloneDir, "index.html"), htmlText);
+  files.push({ path: "index.html", type: "html", size: htmlText.length, url: url.href });
+
+  // Step 2: Extract all resource URLs from HTML
+  const resourceUrls: { url: string; type: ClonedFile["type"] }[] = [];
+
+  // CSS files
+  const cssMatches = htmlText.matchAll(/href="([^"]*\.css[^"]*)"/gi);
+  for (const m of cssMatches) resourceUrls.push({ url: m[1], type: "css" });
+
+  // JS files
+  const jsMatches = htmlText.matchAll(/src="([^"]*\.js[^"]*)"/gi);
+  for (const m of jsMatches) resourceUrls.push({ url: m[1], type: "js" });
+
+  // Fonts
+  const fontMatches = htmlText.matchAll(/href="([^"]*\.woff2?[^"]*)"/gi);
+  for (const m of fontMatches) resourceUrls.push({ url: m[1], type: "font" });
+
+  // Images
+  const imgMatches = htmlText.matchAll(/(?:href|src)="([^"]*\.(?:png|jpg|jpeg|gif|svg|ico|webp)[^"]*)"/gi);
+  for (const m of imgMatches) resourceUrls.push({ url: m[1], type: "image" });
+
+  // Manifest
+  const manifestMatch = htmlText.match(/href="([^"]*manifest[^"]*)"/i);
+  if (manifestMatch) resourceUrls.push({ url: manifestMatch[1], type: "manifest" });
+
+  // Step 3: Download all resources in parallel
+  const downloadPromises = resourceUrls.map(async (res) => {
+    try {
+      const fullUrl = res.url.startsWith("http") ? res.url : `${url.origin}${res.url}`;
+      const resp = await fetchWithTimeout(fullUrl, 10000);
+      if (!resp.ok) return;
+
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      // Create local path (remove query strings, keep dir structure)
+      let localPath = res.url.startsWith("/") ? res.url.slice(1) : res.url;
+      localPath = localPath.split("?")[0];
+      if (!localPath || localPath.startsWith("http")) {
+        localPath = `assets/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${res.type}`;
+      }
+
+      const fullLocalPath = path.join(cloneDir, localPath);
+      fs.mkdirSync(path.dirname(fullLocalPath), { recursive: true });
+      fs.writeFileSync(fullLocalPath, buffer);
+
+      files.push({ path: localPath, type: res.type, size: buffer.length, url: fullUrl });
+    } catch {}
+  });
+
+  await Promise.allSettled(downloadPromises);
+
+  // Step 4: Also try to download additional pages (download, terms, privacy)
+  const additionalPages = ["/download", "/terms-of-service", "/privacy-policy", "/about", "/pricing"];
+  for (const pg of additionalPages) {
+    try {
+      const pgUrl = `${url.origin}${pg}`;
+      const resp = await fetchWithTimeout(pgUrl, 8000);
+      if (resp.ok && resp.headers.get("content-type")?.includes("text/html")) {
+        const pgHtml = await resp.text();
+        const pgFile = pg.slice(1) + ".html";
+        fs.writeFileSync(path.join(cloneDir, pgFile), pgHtml);
+        files.push({ path: pgFile, type: "html", size: pgHtml.length, url: pgUrl });
+      }
+    } catch {}
+  }
+
+  // Step 5: Create the self-contained single-file clone (inline CSS)
+  let selfContainedHtml = htmlText;
+  // Remove query strings from resource references for local serving
+  selfContainedHtml = selfContainedHtml.replace(/\?dpl=[^"']*/g, "");
+
+  // Calculate totals
+  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+  const totalFormatted = totalSize > 1024 * 1024
+    ? `${(totalSize / 1024 / 1024).toFixed(1)} MB`
+    : `${(totalSize / 1024).toFixed(1)} KB`;
+
+  return {
+    success: true,
+    url: url.href,
+    clonedAt: new Date().toISOString(),
+    totalFiles: files.length,
+    totalSizeBytes: totalSize,
+    totalSizeFormatted: totalFormatted,
+    files,
+    htmlContent: selfContainedHtml,
+    technologies,
+    cloneDir,
+  };
+}
+
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<globalThis.Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      signal: controller.signal,
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 HAYO-AI-Cipher7/10.0" },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }

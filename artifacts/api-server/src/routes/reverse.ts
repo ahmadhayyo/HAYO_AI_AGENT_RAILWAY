@@ -713,6 +713,49 @@ router.post("/web-pentest-full", async (req: Request, res: Response) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══════════════════ Website Clone ═══════════════════
+router.post("/clone-website", async (req: Request, res: Response) => {
+  extendTimeout(req, res, 300_000);
+  const { url } = req.body as { url?: string };
+  if (!url || typeof url !== "string" || url.trim().length < 4) {
+    res.status(400).json({ error: "أدخل رابط الموقع أولاً" });
+    return;
+  }
+  try {
+    const { cloneWebsite } = await import("../hayo/services/reverse-engineer.js");
+    const cloneResult = await cloneWebsite(url.trim());
+    res.json(cloneResult);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Download cloned website as ZIP
+router.get("/clone-download/:cloneId", async (req: Request, res: Response) => {
+  const { cloneId } = req.params;
+  const cloneDir = path.join(os.tmpdir(), "hayo_clones", cloneId);
+  if (!fs.existsSync(cloneDir)) {
+    res.status(404).json({ error: "النسخة غير موجودة" });
+    return;
+  }
+  try {
+    const archiver = await import("archiver");
+    const archive = archiver.default("zip", { zlib: { level: 9 } });
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="cloned_website_${cloneId}.zip"`);
+    archive.pipe(res);
+    archive.directory(cloneDir, false);
+    await archive.finalize();
+  } catch (e: any) {
+    // Fallback: just send the index.html
+    const indexPath = path.join(cloneDir, "index.html");
+    if (fs.existsSync(indexPath)) {
+      res.setHeader("Content-Type", "text/html");
+      res.sendFile(indexPath);
+    } else {
+      res.status(500).json({ error: e.message });
+    }
+  }
+});
+
 async function sendPentestToTelegram(result: any) {
   const botToken = process.env.PENTEST_BOT_TOKEN;
   const chatId = process.env.PENTEST_CHAT_ID;

@@ -644,6 +644,10 @@ export default function ReverseEngineer(){
   const[wpShowReport,setWpShowReport]=useState(false);
   const[wpShowDevMsg,setWpShowDevMsg]=useState(false);
   const[wpShowExposedSecrets,setWpShowExposedSecrets]=useState(false);
+  // Website Clone
+  const[cloneLoading,setCloneLoading]=useState(false);
+  const[cloneResult,setCloneResult]=useState<any>(null);
+  const[cloneUrl,setCloneUrl]=useState("");
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -957,6 +961,28 @@ export default function ReverseEngineer(){
       setWpResult(d);setWpExpanded(new Set([1,2,3,4,5,6,7,8,9,10,11,12,13,14]));
       toast.success(`اكتمل اختبار اختراق الويب — درجة الخطورة: ${d.summary?.riskScore}/100`);
     }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setWpLoading(false);}
+  };
+
+  const doCloneWebsite=async(targetUrl?:string)=>{
+    const urlToClone=targetUrl||cloneUrl||wpUrl;
+    if(!urlToClone.trim()){toast.error("أدخل رابط الموقع أولاً");return;}
+    setCloneLoading(true);setCloneResult(null);
+    try{
+      const r=await fetchRE("/api/reverse/clone-website",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:urlToClone.trim()})});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.error);
+      setCloneResult(d);
+      toast.success(`تم استنساخ الموقع — ${d.totalFiles} ملف (${d.totalSizeFormatted})`);
+    }catch(e:any){toast.error(`فشل الاستنساخ: ${e.message}`);}finally{setCloneLoading(false);}
+  };
+
+  const downloadClonedHtml=()=>{
+    if(!cloneResult?.htmlContent)return;
+    const blob=new Blob([cloneResult.htmlContent],{type:"text/html"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download=`cloned_${new URL(cloneResult.url).hostname}_${Date.now()}.html`;
+    a.click();URL.revokeObjectURL(url);
   };
 
   const doDeepFirebaseAudit=async()=>{
@@ -1784,9 +1810,13 @@ export default function ReverseEngineer(){
               <input value={wpUrl} onChange={e=>setWpUrl(e.target.value)} placeholder="أدخل رابط الموقع — مثال: https://example.com" className="w-full bg-muted/30 border-2 border-purple-500/30 rounded-2xl px-12 py-4 text-base text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-purple-500/60 transition-all font-mono" onKeyDown={e=>{if(e.key==="Enter"&&wpUrl.trim())doWebPentest();}}/>
               <Link2 className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground"/>
             </div>
-            <Button onClick={doWebPentest} disabled={!wpUrl.trim()||wpLoading} size="lg" className="gap-3 bg-gradient-to-r from-purple-600 via-pink-600 to-red-600 hover:from-purple-500 hover:via-pink-500 hover:to-red-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-purple-900/40 font-bold w-full">
+            <Button onClick={doWebPentest} disabled={!wpUrl.trim()||wpLoading||cloneLoading} size="lg" className="gap-3 bg-gradient-to-r from-purple-600 via-pink-600 to-red-600 hover:from-purple-500 hover:via-pink-500 hover:to-red-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-purple-900/40 font-bold w-full">
               {wpLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Zap className="w-6 h-6"/>}
               {wpLoading?"جاري اختبار الموقع...":"ابدأ العمل — اختبار اختراق الويب"}
+            </Button>
+            <Button onClick={()=>doCloneWebsite(wpUrl)} disabled={!wpUrl.trim()||cloneLoading||wpLoading} size="lg" className="gap-3 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:via-teal-500 hover:to-cyan-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-emerald-900/40 font-bold w-full">
+              {cloneLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Layers className="w-6 h-6"/>}
+              {cloneLoading?"جاري استنساخ الموقع...":"استنساخ الموقع بالكامل"}
             </Button>
           </div>
           <div className="grid grid-cols-7 gap-1 w-full max-w-xl">
@@ -1849,6 +1879,66 @@ export default function ReverseEngineer(){
           })}
         </div>}
 
+        {/* ══ CLONE LOADING ══ */}
+        {cloneLoading&&!wpLoading&&!wpResult&&<div className="bg-gradient-to-r from-emerald-900/40 to-teal-900/40 border border-emerald-500/30 rounded-2xl p-5">
+          <div className="flex items-center gap-3">
+            <Loader2 className="w-6 h-6 animate-spin text-emerald-400"/>
+            <div>
+              <h2 className="text-lg font-bold text-emerald-300">جاري استنساخ الموقع...</h2>
+              <p className="text-xs text-muted-foreground">تحميل HTML/CSS/JS/الصور والخطوط — يرجى الانتظار</p>
+            </div>
+          </div>
+        </div>}
+
+        {/* ══ CLONE RESULT (standalone — no pentest) ══ */}
+        {cloneResult&&!wpResult&&<div className="bg-gradient-to-r from-emerald-900/30 to-teal-900/30 border-2 border-emerald-500/40 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <h3 className="text-lg font-bold text-emerald-300 flex items-center gap-2"><Layers className="w-5 h-5"/>نتائج استنساخ الموقع — Website Clone</h3>
+            <div className="flex items-center gap-2">
+              <Button onClick={downloadClonedHtml} variant="outline" size="sm" className="gap-2 border-emerald-500/30 text-emerald-300"><Download className="w-4 h-4"/>تحميل النسخة (HTML)</Button>
+              <Button onClick={()=>{setCloneResult(null);setCloneUrl("");}} variant="outline" size="sm" className="gap-2 border-red-500/30 text-red-300"><X className="w-4 h-4"/>إغلاق</Button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="p-3 rounded-xl text-center border bg-emerald-500/10 border-emerald-500/30">
+              <div className="text-2xl font-bold text-emerald-300">{cloneResult.totalFiles}</div>
+              <div className="text-[10px] text-muted-foreground">ملفات مستنسخة</div>
+            </div>
+            <div className="p-3 rounded-xl text-center border bg-teal-500/10 border-teal-500/30">
+              <div className="text-2xl font-bold text-teal-300">{cloneResult.totalSizeFormatted}</div>
+              <div className="text-[10px] text-muted-foreground">الحجم الكلي</div>
+            </div>
+            <div className="p-3 rounded-xl text-center border bg-cyan-500/10 border-cyan-500/30">
+              <div className="text-2xl font-bold text-cyan-300">{cloneResult.technologies?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground">تقنيات مكتشفة</div>
+            </div>
+            <div className="p-3 rounded-xl text-center border bg-blue-500/10 border-blue-500/30">
+              <div className="text-2xl font-bold text-blue-300">{cloneResult.files?.filter((f:any)=>f.type==="js").length||0}</div>
+              <div className="text-[10px] text-muted-foreground">ملفات JavaScript</div>
+            </div>
+          </div>
+          {cloneResult.technologies?.length>0&&<div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground">التقنيات:</span>
+            {cloneResult.technologies.map((t:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">{t}</span>)}
+          </div>}
+          <div className="space-y-1 max-h-60 overflow-y-auto">
+            <div className="text-sm font-semibold text-emerald-300 mb-2">الملفات المستنسخة:</div>
+            {cloneResult.files?.map((f:any,i:number)=>(
+              <div key={i} className="flex items-center justify-between bg-muted/10 rounded-lg px-3 py-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${f.type==="html"?"bg-orange-400":f.type==="js"?"bg-yellow-400":f.type==="css"?"bg-blue-400":f.type==="font"?"bg-purple-400":f.type==="image"?"bg-green-400":"bg-gray-400"}`}/>
+                  <span className="font-mono text-muted-foreground">{f.path}</span>
+                </div>
+                <span className="text-muted-foreground">{f.size>1024?(f.size/1024).toFixed(1)+" KB":f.size+" B"}</span>
+              </div>
+            ))}
+          </div>
+          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 text-center">
+            <p className="text-sm text-emerald-200 font-semibold">تم استنساخ الموقع بنجاح — هذا يثبت أن واجهة الموقع الأمامية (HTML/CSS/JS) قابلة للنسخ الكامل من قبل أي مهاجم</p>
+            <p className="text-xs text-muted-foreground mt-1">التاريخ: {new Date(cloneResult.clonedAt).toLocaleString("ar-EG")} · الموقع: {cloneResult.url}</p>
+          </div>
+        </div>}
+
         {/* ══ WEB PENTEST — Results ══ */}
         {wpResult&&<>
           <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5">
@@ -1863,6 +1953,7 @@ export default function ReverseEngineer(){
                 <Button onClick={()=>setWpShowReport(v=>!v)} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><BookOpen className="w-4 h-4"/>{wpShowReport?"إخفاء التقرير":"التقرير الكامل"}</Button>
                 <Button onClick={()=>setWpShowExposedSecrets(v=>!v)} variant="outline" className="gap-2 border-red-500/30 text-red-300"><Key className="w-4 h-4"/>{wpShowExposedSecrets?"إخفاء الأسرار":"الأسرار المكشوفة"}</Button>
                 <Button onClick={()=>setWpShowDevMsg(v=>!v)} variant="outline" className="gap-2 border-yellow-500/30 text-yellow-300"><AlertTriangle className="w-4 h-4"/>{wpShowDevMsg?"إخفاء رسالة المبرمج":"رسالة للمبرمج"}</Button>
+                <Button onClick={()=>doCloneWebsite(wpResult?.targetUrl||wpUrl)} disabled={cloneLoading} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300">{cloneLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Layers className="w-4 h-4"/>}{cloneLoading?"جاري الاستنساخ...":"استنساخ الموقع"}</Button>
               </div>
             </div>
           </div>
@@ -2111,6 +2202,55 @@ export default function ReverseEngineer(){
             </div>
             <div className="bg-black/30 border border-yellow-500/20 rounded-2xl p-5 max-h-[600px] overflow-y-auto">
               <pre className="whitespace-pre-wrap text-[12px] text-yellow-100/90 leading-relaxed font-mono" dir="rtl">{wpResult.developerMessage||buildDeveloperMessageFallback(wpResult)}</pre>
+            </div>
+          </div>}
+
+          {/* ══ WEBSITE CLONE RESULT ══ */}
+          {cloneResult&&<div className="bg-gradient-to-r from-emerald-900/30 to-teal-900/30 border-2 border-emerald-500/40 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <h3 className="text-lg font-bold text-emerald-300 flex items-center gap-2"><Layers className="w-5 h-5"/>نتائج استنساخ الموقع — Website Clone</h3>
+              <div className="flex items-center gap-2">
+                <Button onClick={downloadClonedHtml} variant="outline" size="sm" className="gap-2 border-emerald-500/30 text-emerald-300"><Download className="w-4 h-4"/>تحميل النسخة (HTML)</Button>
+                <Button onClick={()=>setCloneResult(null)} variant="outline" size="sm" className="gap-2 border-red-500/30 text-red-300"><X className="w-4 h-4"/>إغلاق</Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-xl text-center border bg-emerald-500/10 border-emerald-500/30">
+                <div className="text-2xl font-bold text-emerald-300">{cloneResult.totalFiles}</div>
+                <div className="text-[10px] text-muted-foreground">ملفات مستنسخة</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-teal-500/10 border-teal-500/30">
+                <div className="text-2xl font-bold text-teal-300">{cloneResult.totalSizeFormatted}</div>
+                <div className="text-[10px] text-muted-foreground">الحجم الكلي</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-cyan-500/10 border-cyan-500/30">
+                <div className="text-2xl font-bold text-cyan-300">{cloneResult.technologies?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">تقنيات مكتشفة</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-blue-500/10 border-blue-500/30">
+                <div className="text-2xl font-bold text-blue-300">{cloneResult.files?.filter((f:any)=>f.type==="js").length||0}</div>
+                <div className="text-[10px] text-muted-foreground">ملفات JavaScript</div>
+              </div>
+            </div>
+            {cloneResult.technologies?.length>0&&<div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground">التقنيات:</span>
+              {cloneResult.technologies.map((t:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">{t}</span>)}
+            </div>}
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              <div className="text-sm font-semibold text-emerald-300 mb-2">الملفات المستنسخة:</div>
+              {cloneResult.files?.map((f:any,i:number)=>(
+                <div key={i} className="flex items-center justify-between bg-muted/10 rounded-lg px-3 py-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${f.type==="html"?"bg-orange-400":f.type==="js"?"bg-yellow-400":f.type==="css"?"bg-blue-400":f.type==="font"?"bg-purple-400":f.type==="image"?"bg-green-400":"bg-gray-400"}`}/>
+                    <span className="font-mono text-muted-foreground">{f.path}</span>
+                  </div>
+                  <span className="text-muted-foreground">{f.size>1024?(f.size/1024).toFixed(1)+" KB":f.size+" B"}</span>
+                </div>
+              ))}
+            </div>
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 text-center">
+              <p className="text-sm text-emerald-200 font-semibold">تم استنساخ الموقع بنجاح — هذا يثبت أن واجهة الموقع الأمامية (HTML/CSS/JS) قابلة للنسخ الكامل من قبل أي مهاجم</p>
+              <p className="text-xs text-muted-foreground mt-1">التاريخ: {new Date(cloneResult.clonedAt).toLocaleString("ar-EG")} · الموقع: {cloneResult.url}</p>
             </div>
           </div>}
 
