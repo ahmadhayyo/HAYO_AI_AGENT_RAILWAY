@@ -2113,6 +2113,124 @@ export default function ReverseEngineer(){
               <pre className="whitespace-pre-wrap text-[12px] text-yellow-100/90 leading-relaxed font-mono" dir="rtl">{wpResult.developerMessage||buildDeveloperMessageFallback(wpResult)}</pre>
             </div>
           </div>}
+
+          {/* ══ DEEP VULNERABILITY SCAN RESULTS ══ */}
+          {wpResult.deepScan&&(wpResult.deepScan.totalVulns>0||wpResult.deepScan.subdomains?.length>0)&&<div className="bg-gradient-to-r from-red-900/30 to-purple-900/30 border-2 border-red-500/40 rounded-2xl p-5 space-y-4">
+            <h3 className="text-lg font-bold text-red-300 flex items-center gap-2"><Scan className="w-5 h-5"/>نتائج الفحص العميق — Deep Vulnerability Scan</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className={`p-3 rounded-xl text-center border ${wpResult.deepScan.criticalVulns>0?"bg-red-500/20 border-red-500/40":"bg-muted/10 border-muted/20"}`}>
+                <div className="text-2xl font-bold text-red-400">{wpResult.deepScan.criticalVulns||0}</div>
+                <div className="text-[10px] text-muted-foreground">ثغرات حرجة</div>
+              </div>
+              <div className={`p-3 rounded-xl text-center border ${wpResult.deepScan.highVulns>0?"bg-yellow-500/20 border-yellow-500/40":"bg-muted/10 border-muted/20"}`}>
+                <div className="text-2xl font-bold text-yellow-400">{wpResult.deepScan.highVulns||0}</div>
+                <div className="text-[10px] text-muted-foreground">ثغرات عالية</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-purple-500/10 border-purple-500/20">
+                <div className="text-2xl font-bold text-purple-300">{wpResult.deepScan.totalVulns||0}</div>
+                <div className="text-[10px] text-muted-foreground">إجمالي الثغرات</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-cyan-500/10 border-cyan-500/20">
+                <div className="text-2xl font-bold text-cyan-300">{wpResult.deepScan.subdomains?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">نطاقات فرعية</div>
+              </div>
+            </div>
+            {wpResult.deepScan.vulnerabilities?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-red-300">الثغرات المكتشفة:</div>
+              <div className="bg-black/40 rounded-xl p-4 space-y-2 max-h-[300px] overflow-y-auto">
+                {wpResult.deepScan.vulnerabilities.map((v:any,i:number)=>(
+                  <div key={i} className={`p-3 rounded-lg border ${v.severity==="critical"?"bg-red-500/10 border-red-500/30":"bg-yellow-500/10 border-yellow-500/30"}`}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${v.severity==="critical"?"bg-red-500/30 text-red-300":"bg-yellow-500/30 text-yellow-300"}`}>{v.severity.toUpperCase()}</span>
+                      <span className="text-[11px] font-bold text-purple-300">{v.type}</span>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground mt-1">URL: <code className="text-red-200 text-[10px]">{v.url}</code></div>
+                    <div className="text-[11px] text-muted-foreground">Payload: <code className="text-yellow-200 text-[10px]">{v.payload}</code></div>
+                    <div className="text-[11px] text-muted-foreground">الدليل: <span className="text-green-300">{v.evidence}</span></div>
+                  </div>
+                ))}
+              </div>
+            </div>}
+            {wpResult.deepScan.subdomains?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Globe className="w-4 h-4"/>النطاقات الفرعية النشطة ({wpResult.deepScan.subdomains.length})</div>
+              <div className="bg-black/40 rounded-xl p-4 space-y-1 max-h-[200px] overflow-y-auto">
+                {wpResult.deepScan.subdomains.map((s:any,i:number)=>(
+                  <div key={i} className="flex items-center justify-between p-2 rounded-lg hover:bg-cyan-500/5">
+                    <span className="text-[11px] text-cyan-300 font-mono">{s.subdomain}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full ${s.status<400?"bg-green-500/20 text-green-300":"bg-yellow-500/20 text-yellow-300"}`}>HTTP {s.status}</span>
+                      <span className="text-[10px] text-muted-foreground">{s.server}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>}
+          </div>}
+
+          {/* ══ EXPLOITATION GUIDES ══ */}
+          {wpResult.exploitGuides?.length>0&&<div className="bg-gradient-to-r from-orange-900/30 to-red-900/30 border-2 border-orange-500/40 rounded-2xl p-5 space-y-4">
+            <h3 className="text-lg font-bold text-orange-300 flex items-center gap-2"><Fingerprint className="w-5 h-5"/>أدلة الاستغلال العملية — كيف يخترق الهاكرز باستخدام كل سر ({wpResult.exploitGuides.length})</h3>
+            <div className="text-[11px] text-orange-200/70 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0"/>هذا القسم يشرح الخطوات العملية التي يستخدمها المخترقون لاستغلال كل سر مكتشف — لأغراض التعلم والحماية فقط
+            </div>
+            <div className="space-y-3 max-h-[600px] overflow-y-auto">
+              {wpResult.exploitGuides.map((guide:any,idx:number)=>(
+                <div key={idx} className="bg-black/40 border border-orange-500/20 rounded-xl overflow-hidden">
+                  <div className="p-4 cursor-pointer hover:bg-orange-500/5" onClick={()=>{
+                    const el=document.getElementById(`exploit-guide-${idx}`);
+                    if(el)el.style.display=el.style.display==="none"?"block":"none";
+                  }}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Key className="w-4 h-4 text-red-400"/>
+                        <span className="text-[12px] font-bold text-orange-300">{guide.secretType}</span>
+                      </div>
+                      <ChevronDown className="w-4 h-4 text-muted-foreground"/>
+                    </div>
+                    <code className="text-[11px] text-red-200 font-mono block mt-1 select-all break-all">{guide.secretValue}</code>
+                    <p className="text-[10px] text-muted-foreground mt-1">{guide.description}</p>
+                  </div>
+                  <div id={`exploit-guide-${idx}`} style={{display:"none"}} className="border-t border-orange-500/20 p-4 space-y-3">
+                    <div>
+                      <div className="text-[11px] font-bold text-red-300 mb-2">خطوات الاستغلال (كما يفعلها المخترق):</div>
+                      <div className="space-y-1">
+                        {guide.steps.map((step:string,si:number)=>(
+                          <div key={si} className="text-[11px] text-red-200/80 flex items-start gap-2">
+                            <span className="text-red-400 flex-shrink-0">▸</span>{step}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-bold text-yellow-300 mb-2">الأوامر الفعلية:</div>
+                      <div className="bg-black/60 rounded-lg p-3 space-y-1">
+                        {guide.commands.map((cmd:string,ci:number)=>(
+                          <div key={ci} className="flex items-center gap-2 group">
+                            <code className="text-[10px] text-green-300 font-mono flex-1 select-all break-all">$ {cmd}</code>
+                            <Copy className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 cursor-pointer" onClick={(e:any)=>{e.stopPropagation();navigator.clipboard.writeText(cmd);toast.success("تم نسخ الأمر");}}/>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+                      <div className="text-[11px] font-bold text-red-300 mb-1">التأثير:</div>
+                      <div className="text-[11px] text-red-200/80">{guide.impact}</div>
+                    </div>
+                    <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
+                      <div className="text-[11px] font-bold text-green-300 mb-2">خطوات الإصلاح والحماية:</div>
+                      <div className="space-y-1">
+                        {guide.remediation.map((fix:string,fi:number)=>(
+                          <div key={fi} className="text-[11px] text-green-200/80 flex items-start gap-2">
+                            <span className="text-green-400 flex-shrink-0">{fi+1}.</span>{fix}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>}
         </>}
 
         {/* ── Sequential Pipeline: Live Progress ── */}
