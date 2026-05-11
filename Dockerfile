@@ -153,5 +153,5 @@ RUN pnpm --filter @workspace/api-server run build
 
 EXPOSE 8080
 
-# Start the application
+# Start the application (Cipher-7 v7.0 — 14 phases)
 CMD ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
