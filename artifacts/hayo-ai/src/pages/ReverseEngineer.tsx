@@ -18,7 +18,7 @@ import {
   GitBranch, Globe, Key, Terminal, Scan, Fingerprint,
   ToggleLeft, ToggleRight, Rocket, Flame, Settings,
   Keyboard, Database, Activity, TrendingUp, BarChart3, Code,
-  Microscope, Network, FileSearch, Diff, Layers, FileOutput,
+  Microscope, Network, FileSearch, Diff, Layers, FileOutput, FileText,
   ArrowUpDown, Braces, Hash, Link2, type LucideIcon,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -644,6 +644,7 @@ export default function ReverseEngineer(){
   const[wpShowReport,setWpShowReport]=useState(false);
   const[wpShowDevMsg,setWpShowDevMsg]=useState(false);
   const[wpShowExposedSecrets,setWpShowExposedSecrets]=useState(false);
+  const[wpShowPoE,setWpShowPoE]=useState(false);
   // Website Clone
   const[cloneLoading,setCloneLoading]=useState(false);
   const[cloneResult,setCloneResult]=useState<any>(null);
@@ -1948,10 +1949,11 @@ export default function ReverseEngineer(){
                 <p className="text-xs text-muted-foreground mt-1">الموقع: <span className="text-purple-300 font-mono">{wpResult.targetUrl}</span> · {new Date(wpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
-                <Button onClick={()=>{setWpResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);setWpShowDevMsg(false);setWpShowExposedSecrets(false);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
+                <Button onClick={()=>{setWpResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);setWpShowDevMsg(false);setWpShowExposedSecrets(false);setWpShowPoE(false);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
                 <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`web-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
                 <Button onClick={()=>setWpShowReport(v=>!v)} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><BookOpen className="w-4 h-4"/>{wpShowReport?"إخفاء التقرير":"التقرير الكامل"}</Button>
                 <Button onClick={()=>setWpShowExposedSecrets(v=>!v)} variant="outline" className="gap-2 border-red-500/30 text-red-300"><Key className="w-4 h-4"/>{wpShowExposedSecrets?"إخفاء الأسرار":"الأسرار المكشوفة"}</Button>
+                <Button onClick={()=>setWpShowPoE(v=>!v)} variant="outline" className={`gap-2 ${wpResult.proof_of_exposure?.totalExposures>0?"border-red-500/50 text-red-300 bg-red-500/10":"border-emerald-500/30 text-emerald-300"}`}><Shield className="w-4 h-4"/>{wpShowPoE?"إخفاء PoE":`إثبات التعرض (${wpResult.proof_of_exposure?.totalExposures||0})`}</Button>
                 <Button onClick={()=>setWpShowDevMsg(v=>!v)} variant="outline" className="gap-2 border-yellow-500/30 text-yellow-300"><AlertTriangle className="w-4 h-4"/>{wpShowDevMsg?"إخفاء رسالة المبرمج":"رسالة للمبرمج"}</Button>
                 <Button onClick={()=>doCloneWebsite(wpResult?.targetUrl||wpUrl)} disabled={cloneLoading} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300">{cloneLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Layers className="w-4 h-4"/>}{cloneLoading?"جاري الاستنساخ...":"استنساخ الموقع"}</Button>
               </div>
@@ -2180,6 +2182,136 @@ export default function ReverseEngineer(){
                   </div>
                 ))}
               </div>
+            </div>}
+          </div>}
+
+          {/* ══ PROOF OF EXPOSURE (PoE) — Deep Asset Discovery ══ */}
+          {wpShowPoE&&wpResult.proof_of_exposure&&<div className="bg-gradient-to-r from-red-900/40 via-orange-900/30 to-yellow-900/40 border-2 border-red-500/50 rounded-2xl p-5 space-y-5">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-red-300 flex items-center gap-2"><Shield className="w-5 h-5"/>إثبات التعرض الفعلي — Proof of Exposure (PoE)</h3>
+              <div className="flex items-center gap-2">
+                <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult.proof_of_exposure,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`poe-report-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" size="sm" className="gap-1 text-[10px] border-red-500/30 text-red-300"><Download className="w-3 h-3"/>تصدير PoE</Button>
+              </div>
+            </div>
+
+            {/* PoE Summary Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className={`p-4 rounded-xl border text-center ${wpResult.proof_of_exposure.extracted_plaintext_secrets?.length>0?"bg-red-500/10 border-red-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-red-400">{wpResult.proof_of_exposure.extracted_plaintext_secrets?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">أسرار نص صريح</div>
+              </div>
+              <div className={`p-4 rounded-xl border text-center ${wpResult.proof_of_exposure.exposed_config_files?.length>0?"bg-orange-500/10 border-orange-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-orange-400">{wpResult.proof_of_exposure.exposed_config_files?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">ملفات تكوين مكشوفة</div>
+              </div>
+              <div className={`p-4 rounded-xl border text-center ${wpResult.proof_of_exposure.lfi_proof?.length>0?"bg-yellow-500/10 border-yellow-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-yellow-400">{wpResult.proof_of_exposure.lfi_proof?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">تسريب LFI مؤكد</div>
+              </div>
+              <div className={`p-4 rounded-xl border text-center ${wpResult.proof_of_exposure.ssrf_proof?.length>0?"bg-cyan-500/10 border-cyan-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-cyan-400">{wpResult.proof_of_exposure.ssrf_proof?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">SSRF مؤكد</div>
+              </div>
+            </div>
+
+            {/* Phase 1: Extracted Plaintext Secrets */}
+            {wpResult.proof_of_exposure.extracted_plaintext_secrets?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-red-300 flex items-center gap-2"><Key className="w-4 h-4"/>المرحلة 1: الأسرار المستخرجة — نص صريح بدون إخفاء ({wpResult.proof_of_exposure.extracted_plaintext_secrets.length})</div>
+              <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-3">
+                <div className="text-[10px] text-red-300/80 flex items-center gap-2 mb-2"><AlertTriangle className="w-3 h-3"/>جميع القيم معروضة بالكامل كدليل على التعرض الفعلي</div>
+              </div>
+              <div className="bg-black/40 rounded-xl p-4 max-h-[500px] overflow-y-auto space-y-2">
+                {wpResult.proof_of_exposure.extracted_plaintext_secrets.map((s:any,i:number)=>(
+                  <div key={i} className="flex flex-col gap-1 p-3 rounded-lg bg-red-500/5 border border-red-500/20 hover:border-red-500/40 transition-all cursor-pointer" onClick={()=>{navigator.clipboard.writeText(s.value);toast.success("تم نسخ القيمة");}}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-red-400">{s.type}</span>
+                      <span className="text-[9px] text-muted-foreground bg-muted/20 px-2 py-0.5 rounded-full max-w-[300px] truncate">{s.source}</span>
+                    </div>
+                    <code className="text-[12px] text-red-200 font-mono break-all select-all">{s.value}</code>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* Phase 2: Exposed Config Files */}
+            {wpResult.proof_of_exposure.exposed_config_files?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><FileText className="w-4 h-4"/>المرحلة 2: ملفات التكوين المكشوفة ({wpResult.proof_of_exposure.exposed_config_files.length})</div>
+              <div className="space-y-3">
+                {wpResult.proof_of_exposure.exposed_config_files.map((cf:any,i:number)=>(
+                  <div key={i} className="bg-orange-500/5 border border-orange-500/20 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold text-orange-400">{cf.path}</span>
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/30">HTTP {cf.status}</span>
+                        <span className="text-[9px] text-muted-foreground">{cf.size} bytes</span>
+                      </div>
+                      <Button onClick={()=>{navigator.clipboard.writeText(cf.rawContent);toast.success("تم نسخ المحتوى الخام");}} variant="outline" size="sm" className="gap-1 text-[10px] border-orange-500/30 text-orange-300"><Copy className="w-3 h-3"/>نسخ الخام</Button>
+                    </div>
+                    {cf.parsedKeys?.length>0&&<div className="space-y-1">
+                      <div className="text-[10px] font-semibold text-orange-300">المفاتيح الحساسة المستخرجة ({cf.parsedKeys.length}):</div>
+                      <div className="bg-black/40 rounded-lg p-3 max-h-48 overflow-y-auto space-y-1">
+                        {cf.parsedKeys.map((k:any,ki:number)=>(
+                          <div key={ki} className="flex items-start gap-2 text-[11px] font-mono cursor-pointer hover:bg-orange-500/10 rounded p-1" onClick={()=>{navigator.clipboard.writeText(k.value);toast.success("تم نسخ القيمة");}}>
+                            <span className="text-orange-400 font-bold shrink-0">{k.key}</span>
+                            <span className="text-orange-200/60">=</span>
+                            <span className="text-red-200 break-all select-all">{k.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>}
+                    <details className="group">
+                      <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-orange-300">عرض المحتوى الخام الكامل</summary>
+                      <pre className="mt-2 bg-black/50 rounded-lg p-3 text-[10px] text-orange-200/70 font-mono whitespace-pre-wrap max-h-64 overflow-y-auto select-all">{cf.rawContent}</pre>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* Phase 3: LFI Proof */}
+            {wpResult.proof_of_exposure.lfi_proof?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-yellow-300 flex items-center gap-2"><AlertTriangle className="w-4 h-4"/>المرحلة 3: إثبات تسريب LFI — محتوى خام ({wpResult.proof_of_exposure.lfi_proof.length})</div>
+              <div className="space-y-3">
+                {wpResult.proof_of_exposure.lfi_proof.map((r:any,i:number)=>(
+                  <div key={i} className="bg-yellow-500/5 border border-yellow-500/20 rounded-xl p-4 space-y-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/30 font-bold">{r.leakType}</span>
+                        <span className="text-[10px] text-yellow-300 font-mono">{r.payload}</span>
+                      </div>
+                      <Button onClick={()=>{navigator.clipboard.writeText(r.rawContent);toast.success("تم نسخ المحتوى المسرّب");}} variant="outline" size="sm" className="gap-1 text-[10px] border-yellow-500/30 text-yellow-300"><Copy className="w-3 h-3"/>نسخ</Button>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground break-all">{r.url}</div>
+                    <pre className="bg-black/50 rounded-lg p-3 text-[10px] text-yellow-200/80 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto select-all">{r.rawContent}</pre>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* Phase 4: SSRF Proof */}
+            {wpResult.proof_of_exposure.ssrf_proof?.length>0&&<div className="space-y-2">
+              <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Database className="w-4 h-4"/>المرحلة 4: إثبات SSRF — بيانات السحابة ({wpResult.proof_of_exposure.ssrf_proof.length})</div>
+              <div className="space-y-3">
+                {wpResult.proof_of_exposure.ssrf_proof.map((r:any,i:number)=>(
+                  <div key={i} className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-4 space-y-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${r.credentialsFound?"bg-red-500/20 text-red-300 border border-red-500/30":"bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"}`}>{r.credentialsFound?"بيانات اعتماد!":"بيانات وصفية"}</span>
+                        <span className="text-[10px] text-cyan-300 font-bold">{r.provider}</span>
+                      </div>
+                      <Button onClick={()=>{navigator.clipboard.writeText(r.rawContent);toast.success("تم نسخ البيانات");}} variant="outline" size="sm" className="gap-1 text-[10px] border-cyan-500/30 text-cyan-300"><Copy className="w-3 h-3"/>نسخ</Button>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground break-all">{r.url}</div>
+                    <pre className="bg-black/50 rounded-lg p-3 text-[10px] text-cyan-200/80 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto select-all">{r.rawContent}</pre>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* No findings */}
+            {wpResult.proof_of_exposure.totalExposures===0&&<div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5 text-center">
+              <div className="text-lg font-bold text-emerald-400">لم يتم تأكيد أي تسريبات فعلية</div>
+              <div className="text-sm text-muted-foreground mt-1">جميع ملفات التكوين محمية — لم يتم كشف أسرار نص صريح — لا تسريبات LFI أو SSRF</div>
             </div>}
           </div>}
 
