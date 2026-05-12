@@ -7091,24 +7091,280 @@ async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
   const headers: Record<string, string> = {};
   let status = 0;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
-  try {
-    const resp = await fetch(targetUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-      },
-      redirect: "follow",
-      signal: controller.signal,
-    });
-    status = resp.status;
-    finalUrl = resp.url || targetUrl;
-    html = await resp.text();
-    resp.headers.forEach((v, k) => { headers[k] = v; });
-  } finally {
-    clearTimeout(timeout);
+  // ═══ STEALTH BROWSER PROFILES — WAF/Bot Bypass ═══
+  const stealthProfiles = [
+    {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "gzip, deflate, br, zstd",
+      "Cache-Control": "max-age=0",
+      "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1",
+      "Upgrade-Insecure-Requests": "1",
+      "Priority": "u=0, i",
+    },
+    {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+    },
+    {
+      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.5",
+      "Accept-Encoding": "gzip, deflate, br, zstd",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1",
+      "Upgrade-Insecure-Requests": "1",
+      "DNT": "1",
+      "Connection": "keep-alive",
+      "Priority": "u=0, i",
+    },
+    {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "gzip, deflate, br, zstd",
+      "sec-ch-ua": '"Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1",
+      "Upgrade-Insecure-Requests": "1",
+    },
+  ];
+
+  // Track cookies across requests for session persistence
+  let sessionCookies = "";
+
+  async function stealthFetch(url: string, profileIdx: number, extraHeaders?: Record<string, string>): Promise<Response> {
+    const profile = stealthProfiles[profileIdx % stealthProfiles.length];
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 30_000);
+    try {
+      const reqHeaders: Record<string, string> = {
+        ...profile,
+        ...extraHeaders || {},
+      };
+      if (sessionCookies) reqHeaders["Cookie"] = sessionCookies;
+      // Add Referer for non-first requests
+      if (extraHeaders?.["Referer"]) reqHeaders["Referer"] = extraHeaders["Referer"];
+      return await fetch(url, {
+        headers: reqHeaders,
+        redirect: "follow",
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  function extractCookies(resp: Response): void {
+    const sc = resp.headers.get("set-cookie");
+    if (sc) {
+      const newCookies = sc.split(/,(?=[^ ])/).map(c => c.split(";")[0].trim()).filter(Boolean);
+      const existing = sessionCookies ? sessionCookies.split("; ").filter(Boolean) : [];
+      const merged = [...existing];
+      for (const nc of newCookies) {
+        const name = nc.split("=")[0];
+        const idx = merged.findIndex(c => c.startsWith(name + "="));
+        if (idx >= 0) merged[idx] = nc; else merged.push(nc);
+      }
+      sessionCookies = merged.join("; ");
+    }
+  }
+
+  // ═══ MULTI-STRATEGY WAF BYPASS ═══
+  let wafBlocked = false;
+  for (let attempt = 0; attempt < stealthProfiles.length; attempt++) {
+    try {
+      const resp = await stealthFetch(targetUrl, attempt);
+      extractCookies(resp);
+      status = resp.status;
+      finalUrl = resp.url || targetUrl;
+      html = await resp.text();
+      resp.headers.forEach((v, k) => { headers[k] = v; });
+
+      // Check if we got past WAF
+      const isWafPage = status === 403 && (
+        html.toLowerCase().includes("security checkpoint") ||
+        html.toLowerCase().includes("captcha") ||
+        html.toLowerCase().includes("challenge") ||
+        html.toLowerCase().includes("bot detection") ||
+        html.toLowerCase().includes("access denied") ||
+        html.toLowerCase().includes("ddos protection") ||
+        html.toLowerCase().includes("just a moment")
+      );
+
+      if (!isWafPage) {
+        wafBlocked = false;
+        break; // Success — got real page content
+      }
+
+      wafBlocked = true;
+      // If WAF blocked, try next profile after short delay
+      await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
+
+      // On second attempt, try with Referer header (looks like navigation from Google)
+      if (attempt === 1) {
+        try {
+          const retryResp = await stealthFetch(targetUrl, attempt, {
+            "Referer": "https://www.google.com/",
+            "Origin": new URL(targetUrl).origin,
+          });
+          extractCookies(retryResp);
+          const retryHtml = await retryResp.text();
+          const retryIsWaf = retryResp.status === 403 && (retryHtml.toLowerCase().includes("security checkpoint") || retryHtml.toLowerCase().includes("challenge"));
+          if (!retryIsWaf) {
+            status = retryResp.status;
+            finalUrl = retryResp.url || targetUrl;
+            html = retryHtml;
+            retryResp.headers.forEach((v, k) => { headers[k] = v; });
+            wafBlocked = false;
+            break;
+          }
+        } catch {}
+      }
+
+      // On third attempt, try adding X-Forwarded-For to simulate reverse proxy
+      if (attempt === 2) {
+        const fakeIps = ["8.8.8.8", "1.1.1.1", "203.0.113.1", "198.51.100.1"];
+        for (const ip of fakeIps) {
+          try {
+            const retryResp = await stealthFetch(targetUrl, attempt, {
+              "X-Forwarded-For": ip,
+              "X-Real-IP": ip,
+              "X-Originating-IP": ip,
+              "CF-Connecting-IP": ip,
+              "True-Client-IP": ip,
+            });
+            extractCookies(retryResp);
+            const retryHtml = await retryResp.text();
+            const retryIsWaf = retryResp.status === 403 && (retryHtml.toLowerCase().includes("security checkpoint") || retryHtml.toLowerCase().includes("challenge"));
+            if (!retryIsWaf) {
+              status = retryResp.status;
+              finalUrl = retryResp.url || targetUrl;
+              html = retryHtml;
+              retryResp.headers.forEach((v, k) => { headers[k] = v; });
+              wafBlocked = false;
+              break;
+            }
+          } catch {}
+        }
+        if (!wafBlocked) break;
+      }
+    } catch (err) {
+      if (attempt === stealthProfiles.length - 1) throw err;
+    }
+  }
+
+  // If still WAF blocked, try fetching common JS/CDN bundle paths directly
+  // (CDN-served static assets are often NOT behind WAF)
+  if (wafBlocked) {
+    const domain = new URL(targetUrl).hostname;
+    const cdnPaths = [
+      `https://${domain}/_next/static/chunks/main.js`,
+      `https://${domain}/_next/static/chunks/webpack.js`,
+      `https://${domain}/_next/static/chunks/pages/_app.js`,
+      `https://${domain}/_next/static/chunks/framework.js`,
+      `https://${domain}/static/js/main.js`,
+      `https://${domain}/static/js/bundle.js`,
+      `https://${domain}/assets/index.js`,
+      `https://${domain}/build/bundle.js`,
+      `https://${domain}/dist/main.js`,
+      `https://${domain}/main.js`,
+      `https://${domain}/app.js`,
+      `https://${domain}/bundle.js`,
+      `https://${domain}/manifest.json`,
+      `https://${domain}/asset-manifest.json`,
+      `https://${domain}/_next/static/chunks/app/layout.js`,
+      `https://${domain}/_next/static/chunks/app/page.js`,
+    ];
+    for (const cdnUrl of cdnPaths) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch(cdnUrl, {
+          headers: { ...stealthProfiles[0], "Sec-Fetch-Dest": "script", "Sec-Fetch-Mode": "no-cors" },
+          signal: ctrl.signal,
+        });
+        clearTimeout(t);
+        if (r.ok) {
+          const text = await r.text();
+          if (text.length > 100 && text.length < 5_000_000) {
+            // Prepend discovered JS to html so secret extraction works on it
+            html += `\n<script>/* CDN-BYPASS: ${cdnUrl} */\n${text}\n</script>`;
+          }
+        }
+      } catch {}
+    }
+
+    // Also try to discover build manifest for Next.js apps
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const buildIdResp = await fetch(`https://${domain}/_next/static/buildManifest.js`, {
+        headers: stealthProfiles[0],
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      if (buildIdResp.ok) {
+        const manifest = await buildIdResp.text();
+        // Extract all JS chunk paths from manifest
+        const chunkPaths = [...manifest.matchAll(/["']([^"']*\.js)["']/g)].map(m => m[1]);
+        const uniqueChunks = [...new Set(chunkPaths)].slice(0, 50);
+        const chunkFetches = uniqueChunks.map(async (chunk) => {
+          try {
+            const chunkUrl = chunk.startsWith("http") ? chunk : `https://${domain}/_next/${chunk}`;
+            const c = new AbortController();
+            const ct = setTimeout(() => c.abort(), 8000);
+            const cr = await fetch(chunkUrl, {
+              headers: { ...stealthProfiles[0], "Sec-Fetch-Dest": "script" },
+              signal: c.signal,
+            });
+            clearTimeout(ct);
+            if (cr.ok) {
+              const chunkText = await cr.text();
+              if (chunkText.length > 100 && chunkText.length < 2_000_000) {
+                html += `\n<script>/* MANIFEST-CHUNK: ${chunkUrl} */\n${chunkText}\n</script>`;
+              }
+            }
+          } catch {}
+        });
+        await Promise.allSettled(chunkFetches);
+      }
+    } catch {}
+
+    // Try Google Cache as last resort
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 10000);
+      const cacheResp = await fetch(`https://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(targetUrl)}`, {
+        headers: stealthProfiles[0],
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      if (cacheResp.ok) {
+        const cacheHtml = await cacheResp.text();
+        if (cacheHtml.length > 500) {
+          html += `\n<!-- GOOGLE-CACHE -->\n${cacheHtml}`;
+        }
+      }
+    } catch {}
   }
 
   const technologies: string[] = [];
@@ -7149,15 +7405,23 @@ async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
     if (ism[1].trim().length > 10) scripts.push(ism[1].trim());
   }
 
-  const fetchPromises = scriptUrls.slice(0, 30).map(async (sUrl) => {
+  const fetchPromises = scriptUrls.slice(0, 50).map(async (sUrl, idx) => {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 10_000);
+      const uaIdx = idx % stealthProfiles.length;
       const r = await fetch(sUrl, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        headers: {
+          ...stealthProfiles[uaIdx],
+          "Sec-Fetch-Dest": "script",
+          "Sec-Fetch-Mode": "no-cors",
+          "Referer": finalUrl,
+          ...(sessionCookies ? { "Cookie": sessionCookies } : {}),
+        },
         signal: ctrl.signal,
       });
       clearTimeout(t);
+      extractCookies(r);
       if (r.ok) {
         const text = await r.text();
         if (text.length < 2_000_000) scripts.push(text);
@@ -7244,11 +7508,17 @@ async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 10_000);
+      const crawlProfile = stealthProfiles[Math.floor(Math.random() * stealthProfiles.length)];
       const r = await fetch(link, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
+        headers: {
+          ...crawlProfile,
+          "Referer": finalUrl,
+          ...(sessionCookies ? { "Cookie": sessionCookies } : {}),
+        },
         signal: ctrl.signal, redirect: "follow",
       });
       clearTimeout(t);
+      extractCookies(r);
       if (!r.ok) return;
       const contentType = r.headers.get("content-type") || "";
       if (!contentType.includes("html")) return;
@@ -7388,6 +7658,14 @@ async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
     else if (serverHeader.includes("mod_security") || serverHeader.includes("modsecurity")) wafDetected = "ModSecurity WAF";
     else if (serverHeader.includes("fortiweb")) wafDetected = "FortiWeb WAF";
     else if (serverHeader.includes("akamai")) wafDetected = "Akamai WAF";
+    else if (serverHeader.includes("vercel") && status === 403) wafDetected = "Vercel Security Checkpoint";
+  }
+  // Detect WAF from HTML content
+  if (!wafDetected && status === 403) {
+    const lh = html.toLowerCase();
+    if (lh.includes("security checkpoint")) wafDetected = "Vercel Security Checkpoint";
+    else if (lh.includes("just a moment") || lh.includes("checking your browser")) wafDetected = "Cloudflare Under Attack Mode";
+    else if (lh.includes("access denied") || lh.includes("bot detection")) wafDetected = `WAF/Bot Protection (HTTP ${status})`;
   }
   if (!wafDetected) {
     try {
@@ -7916,14 +8194,47 @@ if __name__ == "__main__":
   interface VulnProbeResult { type: string; severity: "critical"|"high"|"medium"|"low"; url: string; payload: string; evidence: string; exploitable: boolean; method?: string; param?: string; }
   const vulnResults: VulnProbeResult[] = [];
 
-  // Helper: safe fetch with timeout
+  // Helper: safe fetch with timeout + stealth headers for WAF bypass
+  const stealthUA = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+  ];
+  let probeUAIndex = 0;
   async function probeFetch(url: string, opts?: RequestInit & { timeoutMs?: number }): Promise<{ status: number; body: string; headers: Record<string, string> } | null> {
     try {
+      const ua = stealthUA[probeUAIndex++ % stealthUA.length];
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), opts?.timeoutMs || 8_000);
-      const r = await fetch(url, { ...opts, signal: ctrl.signal, headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", ...(opts?.headers as Record<string, string> || {}) } });
+      const defaultHeaders: Record<string, string> = {
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Upgrade-Insecure-Requests": "1",
+      };
+      const r = await fetch(url, { ...opts, signal: ctrl.signal, headers: { ...defaultHeaders, ...(opts?.headers as Record<string, string> || {}) } });
       clearTimeout(t);
       const body = await r.text();
+      // If WAF blocked, retry once with different UA and referer
+      if (r.status === 403 && (body.toLowerCase().includes("security checkpoint") || body.toLowerCase().includes("challenge"))) {
+        const retryUA = stealthUA[probeUAIndex++ % stealthUA.length];
+        const ctrl2 = new AbortController();
+        const t2 = setTimeout(() => ctrl2.abort(), opts?.timeoutMs || 8_000);
+        const r2 = await fetch(url, { ...opts, signal: ctrl2.signal, headers: { ...defaultHeaders, "User-Agent": retryUA, "Referer": new URL(url).origin + "/", ...(opts?.headers as Record<string, string> || {}) } });
+        clearTimeout(t2);
+        const body2 = await r2.text();
+        const headers2: Record<string, string> = {};
+        r2.headers.forEach((v, k) => { headers2[k] = v; });
+        return { status: r2.status, body: body2, headers: headers2 };
+      }
       const headers: Record<string, string> = {};
       r.headers.forEach((v, k) => { headers[k] = v; });
       return { status: r.status, body, headers };
