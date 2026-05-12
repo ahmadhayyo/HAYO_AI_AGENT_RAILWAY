@@ -1953,7 +1953,7 @@ export default function ReverseEngineer(){
                 <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`web-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
                 <Button onClick={()=>setWpShowReport(v=>!v)} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><BookOpen className="w-4 h-4"/>{wpShowReport?"إخفاء التقرير":"التقرير الكامل"}</Button>
                 <Button onClick={()=>setWpShowExposedSecrets(v=>!v)} variant="outline" className="gap-2 border-red-500/30 text-red-300"><Key className="w-4 h-4"/>{wpShowExposedSecrets?"إخفاء الأسرار":"الأسرار المكشوفة"}</Button>
-                <Button onClick={()=>setWpShowPoE(v=>!v)} variant="outline" className={`gap-2 ${wpResult.proof_of_exposure?.totalExposures>0?"border-red-500/50 text-red-300 bg-red-500/10":"border-emerald-500/30 text-emerald-300"}`}><Shield className="w-4 h-4"/>{wpShowPoE?"إخفاء PoE":`إثبات التعرض (${wpResult.proof_of_exposure?.totalExposures||0})`}</Button>
+                <Button onClick={()=>setWpShowPoE(v=>!v)} variant="outline" className={`gap-2 ${(wpResult.proof_of_exposure?.totalExposures>0||wpResult.proof_of_exposure?.validSecrets>0)?"border-red-500/50 text-red-300 bg-red-500/10":"border-emerald-500/30 text-emerald-300"}`}><Shield className="w-4 h-4"/>{wpShowPoE?"إخفاء PoE":`إثبات التعرض (${wpResult.proof_of_exposure?.totalExposures||0}) + تحقق (${wpResult.proof_of_exposure?.totalValidated||0})`}</Button>
                 <Button onClick={()=>setWpShowDevMsg(v=>!v)} variant="outline" className="gap-2 border-yellow-500/30 text-yellow-300"><AlertTriangle className="w-4 h-4"/>{wpShowDevMsg?"إخفاء رسالة المبرمج":"رسالة للمبرمج"}</Button>
                 <Button onClick={()=>doCloneWebsite(wpResult?.targetUrl||wpUrl)} disabled={cloneLoading} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300">{cloneLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Layers className="w-4 h-4"/>}{cloneLoading?"جاري الاستنساخ...":"استنساخ الموقع"}</Button>
               </div>
@@ -2308,8 +2308,79 @@ export default function ReverseEngineer(){
               </div>
             </div>}
 
+            {/* Phase 5.5: Active Secret Validation */}
+            {wpResult.proof_of_exposure.secret_validations?.length>0&&<div className="space-y-3">
+              <div className="text-sm font-semibold text-purple-300 flex items-center gap-2"><Shield className="w-4 h-4"/>التحقق الفعلي من الأسرار — Active Secret Validation ({wpResult.proof_of_exposure.secret_validations.length})</div>
+              {/* Summary cards */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="p-3 rounded-xl border text-center bg-muted/10 border-border/30">
+                  <div className="text-2xl font-bold text-purple-400">{wpResult.proof_of_exposure.totalValidated||0}</div>
+                  <div className="text-[10px] text-muted-foreground">تم فحصه</div>
+                </div>
+                <div className={`p-3 rounded-xl border text-center ${wpResult.proof_of_exposure.validSecrets>0?"bg-red-500/10 border-red-500/40":"bg-muted/10 border-border/30"}`}>
+                  <div className="text-2xl font-bold text-red-400">{wpResult.proof_of_exposure.validSecrets||0}</div>
+                  <div className="text-[10px] text-muted-foreground">صالح (خطر!)</div>
+                </div>
+                <div className="p-3 rounded-xl border text-center bg-muted/10 border-border/30">
+                  <div className="text-2xl font-bold text-emerald-400">{wpResult.proof_of_exposure.invalidSecrets||0}</div>
+                  <div className="text-[10px] text-muted-foreground">غير صالح</div>
+                </div>
+                <div className="p-3 rounded-xl border text-center bg-muted/10 border-border/30">
+                  <div className="text-2xl font-bold text-yellow-400">{wpResult.proof_of_exposure.secret_validations.filter((v:any)=>v.status==="expired").length}</div>
+                  <div className="text-[10px] text-muted-foreground">منتهي</div>
+                </div>
+                <div className="p-3 rounded-xl border text-center bg-muted/10 border-border/30">
+                  <div className="text-2xl font-bold text-orange-400">{wpResult.proof_of_exposure.secret_validations.filter((v:any)=>v.status==="partial").length}</div>
+                  <div className="text-[10px] text-muted-foreground">جزئي</div>
+                </div>
+              </div>
+              {/* Validation details */}
+              <div className="space-y-3">
+                {wpResult.proof_of_exposure.secret_validations.map((v:any,i:number)=>(
+                  <div key={i} className={`border rounded-xl p-4 space-y-3 ${v.status==="valid"?"bg-red-500/5 border-red-500/30":v.status==="invalid"?"bg-emerald-500/5 border-emerald-500/20":v.status==="expired"?"bg-yellow-500/5 border-yellow-500/20":v.status==="partial"?"bg-orange-500/5 border-orange-500/20":"bg-gray-500/5 border-gray-500/20"}`}>
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${v.status==="valid"?"bg-red-500/20 text-red-300 border-red-500/30":v.status==="invalid"?"bg-emerald-500/20 text-emerald-300 border-emerald-500/30":v.status==="expired"?"bg-yellow-500/20 text-yellow-300 border-yellow-500/30":v.status==="partial"?"bg-orange-500/20 text-orange-300 border-orange-500/30":"bg-gray-500/20 text-gray-300 border-gray-500/30"}`}>{v.status==="valid"?"🔴 صالح — خطر!":v.status==="invalid"?"✅ غير صالح":v.status==="expired"?"⏰ منتهي":v.status==="partial"?"🟠 جزئي":"❓ غير محدد"}</span>
+                        <span className="text-[11px] text-purple-300 font-bold">{v.service}</span>
+                        <span className="text-[10px] text-muted-foreground">{v.type}</span>
+                      </div>
+                      <Button onClick={()=>{navigator.clipboard.writeText(JSON.stringify(v,null,2));toast.success("تم نسخ نتيجة التحقق");}} variant="outline" size="sm" className="gap-1 text-[10px] border-purple-500/30 text-purple-300"><Copy className="w-3 h-3"/>نسخ</Button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-muted-foreground">🔑 القيمة:</div>
+                        <div className="text-[11px] font-mono text-white bg-black/30 rounded px-2 py-1 break-all select-all">{v.value}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-muted-foreground">📍 المصدر:</div>
+                        <div className="text-[11px] text-purple-200 break-all">{v.source}</div>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[10px] text-muted-foreground">🧪 إثبات الاستغلال:</div>
+                      <div className={`text-[11px] font-bold ${v.status==="valid"?"text-red-300":v.status==="invalid"?"text-emerald-300":"text-yellow-300"}`}>{v.liveProof}</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[10px] text-muted-foreground">🔐 مستوى الوصول:</div>
+                      <div className="text-[11px] text-white">{v.accessLevel}</div>
+                    </div>
+                    {v.httpStatus&&<div className="text-[10px] text-muted-foreground">📡 HTTP Status: <span className={`font-bold ${v.httpStatus===200?"text-red-300":v.httpStatus===401?"text-emerald-300":"text-yellow-300"}`}>{v.httpStatus}</span></div>}
+                    {v.responseSnippet&&<div className="space-y-1">
+                      <div className="text-[10px] text-muted-foreground">📄 رد الخادم:</div>
+                      <pre className="bg-black/50 rounded-lg p-3 text-[10px] text-purple-200/80 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto select-all">{v.responseSnippet}</pre>
+                    </div>}
+                    {v.extractedData&&<div className="space-y-1">
+                      <div className="text-[10px] text-muted-foreground">📦 البيانات المستخرجة:</div>
+                      <pre className="bg-black/50 rounded-lg p-3 text-[10px] text-red-200/80 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto select-all">{JSON.stringify(v.extractedData,null,2)}</pre>
+                    </div>}
+                    <div className="text-[9px] text-muted-foreground/50">⏱️ {v.testedAt}</div>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
             {/* No findings */}
-            {wpResult.proof_of_exposure.totalExposures===0&&<div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5 text-center">
+            {wpResult.proof_of_exposure.totalExposures===0&&(!wpResult.proof_of_exposure.secret_validations||wpResult.proof_of_exposure.secret_validations.length===0)&&<div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5 text-center">
               <div className="text-lg font-bold text-emerald-400">لم يتم تأكيد أي تسريبات فعلية</div>
               <div className="text-sm text-muted-foreground mt-1">جميع ملفات التكوين محمية — لم يتم كشف أسرار نص صريح — لا تسريبات LFI أو SSRF</div>
             </div>}
