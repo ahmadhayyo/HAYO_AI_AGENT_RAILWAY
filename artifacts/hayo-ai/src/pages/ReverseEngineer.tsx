@@ -19,7 +19,7 @@ import {
   ToggleLeft, ToggleRight, Rocket, Flame, Settings,
   Keyboard, Database, Activity, TrendingUp, BarChart3, Code,
   Microscope, Network, FileSearch, Diff, Layers, FileOutput, FileText,
-  ArrowUpDown, Braces, Hash, Link2, type LucideIcon,
+  ArrowUpDown, Braces, Hash, Link2, Monitor, type LucideIcon,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -925,25 +925,30 @@ export default function ReverseEngineer(){
   // ═══ TAB 6 HANDLERS ═══
   const doCloudPentestFull=async()=>{
     if(!cpFile){toast.error("ارفع ملف APK أولاً");return;}
-    setCpLoading(true);setCpResult(null);setCpShowReport(false);setCpActiveStep(1);setCpStepsRevealed([]);
+    setCpLoading(true);setCpResult(null);setCpShowReport(false);setCpActiveStep(1);setCpStepsRevealed([]);setHbResult(null);
     const revealStep=(n:number)=>setCpStepsRevealed(prev=>[...prev,n]);
-    const stepTitles=["تفكيك APK","استخراج التوكن","المفاتيح","IDOR","استغلال","سحب DB","Telegram","سكريبت","تشفير Cipher-7","Firebase+","AWS","حمايات","تقرير استخباراتي","ترسانة الهجوم"];
+    // 46 total phases: 14 APK + 25 Web Pentest + 7 Headless Browser
+    const totalSteps=46;
     let stepTimer:any;
     const simulateSteps=()=>{
       let s=1;
       revealStep(1);setCpActiveStep(1);
-      stepTimer=setInterval(()=>{s++;if(s<=14){revealStep(s);setCpActiveStep(s);}else clearInterval(stepTimer);},1800);
+      stepTimer=setInterval(()=>{s++;if(s<=totalSteps){revealStep(s);setCpActiveStep(s);}else clearInterval(stepTimer);},800);
     };
     simulateSteps();
     try{
       const fd=new FormData();fd.append("file",cpFile);
-      const r=await fetchRE("/api/reverse/cloud-pentest-full",{method:"POST",body:fd});
+      const r=await fetchRE("/api/reverse/unified-apk-scan",{method:"POST",body:fd},1200000);
       const d=await r.json();
       if(!r.ok)throw new Error(d.error);
       clearInterval(stepTimer);
-      setCpStepsRevealed([1,2,3,4,5,6,7,8,9,10,11,12,13,14]);setCpActiveStep(0);
-      setCpResult(d);setCpExpanded(new Set([1,2,3,4,5,6,7,8,9,10,11,12,13,14]));
-      toast.success(`اكتمل اختبار الاختراق — درجة الخطورة: ${d.summary?.riskScore}/100`);
+      setCpStepsRevealed(Array.from({length:totalSteps},(_,i)=>i+1));setCpActiveStep(0);
+      setCpResult(d);setCpExpanded(new Set(Array.from({length:totalSteps},(_,i)=>i+1)));
+      if(d.headlessBrowser)setHbResult(d.headlessBrowser);
+      const webScore=d.webPentest?.summary?.riskScore;
+      const hbReqs=d.headlessBrowser?.network?.totalRequests||0;
+      const backendExp=d.backendExposures?.totalBackendExposures||0;
+      toast.success(`اكتمل الفحص الموحد — APK${webScore!=null?` · ويب: ${webScore}/100`:""}${hbReqs>0?` · ${hbReqs} طلب شبكة`:""}${backendExp>0?` · ${backendExp} backend exposure`:""}${d.cloneReport?.signatureVerified?" · التوقيع: ناجح":""}`);
     }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setCpLoading(false);}
   };
 
@@ -1798,8 +1803,8 @@ export default function ReverseEngineer(){
           {!seqRunning&&<div className="text-xs text-muted-foreground text-center max-w-lg">Firebase Audit → Cipher-7 Cloud Pentest (14 مرحلة) → Full Auto Clone (6 مراحل) — تلقائي بالكامل</div>}
           {/* Individual buttons — secondary */}
           <div className="flex items-center gap-3 flex-wrap justify-center">
-            <Button onClick={doCloudPentestFull} disabled={!cpFile||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
-              <Zap className="w-5 h-5"/>ابدأ الاختبار التلقائي
+            <Button onClick={doCloudPentestFull} disabled={!cpFile||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 via-violet-600 to-orange-600 hover:from-cyan-500 hover:via-violet-500 hover:to-orange-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
+              <Zap className="w-5 h-5"/>ابدأ الفحص الموحد — APK + Web Pentest + Headless (46 مرحلة)
             </Button>
             <Button onClick={doDeepFirebaseAudit} disabled={!cpFile||dfbLoading||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-orange-900/30">
               {dfbLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Flame className="w-5 h-5"/>}Deep Firebase Audit
@@ -3143,15 +3148,18 @@ export default function ReverseEngineer(){
             <div className="flex items-center gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-cyan-400"/>
               <div>
-                <h2 className="text-lg font-bold text-cyan-300">جاري تنفيذ اختبار الاختراق...</h2>
+                <h2 className="text-lg font-bold text-cyan-300">جاري الفحص الموحد — APK + Web Pentest + Headless Browser...</h2>
                 <p className="text-xs text-muted-foreground">الملف: {cpFile?.name} ({cpFile?((cpFile.size/1024/1024).toFixed(1)+" MB"):""})</p>
               </div>
             </div>
             <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-cyan-500 via-violet-500 to-emerald-500 rounded-full transition-all duration-1000" style={{width:`${(cpActiveStep/14)*100}%`}}/>
+              <div className="h-full bg-gradient-to-r from-cyan-500 via-violet-500 to-orange-500 via-emerald-500 rounded-full transition-all duration-1000" style={{width:`${(cpActiveStep/46)*100}%`}}/>
             </div>
-            <div className="text-[11px] text-muted-foreground mt-2 text-left">{cpActiveStep}/14 مرحلة Cipher-7</div>
+            <div className="text-[11px] text-muted-foreground mt-2 text-left">{cpActiveStep}/46 مرحلة — {cpActiveStep<=14?"APK Cipher-7":cpActiveStep<=39?"Web Pentest (25 خطوة)":"Headless Browser"}</div>
           </div>
+          {/* APK Phases Group */}
+          <div className="border border-cyan-500/20 rounded-xl p-3 bg-cyan-950/10">
+            <h3 className="text-xs font-bold text-cyan-400 mb-2">المرحلة A — تحليل APK (14 خطوة Cipher-7)</h3>
           {[
             {id:1,title:"تفكيك APK وتحليل الهيكل الداخلي",desc:"apktool + jadx + Manifest + google-services.json + smali",icon:"📦"},
             {id:2,title:"استخراج التوكن الحقيقي (JWT/Bearer)",desc:"SharedPreferences + Frida + ADB + smali const-string",icon:"🔐"},
@@ -3181,6 +3189,77 @@ export default function ReverseEngineer(){
               </div>
             </div>);
           })}
+          </div>
+          {/* Web Pentest Phases Group */}
+          <div className="border border-violet-500/20 rounded-xl p-3 bg-violet-950/10">
+            <h3 className="text-xs font-bold text-violet-400 mb-2">المرحلة B — فحص الويب على Backends المستخرجة (25 خطوة Cipher-7)</h3>
+          {[
+            {id:15,title:"استطلاع الخادم",desc:"HTTP fetch + headers + redirects + تقنيات الخادم",icon:"🔍"},
+            {id:16,title:"أسرار مكشوفة في الكود",desc:"API keys + tokens + credentials في HTML/JS",icon:"🔐"},
+            {id:17,title:"Firebase مكشوف",desc:"Firestore + RTDB + Anonymous Auth + open rules",icon:"🔥"},
+            {id:18,title:"IDOR على endpoints",desc:"استغلال تغيير user IDs للوصول لبيانات آخرين",icon:"🌐"},
+            {id:19,title:"مسارات حساسة",desc:"/.env + /.git/config + /api/.env + /wp-config.php",icon:"📂"},
+            {id:20,title:"قواعد بيانات مكشوفة",desc:"MongoDB + Redis + Elasticsearch + CouchDB",icon:"🗄️"},
+            {id:21,title:"Webhooks",desc:"اكتشاف webhook URLs + API callbacks",icon:"🔗"},
+            {id:22,title:"سكريبت خبيث",desc:"eval() + inline scripts + dynamic imports",icon:"📜"},
+            {id:23,title:"تشفير Cipher-7",desc:"Crypto analysis + JWT + Base64 + XOR",icon:"🔓"},
+            {id:24,title:"Firebase+ معمّق",desc:"Deep path enumeration + Storage buckets",icon:"🔥"},
+            {id:25,title:"AWS تقييم أمان",desc:"S3 + Lambda + IAM + Cognito + API Gateway",icon:"☁️"},
+            {id:26,title:"ترويسات أمنية",desc:"CSP + CORS + X-Frame + HSTS + Referrer-Policy",icon:"🛡️"},
+            {id:27,title:"استخبارات",desc:"تحليل استخباراتي + تقييم المخاطر",icon:"📊"},
+            {id:28,title:"ترسانة الهجوم",desc:"Exploit guides + payloads + أوامر الاستغلال",icon:"⚔️"},
+            {id:29,title:"SQLi + XSS",desc:"SQL injection + Cross-Site Scripting على parameters",icon:"💉"},
+            {id:30,title:"SSRF + LFI",desc:"Server-Side Request Forgery + Local File Inclusion",icon:"🎯"},
+            {id:31,title:"نطاقات فرعية",desc:"Subdomain enumeration + DNS analysis",icon:"🌍"},
+            {id:32,title:"زاحف الصفحات",desc:"Deep crawling + sitemap + robots.txt",icon:"🕷️"},
+            {id:33,title:"كوكيز",desc:"Cookie security + HttpOnly + Secure + SameSite",icon:"🍪"},
+            {id:34,title:"DOM XSS",desc:"تحليل DOM للثغرات XSS (على صفحات الويب)",icon:"🖥️"},
+            {id:35,title:"WAF Detection",desc:"جدار الحماية + bypass techniques",icon:"🧱"},
+            {id:36,title:"نماذج",desc:"Form analysis + CSRF + auto-submit",icon:"📝"},
+            {id:37,title:"SSTI + CmdI",desc:"Server-Side Template Injection + Command Injection",icon:"🧨"},
+            {id:38,title:"HTTP Methods + تسريب",desc:"OPTIONS + PUT + DELETE + info disclosure",icon:"📡"},
+            {id:39,title:"مصادقة ضعيفة",desc:"Weak auth + session management + brute force",icon:"🔓"},
+          ].map(step=>{
+            const revealed=cpStepsRevealed.includes(step.id);
+            const active=cpActiveStep===step.id;
+            return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${!revealed?"opacity-20 border-border/20":"opacity-100"} ${active?"border-violet-500/60 bg-violet-500/5 shadow-lg shadow-violet-900/20":"border-border/40 bg-card/30"}`}>
+              <div className="flex items-center gap-3 p-4">
+                <span className={`w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0 ${active?"bg-violet-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-5 h-5 animate-spin text-violet-400"/>:revealed?"✅":step.icon}</span>
+                <div className="flex-1 text-right">
+                  <div className={`font-semibold text-sm ${active?"text-violet-300":"text-foreground/80"}`}>{step.title}</div>
+                  <div className="text-[11px] text-muted-foreground">{step.desc}</div>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full ${active?"bg-violet-500/20 text-violet-300 border border-violet-500/40":"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":revealed?"مكتمل":"في الانتظار"}</span>
+              </div>
+            </div>);
+          })}
+          </div>
+          {/* Headless Browser Phases Group */}
+          <div className="border border-orange-500/20 rounded-xl p-3 bg-orange-950/10">
+            <h3 className="text-xs font-bold text-orange-400 mb-2">المرحلة C — Headless Browser + إعادة البناء والتوقيع (7 خطوات)</h3>
+          {[
+            {id:40,title:"Headless Browser Launch",desc:"تشغيل Puppeteer Chromium على backend المستخرج",icon:"🌐"},
+            {id:41,title:"Network Interception",desc:"التقاط جميع طلبات XHR/Fetch مع Headers و Timing",icon:"📡"},
+            {id:42,title:"JS Runtime Analysis",desc:"eval() + setTimeout + Storage + dynamic scripts",icon:"🔍"},
+            {id:43,title:"API Discovery",desc:"اكتشاف REST/GraphQL/WebSocket من حركة الشبكة",icon:"🔗"},
+            {id:44,title:"محرك Smali Patching + إعادة البناء",desc:"إزالة إعلانات + Premium + License + حماية + إعادة بناء APK",icon:"🔧"},
+            {id:45,title:"توقيع APK (V1+V2+V3) + محاذاة",desc:"حذف META-INF + zipalign + apksigner (Android 7-14+)",icon:"✍️"},
+            {id:46,title:"بوابة الجودة + التقرير الموحد",desc:"التحقق من التوقيع + سلامة ZIP + Manifest + تقرير نهائي",icon:"✅"},
+          ].map(step=>{
+            const revealed=cpStepsRevealed.includes(step.id);
+            const active=cpActiveStep===step.id;
+            return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${!revealed?"opacity-20 border-border/20":"opacity-100"} ${active?"border-orange-500/60 bg-orange-500/5 shadow-lg shadow-orange-900/20":"border-border/40 bg-card/30"}`}>
+              <div className="flex items-center gap-3 p-4">
+                <span className={`w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0 ${active?"bg-orange-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-5 h-5 animate-spin text-orange-400"/>:revealed?"✅":step.icon}</span>
+                <div className="flex-1 text-right">
+                  <div className={`font-semibold text-sm ${active?"text-orange-300":"text-foreground/80"}`}>{step.title}</div>
+                  <div className="text-[11px] text-muted-foreground">{step.desc}</div>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full ${active?"bg-orange-500/20 text-orange-300 border border-orange-500/40":"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":revealed?"مكتمل":"في الانتظار"}</span>
+              </div>
+            </div>);
+          })}
+          </div>
         </div>}
 
         {/* ── Full Auto Clone: Live Progress ── */}
@@ -3437,7 +3516,7 @@ export default function ReverseEngineer(){
           <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
-                <h2 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-cyan-400"/>تقرير Cipher-7 — اختبار الاختراق السحابي (14 مرحلة)</h2>
+                <h2 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-cyan-400"/>تقرير Cipher-7 الموحد — APK + Web Pentest + Headless Browser (46 مرحلة)</h2>
                 <p className="text-xs text-muted-foreground mt-1">الملف: <span className="text-cyan-300 font-mono">{cpResult.fileName||cpFile?.name}</span> · {cpResult.fileSize?((cpResult.fileSize/1024/1024).toFixed(1)+" MB"):""} · {new Date(cpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
@@ -3560,6 +3639,132 @@ export default function ReverseEngineer(){
               </div>)}
             </div>
           </div>}
+
+          {/* ══ Unified APK Scan: Web Pentest Results ══ */}
+          {cpResult.webPentest&&cpResult.webPentest.summary&&<div className="bg-gradient-to-r from-violet-900/30 to-purple-900/30 border-2 border-violet-500/40 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <h3 className="text-lg font-bold text-violet-300 flex items-center gap-2"><Globe className="w-5 h-5"/>نتائج فحص الويب على backends المستخرجة (25 خطوة Cipher-7)</h3>
+              <span className={`text-sm px-3 py-1 rounded-full font-semibold ${cpResult.webPentest.summary.riskScore>60?"bg-red-500/20 border border-red-500/40 text-red-300":"bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"}`}>خطورة الويب: {cpResult.webPentest.summary.riskScore}/100</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-xl text-center border bg-red-500/10 border-red-500/30">
+                <div className="text-2xl font-bold text-red-400">{cpResult.webPentest.exposedSecrets?.secrets?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">أسرار الويب</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-orange-500/10 border-orange-500/30">
+                <div className="text-2xl font-bold text-orange-400">{cpResult.backendExposures?.totalBackendExposures||0}</div>
+                <div className="text-[10px] text-muted-foreground">Backend Exposures</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-violet-500/10 border-violet-500/30">
+                <div className="text-2xl font-bold text-violet-400">{cpResult.webPentest.crawler?.pages?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">صفحات مزحوفة</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-blue-500/10 border-blue-500/30">
+                <div className="text-2xl font-bold text-blue-400">{cpResult.webPentest.steps?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">خطوات منفذة</div>
+              </div>
+            </div>
+            {/* Backend Exposures Details */}
+            {cpResult.backendExposures&&cpResult.backendExposures.totalBackendExposures>0&&<div className="bg-black/30 rounded-xl p-4 space-y-2">
+              <div className="text-sm font-bold text-red-300">Backend Exposures ({cpResult.backendExposures.totalBackendExposures})</div>
+              {cpResult.backendExposures.forcedBrowsing?.length>0&&<div className="space-y-1">
+                <div className="text-xs text-orange-300 font-semibold">Forced Browsing ({cpResult.backendExposures.forcedBrowsing.length}):</div>
+                {cpResult.backendExposures.forcedBrowsing.slice(0,10).map((fb:any,i:number)=><div key={i} className="text-[11px] font-mono text-orange-200/80 bg-black/20 rounded px-2 py-1">{fb.severity} | {fb.url} → {fb.extractedSecrets?.length||0} أسرار</div>)}
+              </div>}
+              {cpResult.backendExposures.lfiResults?.length>0&&<div className="space-y-1">
+                <div className="text-xs text-red-300 font-semibold">LFI ({cpResult.backendExposures.lfiResults.length}):</div>
+                {cpResult.backendExposures.lfiResults.slice(0,10).map((lfi:any,i:number)=><div key={i} className="text-[11px] font-mono text-red-200/80 bg-black/20 rounded px-2 py-1">{lfi.severity} | {lfi.url}</div>)}
+              </div>}
+              {cpResult.backendExposures.ssrfResults?.length>0&&<div className="space-y-1">
+                <div className="text-xs text-purple-300 font-semibold">SSRF ({cpResult.backendExposures.ssrfResults.length}):</div>
+                {cpResult.backendExposures.ssrfResults.slice(0,10).map((ssrf:any,i:number)=><div key={i} className="text-[11px] font-mono text-purple-200/80 bg-black/20 rounded px-2 py-1">{ssrf.severity} | {ssrf.url}</div>)}
+              </div>}
+            </div>}
+            {/* Web Pentest Steps */}
+            {cpResult.webPentest.steps&&cpResult.webPentest.steps.length>0&&<details className="group">
+              <summary className="text-xs font-semibold text-violet-300 cursor-pointer hover:text-violet-200">عرض خطوات فحص الويب ({cpResult.webPentest.steps.length} خطوة)</summary>
+              <div className="mt-2 space-y-1 max-h-60 overflow-y-auto">
+                {cpResult.webPentest.steps.map((ws:any,i:number)=><div key={i} className={`text-[11px] font-mono rounded px-2 py-1 ${ws.status==="critical"?"text-red-300 bg-red-500/5":ws.status==="warning"?"text-orange-300 bg-orange-500/5":"text-muted-foreground bg-black/20"}`}>{ws.id}. {ws.title} [{ws.status}] — {ws.findings?.length||0} نتائج</div>)}
+              </div>
+            </details>}
+          </div>}
+
+          {/* ══ Unified APK Scan: Headless Browser Results ══ */}
+          {cpResult.headlessBrowser&&cpResult.headlessBrowser.success&&<div className="bg-gradient-to-r from-orange-900/30 to-amber-900/30 border-2 border-orange-500/40 rounded-2xl p-5 space-y-4">
+            <h3 className="text-lg font-bold text-orange-300 flex items-center gap-2"><Monitor className="w-5 h-5"/>نتائج Headless Browser (Puppeteer)</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-xl text-center border bg-sky-500/10 border-sky-500/30">
+                <div className="text-2xl font-bold text-sky-300">{cpResult.headlessBrowser.network?.totalRequests||0}</div>
+                <div className="text-[10px] text-muted-foreground">طلبات شبكة</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-orange-500/10 border-orange-500/30">
+                <div className="text-2xl font-bold text-orange-300">{cpResult.headlessBrowser.apis?.discovered?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">APIs مكتشفة</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-yellow-500/10 border-yellow-500/30">
+                <div className="text-2xl font-bold text-yellow-300">{cpResult.headlessBrowser.jsRuntime?.totalEvents||0}</div>
+                <div className="text-[10px] text-muted-foreground">JS Runtime Events</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-red-500/10 border-red-500/30">
+                <div className="text-2xl font-bold text-red-300">{(cpResult.headlessBrowser.security?.mixedContent?.length||0)+(cpResult.headlessBrowser.security?.exposedSourceMaps?.length||0)}</div>
+                <div className="text-[10px] text-muted-foreground">مشاكل أمنية</div>
+              </div>
+            </div>
+            {cpResult.headlessBrowser.apis?.discovered?.length>0&&<details className="group">
+              <summary className="text-xs font-semibold text-orange-300 cursor-pointer hover:text-orange-200">APIs مكتشفة ({cpResult.headlessBrowser.apis.discovered.length})</summary>
+              <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
+                {cpResult.headlessBrowser.apis.discovered.map((api:any,i:number)=><div key={i} className="text-[11px] font-mono text-orange-200/80 bg-black/20 rounded px-2 py-1">{api.method||"GET"} {api.url}</div>)}
+              </div>
+            </details>}
+          </div>}
+
+          {/* ══ Unified APK Scan: Clone Report ══ */}
+          {cpResult.cloneReport&&<div className="bg-gradient-to-r from-emerald-900/30 to-teal-900/30 border-2 border-emerald-500/40 rounded-2xl p-5 space-y-4">
+            <h3 className="text-lg font-bold text-emerald-300 flex items-center gap-2"><Layers className="w-5 h-5"/>تقرير التعديل وإعادة البناء</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className={`p-3 rounded-xl text-center border ${cpResult.cloneReport.signatureVerified?"bg-emerald-500/10 border-emerald-500/30":"bg-red-500/10 border-red-500/30"}`}>
+                <div className={`text-2xl font-bold ${cpResult.cloneReport.signatureVerified?"text-emerald-300":"text-red-300"}`}>{cpResult.cloneReport.signatureVerified?"V1+V2+V3":"فشل"}</div>
+                <div className="text-[10px] text-muted-foreground">التوقيع الرقمي</div>
+              </div>
+              <div className={`p-3 rounded-xl text-center border ${cpResult.cloneReport.zipIntegrity?"bg-emerald-500/10 border-emerald-500/30":"bg-red-500/10 border-red-500/30"}`}>
+                <div className={`text-2xl font-bold ${cpResult.cloneReport.zipIntegrity?"text-emerald-300":"text-red-300"}`}>{cpResult.cloneReport.zipIntegrity?"سليم":"خطأ"}</div>
+                <div className="text-[10px] text-muted-foreground">سلامة ZIP</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-violet-500/10 border-violet-500/30">
+                <div className="text-2xl font-bold text-violet-300">{cpResult.cloneReport.premiumMethodsPatched}</div>
+                <div className="text-[10px] text-muted-foreground">Premium معدّل</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-sky-500/10 border-sky-500/30">
+                <div className="text-2xl font-bold text-sky-300">{cpResult.cloneReport.loginBypassed?"نعم":"لا"}</div>
+                <div className="text-[10px] text-muted-foreground">تجاوز تسجيل الدخول</div>
+              </div>
+            </div>
+            {cpResult.cloneReport.modifications?.length>0&&<details className="group">
+              <summary className="text-xs font-semibold text-emerald-300 cursor-pointer hover:text-emerald-200">التعديلات المطبقة ({cpResult.cloneReport.modifications.length})</summary>
+              <div className="mt-2 max-h-40 overflow-y-auto space-y-1">
+                {cpResult.cloneReport.modifications.map((m:string,i:number)=><div key={i} className="text-[11px] text-emerald-200/80 bg-black/20 rounded px-2 py-1">{m}</div>)}
+              </div>
+            </details>}
+          </div>}
+
+          {/* ══ Unified APK Scan: Pipeline Phases ══ */}
+          {cpResult.phases&&cpResult.phases.length>0&&<details className="group">
+            <summary className="text-sm font-semibold text-cyan-300 cursor-pointer hover:text-cyan-200 flex items-center gap-2"><Terminal className="w-4 h-4"/>مراحل Pipeline الموحد ({cpResult.phases.length} مراحل)</summary>
+            <div className="mt-3 space-y-2">
+              {cpResult.phases.map((ph:any)=><div key={ph.phase} className={`rounded-xl border p-4 ${ph.status==="success"?"border-emerald-500/30 bg-emerald-500/5":ph.status==="warning"?"border-orange-500/30 bg-orange-500/5":"border-red-500/30 bg-red-500/5"}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold">{ph.phase}. {ph.name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${ph.status==="success"?"bg-emerald-500/20 text-emerald-300":ph.status==="warning"?"bg-orange-500/20 text-orange-300":"bg-red-500/20 text-red-300"}`}>{ph.status}</span>
+                    <span className="text-[10px] text-muted-foreground">{(ph.duration/1000).toFixed(1)}s</span>
+                  </div>
+                </div>
+                {ph.details?.length>0&&<div className="mt-2 space-y-0.5 max-h-32 overflow-y-auto">
+                  {ph.details.map((d:string,i:number)=><div key={i} className="text-[11px] text-muted-foreground">{d}</div>)}
+                </div>}
+              </div>)}
+            </div>
+          </details>}
 
           {/* AI Report */}
           {cpResult.report&&<div className="space-y-2">

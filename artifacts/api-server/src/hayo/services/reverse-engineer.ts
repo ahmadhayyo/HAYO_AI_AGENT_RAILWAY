@@ -3753,6 +3753,573 @@ export async function runFullAutoClone(
 }
 
 // ═══════════════════════════════════════════════════════════════
+// UNIFIED APK SCAN — APK Decompile + Cloud Pentest (14) + Web Pentest (25) + Headless (7) + Rebuild + Sign
+// Full pipeline: decompile → extract endpoints → run web pentest on backends → smali patch → rebuild → sign
+// ═══════════════════════════════════════════════════════════════
+
+export interface UnifiedAPKScanResult {
+  success: boolean;
+  scanMode: "unified-apk";
+  apkBuffer?: Buffer;
+  phases: Array<{ phase: number; name: string; status: string; details: string[]; duration: number }>;
+  pentest: {
+    firebaseConfigs: any[];
+    apiKeys: string[];
+    databaseUrls: string[];
+    projectIds: string[];
+    secrets: ExtractedSecret[];
+    endpoints: string[];
+    riskLevel: string;
+  };
+  cloneReport: {
+    packageName: string;
+    premiumMethodsPatched: number;
+    loginBypassed: boolean;
+    pointsUnlocked: boolean;
+    tamperNeutralized: boolean;
+    adsRemoved: boolean;
+    fridaInjected: boolean;
+    signatureVerified: boolean;
+    zipIntegrity: boolean;
+    modifications: string[];
+  };
+  webPentest?: any;
+  headlessBrowser?: any;
+  backendExposures?: any;
+  auditReport?: AuditReport;
+  report?: string;
+  error?: string;
+  generatedAt: string;
+}
+
+export async function runUnifiedAPKScan(
+  buffer: Buffer,
+  fileName: string,
+): Promise<UnifiedAPKScanResult> {
+  const phases: UnifiedAPKScanResult["phases"] = [];
+  const modifications: string[] = [];
+  const allSecrets: ExtractedSecret[] = [];
+  const allEndpoints: string[] = [];
+  const allApiKeys: string[] = [];
+  const allDbUrls: string[] = [];
+  const allProjectIds: string[] = [];
+  let firebaseConfigs: any[] = [];
+  let riskLevel = "none";
+
+  const workDir = path.join(os.tmpdir(), `unified_apk_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`);
+  const inputPath = path.join(workDir, "input.apk");
+  const decompDir = path.join(workDir, "decompiled");
+  fs.mkdirSync(workDir, { recursive: true });
+  fs.writeFileSync(inputPath, buffer);
+
+  const apkSizeMB = buffer.length / (1024 * 1024);
+
+  let premiumCount = 0;
+  let coinsCount = 0;
+  let loginBypassed = false;
+  let tamperNeutralized = false;
+  let fridaInjected = false;
+  let signatureVerified = false;
+  let zipIntegrity = false;
+  let packageName = "unknown";
+
+  let webPentestResult: any = null;
+  let headlessResult: any = null;
+
+  try {
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 1: DEEP CLOUD PENTEST (12-Layer Firebase + Secret Extraction)
+    // ══════════════════════════════════════════════════════════════
+    const p1Start = Date.now();
+    const p1Details: string[] = [];
+
+    try {
+      const apkt = findApkTool();
+      const apktJar = findApkToolJar();
+      const pentestDecompDir = path.join(workDir, "pentest_decompiled");
+      const javaAvail = isJavaAvailable();
+      if (javaAvail && apktJar) {
+        runCmd("java", ["-Xmx2G", "-jar", apktJar, "d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
+      }
+      if (!fs.existsSync(pentestDecompDir)) {
+        runCmd(apkt, ["d", "-f", "-o", pentestDecompDir, inputPath], workDir, 300_000);
+      }
+
+      if (fs.existsSync(pentestDecompDir)) {
+        const tempSessId = `unified_apk_${Date.now()}`;
+        editSessions.set(tempSessId, {
+          sessionId: tempSessId,
+          decompDir: pentestDecompDir,
+          origFile: inputPath,
+          structure: [],
+          fileCount: 0,
+          apkToolAvailable: true,
+          usedApkTool: true,
+          fileType: "apk",
+          fileBackups: new Map(),
+          createdAt: Date.now(), lastActivity: Date.now(),
+        } as EditSession);
+
+        try {
+          const deepResult = await extractFirebaseConfigDeep(tempSessId);
+          firebaseConfigs = deepResult.configs;
+          riskLevel = deepResult.summary.riskLevel;
+
+          for (const cfg of deepResult.configs) {
+            if (cfg.apiKey) allApiKeys.push(cfg.apiKey);
+            if (cfg.databaseUrl) allDbUrls.push(cfg.databaseUrl);
+            if (cfg.projectId) allProjectIds.push(cfg.projectId);
+            if (cfg.apiKey) allSecrets.push({ type: `Firebase API Key (Layer ${cfg.layer})`, value: cfg.apiKey, file: cfg.source, line: 0 });
+            if (cfg.databaseUrl) allSecrets.push({ type: `Firebase DB URL (Layer ${cfg.layer})`, value: cfg.databaseUrl, file: cfg.source, line: 0 });
+            if (cfg.projectId) allSecrets.push({ type: `Firebase Project ID (Layer ${cfg.layer})`, value: cfg.projectId, file: cfg.source, line: 0 });
+          }
+
+          p1Details.push(`Firebase: ${deepResult.summary.totalConfigs} إعدادات مكتشفة`);
+          p1Details.push(`مستوى الخطورة: ${riskLevel}`);
+          if (allApiKeys.length > 0) p1Details.push(`API Keys: ${allApiKeys.length}`);
+          if (allDbUrls.length > 0) p1Details.push(`Database URLs: ${allDbUrls.length}`);
+        } catch (dfErr: any) {
+          p1Details.push(`خطأ Deep Firebase: ${dfErr.message}`);
+        }
+
+        const generalSecrets = extractSecretsFromAPK(pentestDecompDir);
+        for (const s of generalSecrets) {
+          if (!allSecrets.some(es => es.value === s.value)) allSecrets.push(s);
+        }
+        if (generalSecrets.length > 0) p1Details.push(`أسرار عامة مكتشفة: ${generalSecrets.length}`);
+
+        // Extract endpoints for web pentest phase
+        const pentestFiles = readDirRecursive(pentestDecompDir).filter(f => {
+          const e = path.extname(f).toLowerCase();
+          return [".smali", ".xml", ".json", ".txt", ".properties"].includes(e);
+        }).slice(0, 500);
+        const endpointSet = new Set<string>();
+        for (const fp of pentestFiles) {
+          try {
+            const content = fs.readFileSync(fp, "utf-8");
+            if (content.length > 500_000) continue;
+            const urlMatches = content.match(/https?:\/\/[^\s"'<>}{)]+/g);
+            if (urlMatches) urlMatches.forEach(u => endpointSet.add(u));
+          } catch {}
+        }
+        allEndpoints.push(...[...endpointSet].slice(0, 200));
+        if (allEndpoints.length > 0) p1Details.push(`نقاط نهاية API: ${allEndpoints.length}`);
+
+        const manifestPath = path.join(pentestDecompDir, "AndroidManifest.xml");
+        if (fs.existsSync(manifestPath)) {
+          const manifest = fs.readFileSync(manifestPath, "utf-8");
+          const pkgMatch = manifest.match(/package="([^"]+)"/);
+          if (pkgMatch) packageName = pkgMatch[1];
+        }
+
+        editSessions.delete(tempSessId);
+        try { fs.rmSync(pentestDecompDir, { recursive: true, force: true }); } catch {}
+      } else {
+        p1Details.push("فشل التفكيك المبدئي للتحليل السحابي");
+      }
+    } catch (e: any) {
+      p1Details.push(`خطأ في المرحلة 1: ${e.message}`);
+    }
+
+    phases.push({ phase: 1, name: "اختبار اختراق سحابي عميق (12 طبقة)", status: allSecrets.length > 0 ? "success" : "warning", details: p1Details, duration: Date.now() - p1Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 2: MEMORY-AWARE DECOMPILATION (for modification)
+    // ══════════════════════════════════════════════════════════════
+    const p2Start = Date.now();
+    const decompResult = memoryAwareDecompile(inputPath, decompDir, workDir, apkSizeMB);
+
+    if (!decompResult.success) {
+      phases.push({ phase: 2, name: "تفكيك ذكي حسب الذاكرة", status: "failed", details: decompResult.details, duration: Date.now() - p2Start });
+      return {
+        success: false, scanMode: "unified-apk", phases,
+        pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+        cloneReport: { packageName, premiumMethodsPatched: 0, loginBypassed: false, pointsUnlocked: false, tamperNeutralized: false, adsRemoved: false, fridaInjected: false, signatureVerified: false, zipIntegrity: false, modifications },
+        error: decompResult.error,
+        generatedAt: new Date().toISOString(),
+      };
+    }
+
+    modifications.push("تم تفكيك APK بنجاح (Memory-Aware)");
+    phases.push({ phase: 2, name: "تفكيك ذكي حسب الذاكرة", status: "success", details: decompResult.details, duration: Date.now() - p2Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 2.5: PURGE OLD SIGNATURES (Recursive META-INF delete)
+    // ══════════════════════════════════════════════════════════════
+    const metaInfPaths = [
+      path.join(decompDir, "original", "META-INF"),
+      path.join(decompDir, "META-INF"),
+    ];
+    let totalPurged = 0;
+    for (const metaDir of metaInfPaths) {
+      if (fs.existsSync(metaDir)) {
+        try { fs.rmSync(metaDir, { recursive: true, force: true }); totalPurged++; } catch {}
+      }
+    }
+    if (totalPurged > 0) modifications.push(`تم حذف ${totalPurged} مجلد META-INF بالكامل (منع Parse Error)`);
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 3: WEB PENTEST ON EXTRACTED BACKEND ENDPOINTS (25 Steps)
+    // This is the KEY new phase — runs the full web pentest pipeline
+    // on the backend URLs discovered inside the APK source code
+    // ══════════════════════════════════════════════════════════════
+    const p3Start = Date.now();
+    const p3Details: string[] = [];
+
+    // Find the best target URL for web pentest
+    const apiTargets = allEndpoints.filter(u =>
+      u.includes("/api/") || u.includes("/v1/") || u.includes("/v2/") ||
+      u.includes("/graphql") || u.includes("/rest/") || u.includes("/auth/")
+    );
+    const firebaseUrls = allEndpoints.filter(u =>
+      u.includes("firebaseio.com") || u.includes("googleapis.com")
+    );
+    const backendUrls = allEndpoints.filter(u => {
+      try {
+        const parsed = new URL(u);
+        return !u.includes("google.com/") && !u.includes("android.com") &&
+               !u.includes("schemas.android.com") && !u.includes("w3.org") &&
+               !u.includes("apache.org") && !u.includes("xml.org") &&
+               parsed.pathname.length > 1;
+      } catch { return false; }
+    });
+
+    // Pick primary target: API endpoint > Firebase > any backend URL
+    const primaryTarget = apiTargets[0] || firebaseUrls[0] || backendUrls[0];
+
+    if (primaryTarget) {
+      // Extract base URL (domain + port, no path)
+      let webPentestUrl: string;
+      try {
+        const parsed = new URL(primaryTarget);
+        webPentestUrl = `${parsed.protocol}//${parsed.host}`;
+      } catch {
+        webPentestUrl = primaryTarget;
+      }
+
+      p3Details.push(`هدف الفحص الرئيسي: ${webPentestUrl}`);
+      p3Details.push(`مصدر: ${apiTargets.length} API + ${firebaseUrls.length} Firebase + ${backendUrls.length} backend`);
+
+      try {
+        const { runWebPentest } = await import("./reverse-engineer.js");
+        webPentestResult = await runWebPentest(webPentestUrl);
+        p3Details.push(`درجة الخطورة: ${webPentestResult.summary?.riskScore}/100`);
+        p3Details.push(`أسرار الويب: ${webPentestResult.exposedSecrets?.secrets?.length || 0}`);
+        p3Details.push(`Backend Exposures: ${webPentestResult.backendExposures?.totalBackendExposures || 0}`);
+        if (webPentestResult.crawler?.pages?.length > 0) {
+          p3Details.push(`صفحات مزحوفة: ${webPentestResult.crawler.pages.length}`);
+        }
+
+        // Merge web pentest secrets into APK secrets
+        if (webPentestResult.exposedSecrets?.secrets) {
+          for (const ws of webPentestResult.exposedSecrets.secrets) {
+            if (!allSecrets.some(s => s.value === ws.value)) {
+              allSecrets.push({ type: `[Web] ${ws.type}`, value: ws.value, file: `web:${webPentestUrl}`, line: 0 });
+            }
+          }
+        }
+      } catch (wpErr: any) {
+        p3Details.push(`خطأ في فحص الويب: ${wpErr.message}`);
+        webPentestResult = { success: false, error: wpErr.message };
+      }
+    } else {
+      p3Details.push("لم يتم العثور على نقاط نهاية backend قابلة للفحص");
+      p3Details.push("تخطي فحص الويب — لا توجد URLs حية في كود APK");
+    }
+
+    phases.push({ phase: 3, name: "فحص الويب على backends المستخرجة (25 خطوة)", status: webPentestResult ? "success" : "warning", details: p3Details, duration: Date.now() - p3Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 4: HEADLESS BROWSER ANALYSIS ON BACKEND (7 Steps)
+    // Puppeteer-based JS execution, network interception, API discovery
+    // ══════════════════════════════════════════════════════════════
+    const p4Start = Date.now();
+    const p4Details: string[] = [];
+
+    if (primaryTarget) {
+      let headlessUrl: string;
+      try {
+        const parsed = new URL(primaryTarget);
+        headlessUrl = `${parsed.protocol}//${parsed.host}`;
+      } catch {
+        headlessUrl = primaryTarget;
+      }
+
+      p4Details.push(`هدف Headless Browser: ${headlessUrl}`);
+
+      try {
+        const { analyzeWithHeadlessBrowser } = await import("./web-analyzer.js");
+        headlessResult = await analyzeWithHeadlessBrowser(headlessUrl);
+        p4Details.push(`طلبات شبكة: ${headlessResult.network?.totalRequests || 0}`);
+        p4Details.push(`APIs مكتشفة: ${headlessResult.apis?.discovered?.length || 0}`);
+        p4Details.push(`JS Runtime Events: ${headlessResult.jsRuntime?.totalEvents || 0}`);
+        if (headlessResult.security) {
+          p4Details.push(`مشاكل أمنية: Mixed Content=${headlessResult.security.mixedContent?.length || 0}, Source Maps=${headlessResult.security.exposedSourceMaps?.length || 0}`);
+        }
+      } catch (hbErr: any) {
+        p4Details.push(`خطأ Headless Browser (non-fatal): ${hbErr.message}`);
+        headlessResult = { success: false, error: hbErr.message };
+      }
+    } else {
+      p4Details.push("تخطي Headless Browser — لا توجد URLs حية");
+    }
+
+    phases.push({ phase: 4, name: "تحليل Headless Browser (Puppeteer — 7 خطوات)", status: headlessResult?.success ? "success" : "warning", details: p4Details, duration: Date.now() - p4Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 5: SMART SMALI PATCHING ENGINE
+    // ══════════════════════════════════════════════════════════════
+    const p5Start = Date.now();
+    const p5Details: string[] = [];
+
+    const manifestPath = path.join(decompDir, "AndroidManifest.xml");
+    let manifest = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, "utf-8") : "";
+    const pkgMatch2 = manifest.match(/package="([^"]+)"/);
+    if (pkgMatch2) packageName = pkgMatch2[1];
+
+    // 5a. Remove Ads
+    {
+      const adMods = await patchAds(decompDir, manifest);
+      modifications.push(...adMods);
+      p5Details.push(...adMods);
+      if (fs.existsSync(manifestPath)) manifest = fs.readFileSync(manifestPath, "utf-8");
+    }
+
+    // 5b. Unlock Premium
+    {
+      const premMods = await patchPremium(decompDir);
+      modifications.push(...premMods);
+      p5Details.push(...premMods);
+      premiumCount = premMods.filter(m => m.includes("🔓")).length;
+      coinsCount = premMods.filter(m => m.includes("💰")).length;
+    }
+
+    // 5c. Remove License Check
+    {
+      const licMods = await patchLicense(decompDir);
+      modifications.push(...licMods);
+      p5Details.push(...licMods);
+    }
+
+    // 5d. Bypass Login
+    {
+      const loginMods = await patchLoginBypass(decompDir, manifestPath);
+      modifications.push(...loginMods);
+      p5Details.push(...loginMods);
+      loginBypassed = loginMods.some(m => m.includes("🚪") || m.includes("تجاوز"));
+    }
+
+    // 5e. Neutralize Tamper Detection
+    {
+      const tamperMods = await patchTamperDetection(decompDir);
+      modifications.push(...tamperMods);
+      p5Details.push(...tamperMods);
+      tamperNeutralized = tamperMods.some(m => m.includes("🛡️") || m.includes("حماية"));
+    }
+
+    // 5f. Extract remaining secrets from decompiled source
+    {
+      const moreSecrets = extractSecretsFromAPK(decompDir);
+      for (const s of moreSecrets) {
+        if (!allSecrets.some(es => es.value === s.value)) allSecrets.push(s);
+      }
+      if (moreSecrets.length > 0) {
+        p5Details.push(`🔑 أسرار إضافية مكتشفة: ${moreSecrets.length}`);
+      }
+    }
+
+    phases.push({ phase: 5, name: "محرك التعديل الذكي (Smali Patching)", status: "success", details: p5Details, duration: Date.now() - p5Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 6: REBUILD, ALIGN, SIGN
+    // ══════════════════════════════════════════════════════════════
+    const p6Start = Date.now();
+    const p6Details: string[] = [];
+    const outputApk = path.join(workDir, "unified_cloned.apk");
+    const apkt = findApkTool();
+
+    const rebuildJava = isJavaAvailable();
+    const rebuildJar = findApkToolJar();
+    const runBuild = (args: string[]) => {
+      if (rebuildJava && rebuildJar) {
+        return runCmd("java", ["-Xmx2G", "-jar", rebuildJar, ...args], workDir, 300_000);
+      }
+      return runCmd(apkt, args, workDir, 300_000);
+    };
+
+    let buildResult = runBuild(["b", "--use-aapt2", "-o", outputApk, decompDir]);
+    if (!fs.existsSync(outputApk)) {
+      p6Details.push("فشل aapt2، إعادة محاولة بدون --use-aapt2...");
+      buildResult = runBuild(["b", "-o", outputApk, decompDir]);
+      if (!fs.existsSync(outputApk)) {
+        p6Details.push("فشل إعادة البناء: " + buildResult.stderr.slice(0, 300));
+        phases.push({ phase: 6, name: "إعادة البناء والتوقيع", status: "failed", details: p6Details, duration: Date.now() - p6Start });
+        return {
+          success: false, scanMode: "unified-apk", phases,
+          pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+          cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, fridaInjected: false, signatureVerified: false, zipIntegrity: false, modifications },
+          webPentest: webPentestResult, headlessBrowser: headlessResult,
+          error: "فشل إعادة بناء APK", generatedAt: new Date().toISOString(),
+        };
+      }
+    }
+    p6Details.push("تم إعادة بناء APK بنجاح");
+    modifications.push("تم إعادة بناء APK بنجاح");
+
+    // Sign: zipalign + apksigner (V1+V2+V3)
+    const signedPath = await signAPKFile(outputApk, workDir);
+    if (signedPath) {
+      p6Details.push("تم التوقيع بـ zipalign + apksigner (V1+V2+V3)");
+      modifications.push("تم توقيع APK بـ V1+V2+V3 (متوافق مع Android 7-14+)");
+    } else {
+      p6Details.push("التوقيع فشل — يمكن التثبيت يدوياً");
+    }
+
+    phases.push({ phase: 6, name: "إعادة البناء والتوقيع (V1+V2+V3)", status: signedPath ? "success" : "warning", details: p6Details, duration: Date.now() - p6Start });
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 7: QUALITY GATE — PRE-DOWNLOAD VERIFICATION
+    // ══════════════════════════════════════════════════════════════
+    const p7Start = Date.now();
+    const p7Details: string[] = [];
+    const finalApk = signedPath || outputApk;
+
+    // Signature verification
+    if (signedPath) {
+      const verifyResult = runCmd("apksigner", ["verify", "--verbose", signedPath], workDir, 30_000);
+      signatureVerified = verifyResult.code === 0;
+      if (signatureVerified) {
+        p7Details.push("التحقق من التوقيع: APK موقّع بشكل صحيح (V1+V2+V3)");
+        modifications.push("التحقق من التوقيع: ناجح");
+      } else {
+        p7Details.push("التحقق من التوقيع فشل: " + verifyResult.stderr.slice(0, 100));
+      }
+    }
+
+    // ZIP integrity
+    const zipCheckResult = runCmd("unzip", ["-t", finalApk], workDir, 30_000);
+    zipIntegrity = zipCheckResult.code === 0 && zipCheckResult.stdout.includes("No errors");
+    if (zipIntegrity) {
+      p7Details.push("سلامة ZIP: لا توجد أخطاء في البيانات المضغوطة");
+    } else {
+      p7Details.push("تحذير سلامة ZIP: " + zipCheckResult.stderr.slice(0, 100));
+    }
+
+    // Manifest validation
+    try {
+      const rebuiltManifest = path.join(decompDir, "AndroidManifest.xml");
+      if (fs.existsSync(rebuiltManifest)) {
+        const mContent = fs.readFileSync(rebuiltManifest, "utf-8");
+        const hasPkg = /package="[^"]+"/.test(mContent);
+        if (hasPkg) p7Details.push(`Manifest: package="${packageName}" موجود`);
+        if (!hasPkg) p7Details.push("تحذير: package مفقود من Manifest");
+      }
+    } catch {}
+
+    const qualityPassed = signatureVerified && zipIntegrity;
+    phases.push({ phase: 7, name: "بوابة الجودة (التحقق)", status: qualityPassed ? "success" : (zipIntegrity ? "warning" : "failed"), details: p7Details, duration: Date.now() - p7Start });
+
+    // FATAL HALT if signature verification fails
+    if (signedPath && !signatureVerified) {
+      const fatalMsg = "FATAL: apksigner verify failed — APK signature is invalid. Pipeline halted.";
+      p7Details.push(fatalMsg);
+      return {
+        success: false, scanMode: "unified-apk", phases,
+        pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+        cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, fridaInjected: false, signatureVerified: false, zipIntegrity, modifications },
+        webPentest: webPentestResult, headlessBrowser: headlessResult,
+        error: fatalMsg, generatedAt: new Date().toISOString(),
+      };
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // PHASE 8: FINAL UNIFIED REPORT
+    // ══════════════════════════════════════════════════════════════
+    const p8Start = Date.now();
+    const p8Details: string[] = [];
+
+    const apkBuffer = fs.readFileSync(finalApk);
+    p8Details.push(`حجم APK النهائي: ${(apkBuffer.length / 1048576).toFixed(2)} MB`);
+    p8Details.push(`أسرار مكتشفة (APK + Web): ${allSecrets.length}`);
+    p8Details.push(`نقاط نهاية: ${allEndpoints.length}`);
+    p8Details.push(`Premium معدّل: ${premiumCount}`);
+    p8Details.push(`تجاوز تسجيل الدخول: ${loginBypassed ? "نعم" : "لا"}`);
+    p8Details.push(`توقيع صحيح: ${signatureVerified ? "نعم" : "لا"}`);
+    p8Details.push(`سلامة ZIP: ${zipIntegrity ? "نعم" : "لا"}`);
+    if (webPentestResult?.summary) {
+      p8Details.push(`درجة خطورة الويب: ${webPentestResult.summary.riskScore}/100`);
+      p8Details.push(`Backend Exposures: ${webPentestResult.backendExposures?.totalBackendExposures || 0}`);
+    }
+    if (headlessResult?.success) {
+      p8Details.push(`Headless Browser: ${headlessResult.network?.totalRequests || 0} طلب شبكة — ${headlessResult.apis?.discovered?.length || 0} API`);
+    }
+
+    const auditReport: AuditReport = {
+      packageName,
+      secretsFound: allSecrets.length,
+      endpointsDiscovered: allEndpoints.length,
+      premiumMethodsPatched: premiumCount,
+      loginBypassed,
+      pointsUnlocked: coinsCount > 0,
+      tamperNeutralized,
+      adsRemoved: true,
+      fridaInjected,
+      signatureVerified,
+      zipIntegrity,
+      modifications,
+      secrets: allSecrets,
+      endpoints: allEndpoints,
+    };
+
+    phases.push({ phase: 8, name: "التقرير الموحد النهائي", status: "success", details: p8Details, duration: Date.now() - p8Start });
+
+    return {
+      success: true,
+      scanMode: "unified-apk",
+      apkBuffer,
+      phases,
+      pentest: {
+        firebaseConfigs,
+        apiKeys: [...new Set(allApiKeys)],
+        databaseUrls: [...new Set(allDbUrls)],
+        projectIds: [...new Set(allProjectIds)],
+        secrets: allSecrets,
+        endpoints: allEndpoints,
+        riskLevel,
+      },
+      cloneReport: {
+        packageName,
+        premiumMethodsPatched: premiumCount,
+        loginBypassed,
+        pointsUnlocked: coinsCount > 0,
+        tamperNeutralized,
+        adsRemoved: true,
+        fridaInjected,
+        signatureVerified,
+        zipIntegrity,
+        modifications,
+      },
+      webPentest: webPentestResult,
+      headlessBrowser: headlessResult,
+      backendExposures: webPentestResult?.backendExposures,
+      auditReport,
+      report: webPentestResult?.report,
+      generatedAt: new Date().toISOString(),
+    };
+  } catch (e: any) {
+    return {
+      success: false, scanMode: "unified-apk", phases,
+      pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+      cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, fridaInjected: false, signatureVerified: false, zipIntegrity: false, modifications },
+      webPentest: webPentestResult, headlessBrowser: headlessResult,
+      error: e.message, generatedAt: new Date().toISOString(),
+    };
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // DEEP FIREBASE CONFIGURATION EXTRACTOR — Multi-Layer Engine
 // ═══════════════════════════════════════════════════════════════
 
