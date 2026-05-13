@@ -690,6 +690,37 @@ router.post("/cloud-pentest-full", upload.single("file"), async (req: Request, r
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ UNIFIED APK SCAN — APK Decompile + Cloud Pentest + Web Pentest + Headless Browser + Rebuild + Sign ═══
+router.post("/unified-apk-scan", upload.single("file"), async (req: Request, res: Response) => {
+  extendTimeout(req, res, 1_200_000); // 20 minutes for full pipeline
+  if (!req.file) { res.status(400).json({ error: "ارفع ملف APK أولاً" }); return; }
+  try {
+    const { runUnifiedAPKScan } = await import("../hayo/services/reverse-engineer.js");
+    const result = await runUnifiedAPKScan(
+      readUploadedFile(req.file),
+      req.file.originalname,
+    );
+
+    // Send to Telegram
+    try {
+      await sendPentestToTelegram({
+        ...result,
+        fileName: req.file.originalname,
+        fileSize: req.file.size,
+      });
+      console.log("[UnifiedAPK-TG] ✅ Sent to Telegram");
+    } catch (tgErr: any) {
+      console.log("[UnifiedAPK-TG] ❌ Error:", tgErr.message);
+    }
+
+    res.json({
+      ...result,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ HEADLESS BROWSER — Puppeteer-based Deep Web Analysis ═══
 router.post("/headless-analyze", async (req: Request, res: Response) => {
   extendTimeout(req, res, 600_000);
