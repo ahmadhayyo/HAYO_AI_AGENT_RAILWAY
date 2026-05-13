@@ -949,24 +949,25 @@ export default function ReverseEngineer(){
 
   const doWebPentest=async()=>{
     if(!wpUrl.trim()){toast.error("أدخل رابط الموقع أولاً");return;}
-    setWpLoading(true);setWpResult(null);setWpShowReport(false);setWpActiveStep(1);setWpStepsRevealed([]);
+    setWpLoading(true);setWpResult(null);setHbResult(null);setWpShowReport(false);setWpActiveStep(1);setWpStepsRevealed([]);
     const revealStep=(n:number)=>setWpStepsRevealed(prev=>[...prev,n]);
-    const webStepTitles=["استطلاع","أسرار","Firebase","IDOR","مسارات","قواعد بيانات","Webhooks","سكريبت","تشفير","Firebase+","AWS","ترويسات","استخبارات","ترسانة","SQLi+XSS","SSRF+LFI","نطاقات","زاحف","كوكيز","DOM XSS","WAF","نماذج","SSTI+CmdI","HTTP+تسريب","مصادقة"];
+    const webStepTitles=["استطلاع","أسرار","Firebase","IDOR","مسارات","قواعد بيانات","Webhooks","سكريبت","تشفير","Firebase+","AWS","ترويسات","استخبارات","ترسانة","SQLi+XSS","SSRF+LFI","نطاقات","زاحف","كوكيز","DOM XSS","WAF","نماذج","SSTI+CmdI","HTTP+تسريب","مصادقة","🌐 Headless Launch","📡 Network Intercept","🔍 JS Runtime","🔗 API Discovery","⚡ Performance","🛡️ Security Audit","✅ Complete"];
     let stepTimer:any;
     const simulateSteps=()=>{
       let s=1;
       revealStep(1);setWpActiveStep(1);
-      stepTimer=setInterval(()=>{s++;if(s<=25){revealStep(s);setWpActiveStep(s);}else clearInterval(stepTimer);},1400);
+      stepTimer=setInterval(()=>{s++;if(s<=32){revealStep(s);setWpActiveStep(s);}else clearInterval(stepTimer);},1400);
     };
     simulateSteps();
     try{
-      const r=await fetchRE("/api/reverse/web-pentest-full",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:wpUrl.trim()})});
+      const r=await fetchRE("/api/reverse/unified-web-scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:wpUrl.trim()})},900000);
       const d=await r.json();
       if(!r.ok)throw new Error(d.error);
       clearInterval(stepTimer);
-      setWpStepsRevealed(Array.from({length:25},(_,i)=>i+1));setWpActiveStep(0);
-      setWpResult(d);setWpExpanded(new Set(Array.from({length:25},(_,i)=>i+1)));
-      toast.success(`اكتمل اختبار اختراق الويب — درجة الخطورة: ${d.summary?.riskScore}/100`);
+      setWpStepsRevealed(Array.from({length:32},(_,i)=>i+1));setWpActiveStep(0);
+      setWpResult(d);setWpExpanded(new Set(Array.from({length:32},(_,i)=>i+1)));
+      if(d.headlessBrowser)setHbResult(d.headlessBrowser);
+      toast.success(`اكتمل الفحص الموحد — درجة الخطورة: ${d.summary?.riskScore}/100 · ${d.headlessBrowser?.network?.totalRequests||0} طلب شبكة`);
     }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setWpLoading(false);}
   };
 
@@ -974,12 +975,27 @@ export default function ReverseEngineer(){
     const urlToClone=targetUrl||cloneUrl||wpUrl;
     if(!urlToClone.trim()){toast.error("أدخل رابط الموقع أولاً");return;}
     setCloneLoading(true);setCloneResult(null);
+    // Build intel payload from scan results
+    const intel:any={};
+    if(wpResult){
+      if(wpResult.summary?.extractedEndpoints)intel.apis=wpResult.summary.extractedEndpoints.map((u:string)=>({url:u}));
+      if(wpResult.exposedSecrets?.secrets)intel.secrets=wpResult.exposedSecrets.secrets;
+      if(wpResult.summary?.technologies)intel.technologies=wpResult.summary.technologies;
+      if(wpResult.crawler?.pages)intel.crawledPages=wpResult.crawler.pages.map((p:any)=>({url:p.url}));
+      if(wpResult.headlessBrowser)intel.headlessBrowser=wpResult.headlessBrowser;
+    }
+    if(hbResult&&!intel.headlessBrowser){
+      intel.headlessBrowser=hbResult;
+    }
     try{
-      const r=await fetchRE("/api/reverse/clone-website",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:urlToClone.trim()})});
+      const body:any={url:urlToClone.trim()};
+      if(Object.keys(intel).length>0)body.intel=intel;
+      const r=await fetchRE("/api/reverse/clone-website",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       const d=await r.json();
       if(!r.ok)throw new Error(d.error);
       setCloneResult(d);
-      toast.success(`تم استنساخ الموقع — ${d.totalFiles} ملف (${d.totalSizeFormatted})`);
+      const intelMsg=d.intelUsed?.totalIntelUrls>0?` + ${d.intelUsed.totalIntelUrls} مورد من الفحص`:"";
+      toast.success(`تم استنساخ الموقع — ${d.totalFiles} ملف (${d.totalSizeFormatted})${intelMsg}`);
     }catch(e:any){toast.error(`فشل الاستنساخ: ${e.message}`);}finally{setCloneLoading(false);}
   };
 
@@ -1825,8 +1841,8 @@ export default function ReverseEngineer(){
             <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-600/20 border border-purple-500/30 flex items-center justify-center">
               <Globe className="w-10 h-10 text-purple-400"/>
             </div>
-            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-300 to-pink-400 bg-clip-text text-transparent">اختبار اختراق ويب — Cipher-7 v11.0</h2>
-            <p className="text-sm text-muted-foreground max-w-lg mx-auto">أدخل رابط الموقع واضغط "ابدأ العمل" — سيتم تنفيذ 25 مرحلة Cipher-7 v11.0 تلقائياً: استطلاع، أسرار، Firebase، IDOR، مسارات حساسة (80+)، قواعد بيانات، Webhooks، سكريبت، تشفير، Firebase معمّق، AWS، ترويسات، استخبارات، ترسانة، SQLi متقدم (Error/Blind/Time/Form)، XSS متقدم (WAF Bypass/DOM)، SSRF، LFI، زاحف عميق، كوكيز، SSTI، Command Injection، كشف WAF، HTTP Methods، واختبار المصادقة</p>
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-300 to-pink-400 bg-clip-text text-transparent">فحص شامل موحد — Cipher-7 + Headless Browser</h2>
+            <p className="text-sm text-muted-foreground max-w-lg mx-auto">أدخل رابط الموقع واضغط "ابدأ الفحص الشامل" — سيتم تنفيذ 32 مرحلة تلقائياً: 25 مرحلة Cipher-7 (استطلاع، أسرار، Firebase، SQLi، XSS، SSRF، LFI، Backend Fuzzing) + 7 مراحل Headless Browser (Puppeteer: تشغيل Chromium، اعتراض الشبكة، JS Runtime، اكتشاف APIs، أداء، أمان) — تقرير موحد شامل → ثم اضغط "استنساخ" لاستخدام جميع البيانات المستخرجة</p>
           </div>
           <div className="w-full max-w-xl space-y-3">
             <div className="relative">
@@ -1836,15 +1852,11 @@ export default function ReverseEngineer(){
             </div>
             <Button onClick={doWebPentest} disabled={!wpUrl.trim()||wpLoading||cloneLoading} size="lg" className="gap-3 bg-gradient-to-r from-purple-600 via-pink-600 to-red-600 hover:from-purple-500 hover:via-pink-500 hover:to-red-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-purple-900/40 font-bold w-full">
               {wpLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Zap className="w-6 h-6"/>}
-              {wpLoading?"جاري اختبار الموقع...":"ابدأ العمل — اختبار اختراق الويب"}
-            </Button>
-            <Button onClick={doHeadlessBrowserAnalysis} disabled={!wpUrl.trim()||hbLoading||wpLoading} size="lg" className="gap-3 bg-gradient-to-r from-sky-600 via-indigo-600 to-violet-600 hover:from-sky-500 hover:via-indigo-500 hover:to-violet-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-indigo-900/40 font-bold w-full">
-              {hbLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Terminal className="w-6 h-6"/>}
-              {hbLoading?"جاري تحليل Headless Browser...":"تحليل عميق — Headless Browser (Puppeteer)"}
+              {wpLoading?"جاري الفحص الموحد (Cipher-7 + Headless Browser)...":"ابدأ الفحص الشامل — Cipher-7 + Headless Browser"}
             </Button>
             <Button onClick={()=>doCloneWebsite(wpUrl)} disabled={!wpUrl.trim()||cloneLoading||wpLoading} size="lg" className="gap-3 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:via-teal-500 hover:to-cyan-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-emerald-900/40 font-bold w-full">
               {cloneLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Layers className="w-6 h-6"/>}
-              {cloneLoading?"جاري استنساخ الموقع...":"استنساخ الموقع بالكامل"}
+              {cloneLoading?"جاري استنساخ الموقع...":`استنساخ الموقع${wpResult?" (مع بيانات الفحص)":""}`}
             </Button>
           </div>
           <div className="grid grid-cols-7 gap-1 w-full max-w-xl">
@@ -1859,6 +1871,12 @@ export default function ReverseEngineer(){
               <div className="text-[7px] text-purple-400/70 mt-0.5">{s}</div>
             </div>)}
           </div>
+          <div className="grid grid-cols-7 gap-1 w-full max-w-xl">
+            {["Headless","Network","JS Runtime","APIs","Performance","Security","Complete"].map((s,i)=><div key={i} className="text-center">
+              <div className="w-6 h-6 mx-auto rounded-full bg-gradient-to-br from-sky-500/20 to-indigo-500/20 border border-sky-500/30 flex items-center justify-center text-[9px] font-bold text-sky-400">{i+26}</div>
+              <div className="text-[7px] text-sky-400/70 mt-0.5">{s}</div>
+            </div>)}
+          </div>
         </div>}
 
         {/* ══ WEB PENTEST — Live Execution Progress ══ */}
@@ -1867,14 +1885,14 @@ export default function ReverseEngineer(){
             <div className="flex items-center gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-purple-400"/>
               <div>
-                <h2 className="text-lg font-bold text-purple-300">جاري تنفيذ اختبار اختراق الويب...</h2>
+                <h2 className="text-lg font-bold text-purple-300">جاري الفحص الموحد (Cipher-7 + Headless Browser)...</h2>
                 <p className="text-xs text-muted-foreground">الموقع: <span className="text-purple-300 font-mono">{wpUrl}</span></p>
               </div>
             </div>
             <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-purple-500 via-pink-500 to-red-500 rounded-full transition-all duration-1000" style={{width:`${(wpActiveStep/14)*100}%`}}/>
+              <div className="h-full bg-gradient-to-r from-purple-500 via-pink-500 to-sky-500 rounded-full transition-all duration-1000" style={{width:`${(wpActiveStep/32)*100}%`}}/>
             </div>
-            <div className="text-[11px] text-muted-foreground mt-2 text-left">{wpActiveStep}/14 مرحلة Cipher-7 Web</div>
+            <div className="text-[11px] text-muted-foreground mt-2 text-left">{wpActiveStep}/32 مرحلة ({wpActiveStep<=25?"Cipher-7":"Headless Browser"})</div>
           </div>
           {[
             {id:1,title:"استطلاع الموقع (Reconnaissance)",desc:"HTTP status, technologies, redirects, scripts",icon:"🌐"},
@@ -2214,18 +2232,18 @@ export default function ReverseEngineer(){
           <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
-                <h2 className="text-xl font-bold flex items-center gap-2"><Globe className="w-6 h-6 text-purple-400"/>تقرير Cipher-7 v11.0 — اختبار اختراق الويب (25 مرحلة)</h2>
+                <h2 className="text-xl font-bold flex items-center gap-2"><Globe className="w-6 h-6 text-purple-400"/>{wpResult.scanMode==="unified"?"تقرير موحد — Cipher-7 + Headless Browser (32 مرحلة)":"تقرير Cipher-7 v11.0 — اختبار اختراق الويب (25 مرحلة)"}</h2>
                 <p className="text-xs text-muted-foreground mt-1">الموقع: <span className="text-purple-300 font-mono">{wpResult.targetUrl}</span> · {new Date(wpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
-                <Button onClick={()=>{setWpResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);setWpShowDevMsg(false);setWpShowExposedSecrets(false);setWpShowPoE(false);setWpShowBackendExposures(false);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
+                <Button onClick={()=>{setWpResult(null);setHbResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);setWpShowDevMsg(false);setWpShowExposedSecrets(false);setWpShowPoE(false);setWpShowBackendExposures(false);setCloneResult(null);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
                 <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`web-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
                 <Button onClick={()=>setWpShowReport(v=>!v)} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><BookOpen className="w-4 h-4"/>{wpShowReport?"إخفاء التقرير":"التقرير الكامل"}</Button>
                 <Button onClick={()=>setWpShowExposedSecrets(v=>!v)} variant="outline" className="gap-2 border-red-500/30 text-red-300"><Key className="w-4 h-4"/>{wpShowExposedSecrets?"إخفاء الأسرار":"الأسرار المكشوفة"}</Button>
                 <Button onClick={()=>setWpShowPoE(v=>!v)} variant="outline" className={`gap-2 ${(wpResult.proof_of_exposure?.totalExposures>0||wpResult.proof_of_exposure?.validSecrets>0)?"border-red-500/50 text-red-300 bg-red-500/10":"border-emerald-500/30 text-emerald-300"}`}><Shield className="w-4 h-4"/>{wpShowPoE?"إخفاء PoE":`إثبات التعرض (${wpResult.proof_of_exposure?.totalExposures||0}) + تحقق (${wpResult.proof_of_exposure?.totalValidated||0})`}</Button>
                 <Button onClick={()=>setWpShowBackendExposures(v=>!v)} variant="outline" className={`gap-2 ${wpResult.backendExposures?.totalBackendExposures>0?"border-rose-500/50 text-rose-300 bg-rose-500/10 animate-pulse":"border-slate-500/30 text-slate-300"}`}><Flame className="w-4 h-4"/>{wpShowBackendExposures?"إخفاء Backend":"استغلال الخادم"+(wpResult.backendExposures?.totalBackendExposures>0?` (${wpResult.backendExposures.totalBackendExposures})`:"")}</Button>
                 <Button onClick={()=>setWpShowDevMsg(v=>!v)} variant="outline" className="gap-2 border-yellow-500/30 text-yellow-300"><AlertTriangle className="w-4 h-4"/>{wpShowDevMsg?"إخفاء رسالة المبرمج":"رسالة للمبرمج"}</Button>
-                <Button onClick={()=>doCloneWebsite(wpResult?.targetUrl||wpUrl)} disabled={cloneLoading} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300">{cloneLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Layers className="w-4 h-4"/>}{cloneLoading?"جاري الاستنساخ...":"استنساخ الموقع"}</Button>
+                <Button onClick={()=>doCloneWebsite(wpResult?.targetUrl||wpUrl)} disabled={cloneLoading} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300 bg-emerald-500/10">{cloneLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Layers className="w-4 h-4"/>}{cloneLoading?"جاري الاستنساخ...":"استنساخ الموقع (مع بيانات الفحص)"}</Button>
               </div>
             </div>
           </div>
@@ -3556,6 +3574,61 @@ export default function ReverseEngineer(){
                 <Button onClick={()=>{const blob=new Blob([cpResult.report],{type:"text/markdown"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`pentest-report-${Date.now()}.md`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 text-xs"><Download className="w-3 h-3"/>تحميل التقرير</Button>
               </div>
             </div>}
+          </div>}
+
+          {/* ══ CLONE RESULT (inside unified results) ══ */}
+          {cloneResult&&wpResult&&<div className="bg-gradient-to-r from-emerald-900/30 to-teal-900/30 border-2 border-emerald-500/40 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <h3 className="text-lg font-bold text-emerald-300 flex items-center gap-2"><Layers className="w-5 h-5"/>نتائج الاستنساخ (مع بيانات الفحص الموحد)</h3>
+              <div className="flex items-center gap-2">
+                <Button onClick={downloadClonedHtml} variant="outline" size="sm" className="gap-2 border-emerald-500/30 text-emerald-300"><Download className="w-4 h-4"/>تحميل النسخة (HTML)</Button>
+                <Button onClick={()=>setCloneResult(null)} variant="outline" size="sm" className="gap-2 border-red-500/30 text-red-300"><X className="w-4 h-4"/>إغلاق</Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="p-3 rounded-xl text-center border bg-emerald-500/10 border-emerald-500/30">
+                <div className="text-2xl font-bold text-emerald-300">{cloneResult.totalFiles}</div>
+                <div className="text-[10px] text-muted-foreground">ملفات مستنسخة</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-teal-500/10 border-teal-500/30">
+                <div className="text-2xl font-bold text-teal-300">{cloneResult.totalSizeFormatted}</div>
+                <div className="text-[10px] text-muted-foreground">الحجم الكلي</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-cyan-500/10 border-cyan-500/30">
+                <div className="text-2xl font-bold text-cyan-300">{cloneResult.technologies?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">تقنيات مكتشفة</div>
+              </div>
+              <div className="p-3 rounded-xl text-center border bg-blue-500/10 border-blue-500/30">
+                <div className="text-2xl font-bold text-blue-300">{cloneResult.files?.filter((f:any)=>f.type==="js").length||0}</div>
+                <div className="text-[10px] text-muted-foreground">ملفات JavaScript</div>
+              </div>
+              {cloneResult.intelUsed&&<div className="p-3 rounded-xl text-center border bg-purple-500/10 border-purple-500/30">
+                <div className="text-2xl font-bold text-purple-300">{cloneResult.intelUsed.totalIntelUrls}</div>
+                <div className="text-[10px] text-muted-foreground">موارد من الفحص</div>
+              </div>}
+            </div>
+            {cloneResult.intelUsed&&cloneResult.intelUsed.totalIntelUrls>0&&<div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-emerald-300 font-semibold">بيانات الفحص المستخدمة:</span>
+              {cloneResult.intelUsed.networkResources>0&&<span className="text-[11px] px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/30 text-sky-300">شبكة: {cloneResult.intelUsed.networkResources}</span>}
+              {cloneResult.intelUsed.crawledPages>0&&<span className="text-[11px] px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/30 text-purple-300">صفحات: {cloneResult.intelUsed.crawledPages}</span>}
+              {cloneResult.intelUsed.apiEndpoints>0&&<span className="text-[11px] px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/30 text-orange-300">APIs: {cloneResult.intelUsed.apiEndpoints}</span>}
+            </div>}
+            {cloneResult.technologies?.length>0&&<div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground">التقنيات:</span>
+              {cloneResult.technologies.map((t:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">{t}</span>)}
+            </div>}
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              <div className="text-sm font-semibold text-emerald-300 mb-2">الملفات المستنسخة:</div>
+              {cloneResult.files?.map((f:any,i:number)=>(
+                <div key={i} className="flex items-center justify-between bg-muted/10 rounded-lg px-3 py-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${f.type==="html"?"bg-orange-400":f.type==="js"?"bg-yellow-400":f.type==="css"?"bg-blue-400":f.type==="font"?"bg-purple-400":f.type==="image"?"bg-green-400":"bg-gray-400"}`}/>
+                    <span className="font-mono text-muted-foreground">{f.path}</span>
+                  </div>
+                  <span className="text-muted-foreground">{f.size>1024?(f.size/1024).toFixed(1)+" KB":f.size+" B"}</span>
+                </div>
+              ))}
+            </div>
           </div>}
 
           <div className="text-center text-[10px] text-muted-foreground border-t border-border/30 pt-3 mt-2">
