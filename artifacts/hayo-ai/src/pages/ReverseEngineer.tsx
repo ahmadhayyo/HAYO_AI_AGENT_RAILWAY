@@ -3528,25 +3528,25 @@ export default function ReverseEngineer(){
 
           {/* Risk Score Dashboard */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div className={`p-4 rounded-xl border text-center ${cpResult.summary.riskScore>60?"bg-red-500/10 border-red-500/40 shadow-lg shadow-red-900/20":"bg-cyan-500/10 border-cyan-500/30"}`}>
-              <div className={`text-4xl font-black ${cpResult.summary.riskScore>60?"text-red-400":cpResult.summary.riskScore>30?"text-yellow-400":"text-emerald-400"}`}>{cpResult.summary.riskScore}</div>
+            <div className={`p-4 rounded-xl border text-center ${(cpResult.summary?.riskScore||0)>60?"bg-red-500/10 border-red-500/40 shadow-lg shadow-red-900/20":"bg-cyan-500/10 border-cyan-500/30"}`}>
+              <div className={`text-4xl font-black ${(cpResult.summary?.riskScore||0)>60?"text-red-400":(cpResult.summary?.riskScore||0)>30?"text-yellow-400":"text-emerald-400"}`}>{cpResult.summary?.riskScore||0}</div>
               <div className="text-[10px] text-muted-foreground mt-1">درجة الخطورة /100</div>
-              <div className={`text-[11px] mt-1 font-semibold ${cpResult.summary.riskScore>60?"text-red-400":"text-emerald-400"}`}>{cpResult.summary.riskScore>60?"خطر مرتفع":cpResult.summary.riskScore>30?"خطر متوسط":"آمن نسبياً"}</div>
+              <div className={`text-[11px] mt-1 font-semibold ${(cpResult.summary?.riskScore||0)>60?"text-red-400":"text-emerald-400"}`}>{(cpResult.summary?.riskScore||0)>60?"خطر مرتفع":(cpResult.summary?.riskScore||0)>30?"خطر متوسط":"آمن نسبياً"}</div>
             </div>
             <div className="p-4 rounded-xl border bg-red-500/10 border-red-500/30 text-center">
-              <div className="text-3xl font-bold text-red-400">{cpResult.summary.criticalCount}</div>
+              <div className="text-3xl font-bold text-red-400">{cpResult.summary?.criticalCount||0}</div>
               <div className="text-[10px] text-muted-foreground mt-1">ثغرات حرجة</div>
             </div>
             <div className="p-4 rounded-xl border bg-orange-500/10 border-orange-500/30 text-center">
-              <div className="text-3xl font-bold text-orange-400">{cpResult.summary.highCount}</div>
+              <div className="text-3xl font-bold text-orange-400">{cpResult.summary?.highCount||0}</div>
               <div className="text-[10px] text-muted-foreground mt-1">تحذيرات</div>
             </div>
             <div className="p-4 rounded-xl border bg-blue-500/10 border-blue-500/30 text-center">
-              <div className="text-3xl font-bold text-blue-400">{cpResult.summary.extractedKeys?.length||0}</div>
+              <div className="text-3xl font-bold text-blue-400">{cpResult.summary?.extractedKeys?.length||0}</div>
               <div className="text-[10px] text-muted-foreground mt-1">مفاتيح مستخرجة</div>
             </div>
             <div className="p-4 rounded-xl border bg-violet-500/10 border-violet-500/30 text-center">
-              <div className="text-3xl font-bold text-violet-400">{cpResult.summary.extractedEndpoints?.length||0}</div>
+              <div className="text-3xl font-bold text-violet-400">{cpResult.summary?.extractedEndpoints?.length||0}</div>
               <div className="text-[10px] text-muted-foreground mt-1">نقاط دخول API</div>
             </div>
           </div>
@@ -3576,7 +3576,7 @@ export default function ReverseEngineer(){
           {/* 7 Steps with full details */}
           <div className="space-y-3">
             <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Terminal className="w-4 h-4"/>الخطوات التنفيذية (8 خطوات)</div>
-            {cpResult.steps.map((step:any)=>{
+            {(cpResult.steps||[]).map((step:any)=>{
               const isOpen=cpExpanded.has(step.id);
               const statusColors:Record<string,string>={critical:"border-red-500/40 bg-red-500/5",warning:"border-orange-500/30 bg-orange-500/5",info:"border-blue-500/20 bg-blue-500/5",success:"border-emerald-500/30 bg-emerald-500/5"};
               const statusIcons:Record<string,string>={critical:"🔴",warning:"🟡",info:"🔵",success:"🟢"};

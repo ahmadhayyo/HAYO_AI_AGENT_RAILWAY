@@ -3771,6 +3771,14 @@ export interface UnifiedAPKScanResult {
     endpoints: string[];
     riskLevel: string;
   };
+  summary: {
+    riskScore: number;
+    criticalCount: number;
+    highCount: number;
+    extractedKeys: ExtractedSecret[];
+    extractedEndpoints: string[];
+    cloudProviders: string[];
+  };
   cloneReport: {
     packageName: string;
     premiumMethodsPatched: number;
@@ -3783,6 +3791,8 @@ export interface UnifiedAPKScanResult {
     zipIntegrity: boolean;
     modifications: string[];
   };
+  steps: Array<{ id: number; title: string; details: string; status: string; findings: string[] }>;
+  deepFirebase?: any;
   webPentest?: any;
   headlessBrowser?: any;
   backendExposures?: any;
@@ -3825,6 +3835,7 @@ export async function runUnifiedAPKScan(
 
   let webPentestResult: any = null;
   let headlessResult: any = null;
+  let deepFirebaseResult: any = null;
 
   try {
     // ══════════════════════════════════════════════════════════════
@@ -3862,6 +3873,7 @@ export async function runUnifiedAPKScan(
 
         try {
           const deepResult = await extractFirebaseConfigDeep(tempSessId);
+          deepFirebaseResult = deepResult;
           firebaseConfigs = deepResult.configs;
           riskLevel = deepResult.summary.riskLevel;
 
@@ -4223,9 +4235,12 @@ export async function runUnifiedAPKScan(
     if (signedPath && !signatureVerified) {
       const fatalMsg = "FATAL: apksigner verify failed — APK signature is invalid. Pipeline halted.";
       p7Details.push(fatalMsg);
+      const fatalSteps = phases.map((p, idx) => ({ id: idx + 1, title: p.name, details: p.details.join(" — "), status: p.status === "success" ? "success" : "critical", findings: p.details }));
       return {
         success: false, scanMode: "unified-apk", phases,
         pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+        summary: { riskScore: 0, criticalCount: 0, highCount: 0, extractedKeys: allSecrets, extractedEndpoints: allEndpoints, cloudProviders: [] },
+        steps: fatalSteps, deepFirebase: deepFirebaseResult,
         cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, fridaInjected: false, signatureVerified: false, zipIntegrity, modifications },
         webPentest: webPentestResult, headlessBrowser: headlessResult,
         error: fatalMsg, generatedAt: new Date().toISOString(),
@@ -4273,6 +4288,43 @@ export async function runUnifiedAPKScan(
 
     phases.push({ phase: 8, name: "التقرير الموحد النهائي", status: "success", details: p8Details, duration: Date.now() - p8Start });
 
+    // Compute unified summary for frontend rendering
+    const criticalCount = allSecrets.filter(s =>
+      s.type.includes("AWS") || s.type.includes("Private Key") || s.type.includes("Stripe Secret") || s.type.includes("JWT")
+    ).length;
+    const highCount = allSecrets.filter(s =>
+      s.type.includes("Firebase") || s.type.includes("GitHub") || s.type.includes("Bearer")
+    ).length;
+    let riskScore = 0;
+    riskScore += criticalCount * 20;
+    riskScore += highCount * 10;
+    riskScore += allSecrets.length * 2;
+    riskScore += allEndpoints.length;
+    if (webPentestResult?.summary?.riskScore) riskScore = Math.max(riskScore, webPentestResult.summary.riskScore);
+    riskScore = Math.min(100, riskScore);
+    const cloudProviders: string[] = [];
+    if (firebaseConfigs.length > 0) cloudProviders.push(...firebaseConfigs.map((c: any) => `Firebase Project: ${c.projectId || "unknown"}`));
+    if (allSecrets.some(s => s.type.includes("AWS"))) cloudProviders.push("AWS");
+    if (allSecrets.some(s => s.type.includes("GCP"))) cloudProviders.push("Google Cloud");
+
+    const summaryObj = {
+      riskScore,
+      criticalCount,
+      highCount,
+      extractedKeys: allSecrets,
+      extractedEndpoints: allEndpoints,
+      cloudProviders: [...new Set(cloudProviders)],
+    };
+
+    // Build steps array for frontend rendering (mapped from phases)
+    const stepsArr = phases.map((p, idx) => ({
+      id: idx + 1,
+      title: p.name,
+      details: p.details.join(" — "),
+      status: p.status === "success" ? "success" : p.status === "warning" ? "warning" : p.status === "failed" ? "critical" : "info",
+      findings: p.details,
+    }));
+
     return {
       success: true,
       scanMode: "unified-apk",
@@ -4287,6 +4339,9 @@ export async function runUnifiedAPKScan(
         endpoints: allEndpoints,
         riskLevel,
       },
+      summary: summaryObj,
+      steps: stepsArr,
+      deepFirebase: deepFirebaseResult,
       cloneReport: {
         packageName,
         premiumMethodsPatched: premiumCount,
@@ -4307,9 +4362,18 @@ export async function runUnifiedAPKScan(
       generatedAt: new Date().toISOString(),
     };
   } catch (e: any) {
+    const errCritical = allSecrets.filter(s => s.type.includes("AWS") || s.type.includes("Private Key") || s.type.includes("Stripe Secret") || s.type.includes("JWT")).length;
+    const errHigh = allSecrets.filter(s => s.type.includes("Firebase") || s.type.includes("GitHub") || s.type.includes("Bearer")).length;
+    const errSteps = phases.map((p, idx) => ({
+      id: idx + 1, title: p.name, details: p.details.join(" — "),
+      status: p.status === "success" ? "success" : p.status === "warning" ? "warning" : "critical",
+      findings: p.details,
+    }));
     return {
       success: false, scanMode: "unified-apk", phases,
       pentest: { firebaseConfigs, apiKeys: allApiKeys, databaseUrls: allDbUrls, projectIds: allProjectIds, secrets: allSecrets, endpoints: allEndpoints, riskLevel },
+      summary: { riskScore: 0, criticalCount: errCritical, highCount: errHigh, extractedKeys: allSecrets, extractedEndpoints: allEndpoints, cloudProviders: [] },
+      steps: errSteps, deepFirebase: deepFirebaseResult,
       cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, fridaInjected: false, signatureVerified: false, zipIntegrity: false, modifications },
       webPentest: webPentestResult, headlessBrowser: headlessResult,
       error: e.message, generatedAt: new Date().toISOString(),
