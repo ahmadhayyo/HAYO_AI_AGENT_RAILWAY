@@ -645,6 +645,7 @@ export default function ReverseEngineer(){
   const[wpShowDevMsg,setWpShowDevMsg]=useState(false);
   const[wpShowExposedSecrets,setWpShowExposedSecrets]=useState(false);
   const[wpShowPoE,setWpShowPoE]=useState(false);
+  const[wpShowBackendExposures,setWpShowBackendExposures]=useState(false);
   // Website Clone
   const[cloneLoading,setCloneLoading]=useState(false);
   const[cloneResult,setCloneResult]=useState<any>(null);
@@ -2217,11 +2218,12 @@ export default function ReverseEngineer(){
                 <p className="text-xs text-muted-foreground mt-1">الموقع: <span className="text-purple-300 font-mono">{wpResult.targetUrl}</span> · {new Date(wpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
-                <Button onClick={()=>{setWpResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);setWpShowDevMsg(false);setWpShowExposedSecrets(false);setWpShowPoE(false);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
+                <Button onClick={()=>{setWpResult(null);setWpUrl("");setWpStepsRevealed([]);setWpActiveStep(0);setWpShowDevMsg(false);setWpShowExposedSecrets(false);setWpShowPoE(false);setWpShowBackendExposures(false);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
                 <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`web-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
                 <Button onClick={()=>setWpShowReport(v=>!v)} variant="outline" className="gap-2 border-purple-500/30 text-purple-300"><BookOpen className="w-4 h-4"/>{wpShowReport?"إخفاء التقرير":"التقرير الكامل"}</Button>
                 <Button onClick={()=>setWpShowExposedSecrets(v=>!v)} variant="outline" className="gap-2 border-red-500/30 text-red-300"><Key className="w-4 h-4"/>{wpShowExposedSecrets?"إخفاء الأسرار":"الأسرار المكشوفة"}</Button>
                 <Button onClick={()=>setWpShowPoE(v=>!v)} variant="outline" className={`gap-2 ${(wpResult.proof_of_exposure?.totalExposures>0||wpResult.proof_of_exposure?.validSecrets>0)?"border-red-500/50 text-red-300 bg-red-500/10":"border-emerald-500/30 text-emerald-300"}`}><Shield className="w-4 h-4"/>{wpShowPoE?"إخفاء PoE":`إثبات التعرض (${wpResult.proof_of_exposure?.totalExposures||0}) + تحقق (${wpResult.proof_of_exposure?.totalValidated||0})`}</Button>
+                <Button onClick={()=>setWpShowBackendExposures(v=>!v)} variant="outline" className={`gap-2 ${wpResult.backendExposures?.totalBackendExposures>0?"border-rose-500/50 text-rose-300 bg-rose-500/10 animate-pulse":"border-slate-500/30 text-slate-300"}`}><Flame className="w-4 h-4"/>{wpShowBackendExposures?"إخفاء Backend":"استغلال الخادم"+(wpResult.backendExposures?.totalBackendExposures>0?` (${wpResult.backendExposures.totalBackendExposures})`:"")}</Button>
                 <Button onClick={()=>setWpShowDevMsg(v=>!v)} variant="outline" className="gap-2 border-yellow-500/30 text-yellow-300"><AlertTriangle className="w-4 h-4"/>{wpShowDevMsg?"إخفاء رسالة المبرمج":"رسالة للمبرمج"}</Button>
                 <Button onClick={()=>doCloneWebsite(wpResult?.targetUrl||wpUrl)} disabled={cloneLoading} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300">{cloneLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Layers className="w-4 h-4"/>}{cloneLoading?"جاري الاستنساخ...":"استنساخ الموقع"}</Button>
               </div>
@@ -2651,6 +2653,147 @@ export default function ReverseEngineer(){
             {wpResult.proof_of_exposure.totalExposures===0&&(!wpResult.proof_of_exposure.secret_validations||wpResult.proof_of_exposure.secret_validations.length===0)&&<div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5 text-center">
               <div className="text-lg font-bold text-emerald-400">لم يتم تأكيد أي تسريبات فعلية</div>
               <div className="text-sm text-muted-foreground mt-1">جميع ملفات التكوين محمية — لم يتم كشف أسرار نص صريح — لا تسريبات LFI أو SSRF</div>
+            </div>}
+          </div>}
+
+          {/* ══ ACTIVE SERVER EXPLOITATION — Backend Exposure & Fuzzing ══ */}
+          {wpShowBackendExposures&&wpResult.backendExposures&&<div className="bg-gradient-to-r from-rose-900/40 via-red-900/30 to-orange-900/40 border-2 border-rose-500/50 rounded-2xl p-5 space-y-5">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-rose-300 flex items-center gap-2"><Flame className="w-5 h-5"/>استغلال الخادم المتقدم — Active Server Exploitation</h3>
+              <div className="flex items-center gap-2">
+                <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult.backendExposures,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`backend-exposures-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" size="sm" className="gap-1 text-[10px] border-rose-500/30 text-rose-300"><Download className="w-3 h-3"/>تصدير</Button>
+              </div>
+            </div>
+
+            {/* Summary Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className={`p-4 rounded-xl border text-center ${wpResult.backendExposures.totalBackendExposures>0?"bg-rose-500/10 border-rose-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-rose-400">{wpResult.backendExposures.totalBackendExposures||0}</div>
+                <div className="text-[10px] text-muted-foreground">إجمالي الاكتشافات</div>
+              </div>
+              <div className={`p-4 rounded-xl border text-center ${wpResult.backendExposures.forcedBrowsing?.exposed>0?"bg-red-500/10 border-red-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-red-400">{wpResult.backendExposures.forcedBrowsing?.exposed||0}</div>
+                <div className="text-[10px] text-muted-foreground">Forced Browsing</div>
+                <div className="text-[9px] text-red-300/60">من {wpResult.backendExposures.forcedBrowsing?.totalProbed||0} مسار</div>
+              </div>
+              <div className={`p-4 rounded-xl border text-center ${wpResult.backendExposures.lfiFuzzing?.confirmed>0?"bg-orange-500/10 border-orange-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-orange-400">{wpResult.backendExposures.lfiFuzzing?.confirmed||0}</div>
+                <div className="text-[10px] text-muted-foreground">LFI Fuzzing</div>
+                <div className="text-[9px] text-orange-300/60">{wpResult.backendExposures.lfiFuzzing?.targetsFound||0} هدف</div>
+              </div>
+              <div className={`p-4 rounded-xl border text-center ${wpResult.backendExposures.ssrfMetadata?.confirmed>0?"bg-cyan-500/10 border-cyan-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-cyan-400">{wpResult.backendExposures.ssrfMetadata?.confirmed||0}</div>
+                <div className="text-[10px] text-muted-foreground">SSRF Metadata</div>
+                <div className="text-[9px] text-cyan-300/60">{wpResult.backendExposures.ssrfMetadata?.targetsFound||0} هدف</div>
+              </div>
+              <div className={`p-4 rounded-xl border text-center ${wpResult.backendExposures.totalSecretsFromBackend>0?"bg-yellow-500/10 border-yellow-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-3xl font-bold text-yellow-400">{wpResult.backendExposures.totalSecretsFromBackend||0}</div>
+                <div className="text-[10px] text-muted-foreground">أسرار مستخرجة</div>
+              </div>
+            </div>
+
+            {/* Backend Exposure Results */}
+            {wpResult.backendExposures.results?.length>0?<div className="space-y-4">
+              {/* Forced Browsing Results */}
+              {wpResult.backendExposures.results.filter((e:any)=>e.vector==="forced_browsing").length>0&&<div className="space-y-2">
+                <div className="text-sm font-semibold text-red-300 flex items-center gap-2"><Search className="w-4 h-4"/>Forced Browsing — ملفات سرية مكشوفة ({wpResult.backendExposures.results.filter((e:any)=>e.vector==="forced_browsing").length})</div>
+                <div className="grid gap-3">
+                  {wpResult.backendExposures.results.filter((e:any)=>e.vector==="forced_browsing").map((e:any,i:number)=>(
+                    <div key={`fb-${i}`} className="bg-red-500/5 border border-red-500/20 rounded-xl p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 text-[10px] font-bold uppercase">CRITICAL</span>
+                          <span className="text-[11px] text-red-200 font-bold">{e.attackVector}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] text-muted-foreground">{e.responseSize} bytes</span>
+                          <Button onClick={()=>{navigator.clipboard.writeText(e.rawContent);toast.success("تم نسخ المحتوى");}} variant="outline" size="sm" className="gap-1 text-[10px] border-red-500/30 text-red-300"><Copy className="w-3 h-3"/>نسخ</Button>
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground break-all font-mono">{e.url}</div>
+                      {e.extractedSecrets?.length>0&&<div className="space-y-1">
+                        <div className="text-[10px] text-red-300 font-semibold">الأسرار المستخرجة ({e.extractedSecrets.length}):</div>
+                        <div className="bg-black/40 rounded-lg p-2 space-y-0.5">
+                          {e.extractedSecrets.map((s:any,j:number)=>(
+                            <div key={j} className="flex items-center gap-2 text-[10px]"><span className="text-red-400 font-mono font-bold">{s.key}</span><span className="text-muted-foreground">=</span><span className="text-white font-mono break-all select-all">{s.value}</span></div>
+                          ))}
+                        </div>
+                      </div>}
+                      <details className="group">
+                        <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-white">عرض المحتوى الخام</summary>
+                        <pre className="bg-black/50 rounded-lg p-3 text-[10px] text-red-200/80 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto select-all mt-1">{e.rawContent}</pre>
+                      </details>
+                    </div>
+                  ))}
+                </div>
+              </div>}
+
+              {/* LFI Fuzzing Results */}
+              {wpResult.backendExposures.results.filter((e:any)=>e.vector==="lfi_fuzz").length>0&&<div className="space-y-2">
+                <div className="text-sm font-semibold text-orange-300 flex items-center gap-2"><AlertTriangle className="w-4 h-4"/>LFI Parameter Fuzzing — تسريبات ملفات ({wpResult.backendExposures.results.filter((e:any)=>e.vector==="lfi_fuzz").length})</div>
+                <div className="grid gap-3">
+                  {wpResult.backendExposures.results.filter((e:any)=>e.vector==="lfi_fuzz").map((e:any,i:number)=>(
+                    <div key={`lfi-${i}`} className="bg-orange-500/5 border border-orange-500/20 rounded-xl p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-300 text-[10px] font-bold uppercase">CRITICAL</span>
+                          <span className="text-[11px] text-orange-200 font-bold">{e.attackVector}</span>
+                        </div>
+                        <Button onClick={()=>{navigator.clipboard.writeText(e.rawContent);toast.success("تم نسخ المحتوى");}} variant="outline" size="sm" className="gap-1 text-[10px] border-orange-500/30 text-orange-300"><Copy className="w-3 h-3"/>نسخ</Button>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground break-all font-mono">{e.url}</div>
+                      <div className="text-[10px] text-orange-200">Payload: <span className="font-mono font-bold">{e.payload}</span></div>
+                      {e.extractedSecrets?.length>0&&<div className="space-y-1">
+                        <div className="text-[10px] text-orange-300 font-semibold">البيانات المسربة ({e.extractedSecrets.length}):</div>
+                        <div className="bg-black/40 rounded-lg p-2 space-y-0.5">
+                          {e.extractedSecrets.map((s:any,j:number)=>(
+                            <div key={j} className="flex items-center gap-2 text-[10px]"><span className="text-orange-400 font-mono font-bold">{s.key}</span><span className="text-muted-foreground">=</span><span className="text-white font-mono break-all select-all">{s.value}</span></div>
+                          ))}
+                        </div>
+                      </div>}
+                      <details className="group">
+                        <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-white">عرض المحتوى الخام</summary>
+                        <pre className="bg-black/50 rounded-lg p-3 text-[10px] text-orange-200/80 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto select-all mt-1">{e.rawContent}</pre>
+                      </details>
+                    </div>
+                  ))}
+                </div>
+              </div>}
+
+              {/* SSRF Metadata Results */}
+              {wpResult.backendExposures.results.filter((e:any)=>e.vector==="ssrf_metadata").length>0&&<div className="space-y-2">
+                <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Globe className="w-4 h-4"/>SSRF Cloud Metadata — بيانات اعتماد سحابية ({wpResult.backendExposures.results.filter((e:any)=>e.vector==="ssrf_metadata").length})</div>
+                <div className="grid gap-3">
+                  {wpResult.backendExposures.results.filter((e:any)=>e.vector==="ssrf_metadata").map((e:any,i:number)=>(
+                    <div key={`ssrf-${i}`} className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-bold uppercase">CRITICAL</span>
+                          <span className="text-[11px] text-cyan-200 font-bold">{e.attackVector}</span>
+                        </div>
+                        <Button onClick={()=>{navigator.clipboard.writeText(e.rawContent);toast.success("تم نسخ المحتوى");}} variant="outline" size="sm" className="gap-1 text-[10px] border-cyan-500/30 text-cyan-300"><Copy className="w-3 h-3"/>نسخ</Button>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground break-all font-mono">{e.url}</div>
+                      {e.extractedSecrets?.length>0&&<div className="space-y-1">
+                        <div className="text-[10px] text-cyan-300 font-semibold">بيانات الاعتماد المسروقة ({e.extractedSecrets.length}):</div>
+                        <div className="bg-black/40 rounded-lg p-2 space-y-0.5">
+                          {e.extractedSecrets.map((s:any,j:number)=>(
+                            <div key={j} className="flex items-center gap-2 text-[10px]"><span className="text-cyan-400 font-mono font-bold">{s.key}</span><span className="text-muted-foreground">=</span><span className="text-white font-mono break-all select-all">{s.value}</span></div>
+                          ))}
+                        </div>
+                      </div>}
+                      <details className="group">
+                        <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-white">عرض المحتوى الخام</summary>
+                        <pre className="bg-black/50 rounded-lg p-3 text-[10px] text-cyan-200/80 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto select-all mt-1">{e.rawContent}</pre>
+                      </details>
+                    </div>
+                  ))}
+                </div>
+              </div>}
+            </div>
+            :<div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5 text-center">
+              <div className="text-lg font-bold text-emerald-400">لم يتم العثور على أي تعرضات في الخادم الخلفي</div>
+              <div className="text-sm text-muted-foreground mt-1">تم فحص {wpResult.backendExposures.forcedBrowsing?.totalProbed||0} مسار + {wpResult.backendExposures.lfiFuzzing?.totalPayloads||0} payload LFI + {wpResult.backendExposures.ssrfMetadata?.totalPayloads||0} payload SSRF — لا تسريبات</div>
             </div>}
           </div>}
 
