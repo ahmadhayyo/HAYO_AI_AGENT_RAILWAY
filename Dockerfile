@@ -22,6 +22,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     strace \
     ltrace \
     aapt \
+    # Chromium & dependencies for Puppeteer Headless Browser
+    chromium \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    libgbm1 \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libcups2 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Install Python dependencies ───────────────────────────────────
@@ -122,6 +137,9 @@ ENV NODE_ENV=production
 ENV PORT=8080
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV LD_LIBRARY_PATH=/opt/android-sdk/build-tools/34.0.0/lib64:/usr/local/lib
+# Puppeteer: use system Chromium instead of downloading bundled one
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 # ── Copy workspace config first (maximizes Docker layer cache) ────
 # .npmrc MUST be copied before pnpm install so shamefully-hoist=true is applied
