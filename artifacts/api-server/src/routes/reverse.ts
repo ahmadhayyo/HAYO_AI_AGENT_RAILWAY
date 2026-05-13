@@ -690,6 +690,21 @@ router.post("/cloud-pentest-full", upload.single("file"), async (req: Request, r
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ HEADLESS BROWSER — Puppeteer-based Deep Web Analysis ═══
+router.post("/headless-analyze", async (req: Request, res: Response) => {
+  extendTimeout(req, res, 600_000);
+  const { url } = req.body as { url?: string };
+  if (!url || typeof url !== "string" || url.trim().length < 4) {
+    res.status(400).json({ error: "أدخل رابط الموقع أولاً" });
+    return;
+  }
+  try {
+    const { analyzeWithHeadlessBrowser } = await import("../hayo/services/web-analyzer.js");
+    const result = await analyzeWithHeadlessBrowser(url.trim());
+    res.json(result);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ WEB PENTEST — Cipher-7 Web Penetration Testing ═══
 router.post("/web-pentest-full", async (req: Request, res: Response) => {
   extendTimeout(req, res, 600_000);

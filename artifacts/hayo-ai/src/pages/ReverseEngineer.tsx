@@ -649,6 +649,11 @@ export default function ReverseEngineer(){
   const[cloneLoading,setCloneLoading]=useState(false);
   const[cloneResult,setCloneResult]=useState<any>(null);
   const[cloneUrl,setCloneUrl]=useState("");
+  // Headless Browser Analysis (Puppeteer)
+  const[hbLoading,setHbLoading]=useState(false);
+  const[hbResult,setHbResult]=useState<any>(null);
+  const[hbActivePhase,setHbActivePhase]=useState(0);
+  const[hbExpanded,setHbExpanded]=useState<Set<string>>(new Set(["network"]));
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -984,6 +989,23 @@ export default function ReverseEngineer(){
     const a=document.createElement("a");
     a.href=url;a.download=`cloned_${new URL(cloneResult.url).hostname}_${Date.now()}.html`;
     a.click();URL.revokeObjectURL(url);
+  };
+
+  const doHeadlessBrowserAnalysis=async()=>{
+    const url=wpUrl.trim();
+    if(!url){toast.error("أدخل رابط الموقع أولاً");return;}
+    setHbLoading(true);setHbResult(null);setHbActivePhase(1);
+    const phases=["launch","navigate","intercept","runtime","apis","performance","security","complete"];
+    let phaseIdx=0;
+    const timer=setInterval(()=>{phaseIdx++;if(phaseIdx<phases.length)setHbActivePhase(phaseIdx+1);else clearInterval(timer);},4000);
+    try{
+      const r=await fetchRE("/api/reverse/headless-analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})},600000);
+      const d=await r.json();
+      clearInterval(timer);
+      if(!r.ok)throw new Error(d.error);
+      setHbResult(d);setHbActivePhase(phases.length);
+      toast.success(`تحليل Headless Browser — ${d.apis?.totalAPIs||0} API · ${d.network?.totalRequests||0} طلب · ${d.jsRuntime?.errors||0} خطأ`);
+    }catch(e:any){clearInterval(timer);toast.error(`فشل التحليل: ${e.message}`);}finally{setHbLoading(false);}
   };
 
   const doDeepFirebaseAudit=async()=>{
@@ -1815,6 +1837,10 @@ export default function ReverseEngineer(){
               {wpLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Zap className="w-6 h-6"/>}
               {wpLoading?"جاري اختبار الموقع...":"ابدأ العمل — اختبار اختراق الويب"}
             </Button>
+            <Button onClick={doHeadlessBrowserAnalysis} disabled={!wpUrl.trim()||hbLoading||wpLoading} size="lg" className="gap-3 bg-gradient-to-r from-sky-600 via-indigo-600 to-violet-600 hover:from-sky-500 hover:via-indigo-500 hover:to-violet-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-indigo-900/40 font-bold w-full">
+              {hbLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Terminal className="w-6 h-6"/>}
+              {hbLoading?"جاري تحليل Headless Browser...":"تحليل عميق — Headless Browser (Puppeteer)"}
+            </Button>
             <Button onClick={()=>doCloneWebsite(wpUrl)} disabled={!wpUrl.trim()||cloneLoading||wpLoading} size="lg" className="gap-3 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:via-teal-500 hover:to-cyan-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-emerald-900/40 font-bold w-full">
               {cloneLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Layers className="w-6 h-6"/>}
               {cloneLoading?"جاري استنساخ الموقع...":"استنساخ الموقع بالكامل"}
@@ -1889,6 +1915,248 @@ export default function ReverseEngineer(){
               <p className="text-xs text-muted-foreground">تحميل HTML/CSS/JS/الصور والخطوط — يرجى الانتظار</p>
             </div>
           </div>
+        </div>}
+
+        {/* ══ HEADLESS BROWSER — Loading ══ */}
+        {hbLoading&&<div className="space-y-4">
+          <div className="bg-gradient-to-r from-sky-900/40 to-indigo-900/40 border border-sky-500/30 rounded-2xl p-5">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-sky-400"/>
+              <div>
+                <h2 className="text-lg font-bold text-sky-300">جاري تحليل Headless Browser (Puppeteer)...</h2>
+                <p className="text-xs text-muted-foreground">الموقع: <span className="text-sky-300 font-mono">{wpUrl}</span></p>
+              </div>
+            </div>
+            <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-sky-500 via-indigo-500 to-violet-500 rounded-full transition-all duration-1000" style={{width:`${(hbActivePhase/8)*100}%`}}/>
+            </div>
+            <div className="text-[11px] text-muted-foreground mt-2 text-left">{hbActivePhase}/8 مراحل</div>
+          </div>
+          {[
+            {id:1,title:"تشغيل Chromium Headless",desc:"إطلاق متصفح Puppeteer بدون واجهة",icon:"🚀"},
+            {id:2,title:"التنقل إلى الموقع",desc:"تحميل الصفحة مع تنفيذ JavaScript كامل",icon:"🌐"},
+            {id:3,title:"اعتراض الشبكة (Network Interception)",desc:"التقاط جميع طلبات XHR/Fetch/WebSocket",icon:"📡"},
+            {id:4,title:"تحليل JS Runtime",desc:"مراقبة console و eval و timers و storage",icon:"⚡"},
+            {id:5,title:"اكتشاف API العميق",desc:"تتبع endpoints من الشبكة + الكود المصدري",icon:"🔍"},
+            {id:6,title:"قياس الأداء",desc:"DOM metrics, heap size, paint timing",icon:"📊"},
+            {id:7,title:"فحص الأمان",desc:"Mixed content, CORS, CSP, source maps",icon:"🛡️"},
+            {id:8,title:"تجميع النتائج",desc:"بناء التقرير الشامل",icon:"📋"},
+          ].map(step=>{
+            const active=hbActivePhase===step.id;
+            const done=hbActivePhase>step.id;
+            return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${step.id>hbActivePhase?"opacity-20 border-border/20":"opacity-100"} ${active?"border-sky-500/60 bg-sky-500/5 shadow-lg shadow-sky-900/20":"border-border/40 bg-card/30"}`}>
+              <div className="flex items-center gap-3 p-3">
+                <span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0 ${active?"bg-sky-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-4 h-4 animate-spin text-sky-400"/>:done?"✅":step.icon}</span>
+                <div className="flex-1 text-right">
+                  <div className={`font-semibold text-xs ${active?"text-sky-300":"text-foreground/80"}`}>{step.title}</div>
+                  <div className="text-[10px] text-muted-foreground">{step.desc}</div>
+                </div>
+                <span className={`text-[9px] px-2 py-0.5 rounded-full ${active?"bg-sky-500/20 text-sky-300 border border-sky-500/40":"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":done?"مكتمل":"في الانتظار"}</span>
+              </div>
+            </div>);
+          })}
+        </div>}
+
+        {/* ══ HEADLESS BROWSER — Results ══ */}
+        {hbResult&&<div className="space-y-4">
+          <div className="bg-gradient-to-r from-sky-900/40 to-indigo-900/40 border border-sky-500/30 rounded-2xl p-5">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h2 className="text-xl font-bold flex items-center gap-2"><Terminal className="w-6 h-6 text-sky-400"/>تقرير Headless Browser — Puppeteer Engine</h2>
+                <p className="text-xs text-muted-foreground mt-1">{hbResult.finalUrl} · {hbResult.pageTitle} · {new Date(hbResult.generatedAt).toLocaleString("ar-EG")}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button onClick={()=>{setHbResult(null);}} variant="outline" className="gap-2 border-sky-500/30 text-sky-300"><Undo2 className="w-4 h-4"/>تحليل جديد</Button>
+                <Button onClick={()=>{const blob=new Blob([JSON.stringify(hbResult,null,2)],{type:"application/json"});const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;a.download=`headless-analysis-${Date.now()}.json`;a.click();URL.revokeObjectURL(u);}} variant="outline" className="gap-2 border-sky-500/30 text-sky-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Dashboard Summary */}
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+            <div className="p-4 rounded-xl border bg-sky-500/10 border-sky-500/30 text-center">
+              <div className="text-3xl font-bold text-sky-300">{hbResult.network?.totalRequests||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">طلبات شبكة</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-indigo-500/10 border-indigo-500/30 text-center">
+              <div className="text-3xl font-bold text-indigo-300">{hbResult.apis?.totalAPIs||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">APIs مكتشفة</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-red-500/10 border-red-500/30 text-center">
+              <div className="text-3xl font-bold text-red-400">{hbResult.jsRuntime?.errors||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">أخطاء JS</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-violet-500/10 border-violet-500/30 text-center">
+              <div className="text-3xl font-bold text-violet-300">{hbResult.jsRuntime?.globalVariables?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">متغيرات عامة</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-amber-500/10 border-amber-500/30 text-center">
+              <div className="text-3xl font-bold text-amber-300">{hbResult.network?.thirdPartyDomains?.length||0}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">نطاقات خارجية</div>
+            </div>
+            <div className="p-4 rounded-xl border bg-emerald-500/10 border-emerald-500/30 text-center">
+              <div className="text-3xl font-bold text-emerald-300">{hbResult.loadTime?Math.round(hbResult.loadTime/1000):0}s</div>
+              <div className="text-[10px] text-muted-foreground mt-1">وقت التحليل</div>
+            </div>
+          </div>
+
+          {/* Collapsible Sections */}
+          {[
+            {key:"network",title:"اعتراض الشبكة — Network Interception",icon:<Network className="w-4 h-4"/>,color:"sky",content:()=><div className="space-y-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {Object.entries(hbResult.network?.byType||{}).map(([type,count]:any)=>(
+                  <div key={type} className="p-2 rounded-lg bg-muted/10 border border-muted/20 text-center">
+                    <div className="text-lg font-bold text-sky-300">{count}</div>
+                    <div className="text-[9px] text-muted-foreground">{type}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-xs text-muted-foreground">الحجم الإجمالي: {((hbResult.network?.totalSize||0)/1024).toFixed(1)} KB · الطلبات الفاشلة: {hbResult.network?.failedRequests?.length||0}</div>
+              {hbResult.network?.thirdPartyDomains?.length>0&&<div>
+                <div className="text-xs font-semibold text-sky-300 mb-2">النطاقات الخارجية ({hbResult.network.thirdPartyDomains.length})</div>
+                <div className="flex flex-wrap gap-1">{hbResult.network.thirdPartyDomains.slice(0,30).map((d:string,i:number)=><span key={i} className="text-[10px] px-2 py-1 rounded-full bg-sky-500/10 border border-sky-500/20 text-sky-300 font-mono">{d}</span>)}</div>
+              </div>}
+              {hbResult.network?.failedRequests?.length>0&&<div>
+                <div className="text-xs font-semibold text-red-300 mb-2">الطلبات الفاشلة ({hbResult.network.failedRequests.length})</div>
+                <div className="space-y-1 max-h-40 overflow-y-auto">{hbResult.network.failedRequests.slice(0,20).map((r:any,i:number)=><div key={i} className="text-[10px] text-red-200/80 font-mono bg-red-500/5 rounded px-2 py-1 break-all">{r.url} — {r.error}</div>)}</div>
+              </div>}
+            </div>},
+            {key:"apis",title:"اكتشاف API العميق — Deep API Discovery",icon:<Search className="w-4 h-4"/>,color:"indigo",content:()=><div className="space-y-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <div className="p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-center"><div className="text-lg font-bold text-indigo-300">{hbResult.apis?.restEndpoints||0}</div><div className="text-[9px] text-muted-foreground">REST</div></div>
+                <div className="p-2 rounded-lg bg-pink-500/10 border border-pink-500/20 text-center"><div className="text-lg font-bold text-pink-300">{hbResult.apis?.graphqlEndpoints||0}</div><div className="text-[9px] text-muted-foreground">GraphQL</div></div>
+                <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-center"><div className="text-lg font-bold text-amber-300">{hbResult.apis?.websocketEndpoints||0}</div><div className="text-[9px] text-muted-foreground">WebSocket</div></div>
+                <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-center"><div className="text-lg font-bold text-red-300">{hbResult.apis?.hiddenEndpoints?.length||0}</div><div className="text-[9px] text-muted-foreground">مخفية (في الكود)</div></div>
+              </div>
+              {hbResult.apis?.authTokensFound?.length>0&&<div>
+                <div className="text-xs font-semibold text-red-300 mb-2">رموز المصادقة المكتشفة ({hbResult.apis.authTokensFound.length})</div>
+                <div className="flex flex-wrap gap-1">{hbResult.apis.authTokensFound.map((t:string,i:number)=><span key={i} className="text-[10px] px-2 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-red-300 font-mono">{t}</span>)}</div>
+              </div>}
+              {hbResult.apis?.discovered?.length>0&&<div>
+                <div className="text-xs font-semibold text-indigo-300 mb-2">APIs المكتشفة عبر الشبكة ({hbResult.apis.discovered.length})</div>
+                <div className="space-y-1 max-h-60 overflow-y-auto">{hbResult.apis.discovered.slice(0,50).map((api:any,i:number)=>(
+                  <div key={i} className="flex items-center gap-2 bg-muted/10 rounded-lg px-3 py-2 text-[11px]">
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${api.method==="GET"?"bg-emerald-500/20 text-emerald-300":api.method==="POST"?"bg-blue-500/20 text-blue-300":"bg-orange-500/20 text-orange-300"}`}>{api.method}</span>
+                    <span className="font-mono text-muted-foreground flex-1 break-all">{api.url}</span>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${api.type==="rest"?"bg-indigo-500/15 text-indigo-300":api.type==="graphql"?"bg-pink-500/15 text-pink-300":"bg-muted/20 text-muted-foreground"}`}>{api.type}</span>
+                    {api.authType&&<span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-300">{api.authType}</span>}
+                    <span className="text-[9px] text-muted-foreground">{api.category}</span>
+                  </div>
+                ))}</div>
+              </div>}
+              {hbResult.apis?.hiddenEndpoints?.length>0&&<div>
+                <div className="text-xs font-semibold text-amber-300 mb-2">Endpoints مخفية في الكود المصدري ({hbResult.apis.hiddenEndpoints.length})</div>
+                <div className="flex flex-wrap gap-1 max-h-40 overflow-y-auto">{hbResult.apis.hiddenEndpoints.slice(0,50).map((ep:string,i:number)=><span key={i} className="text-[10px] px-2 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 font-mono">{ep}</span>)}</div>
+              </div>}
+            </div>},
+            {key:"jsRuntime",title:"تحليل JS Runtime",icon:<Code className="w-4 h-4"/>,color:"violet",content:()=><div className="space-y-3">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                <div className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20 text-center"><div className="text-lg font-bold text-violet-300">{hbResult.jsRuntime?.consoleMessages||0}</div><div className="text-[9px] text-muted-foreground">Console</div></div>
+                <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-center"><div className="text-lg font-bold text-red-300">{hbResult.jsRuntime?.errors||0}</div><div className="text-[9px] text-muted-foreground">Errors</div></div>
+                <div className="p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-center"><div className="text-lg font-bold text-yellow-300">{hbResult.jsRuntime?.warnings||0}</div><div className="text-[9px] text-muted-foreground">Warnings</div></div>
+                <div className="p-2 rounded-lg bg-orange-500/10 border border-orange-500/20 text-center"><div className="text-lg font-bold text-orange-300">{hbResult.jsRuntime?.evalCalls||0}</div><div className="text-[9px] text-muted-foreground">eval()</div></div>
+                <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-center"><div className="text-lg font-bold text-cyan-300">{hbResult.jsRuntime?.timers||0}</div><div className="text-[9px] text-muted-foreground">Timers</div></div>
+              </div>
+              {hbResult.jsRuntime?.globalVariables?.length>0&&<div>
+                <div className="text-xs font-semibold text-violet-300 mb-2">المتغيرات العامة المكشوفة ({hbResult.jsRuntime.globalVariables.length})</div>
+                <div className="space-y-1 max-h-40 overflow-y-auto">{hbResult.jsRuntime.globalVariables.slice(0,40).map((v:any,i:number)=>(
+                  <div key={i} className="flex items-center gap-2 bg-muted/10 rounded px-2 py-1 text-[10px]">
+                    <span className="font-mono text-violet-300 font-bold">{v.name}</span>
+                    <span className="text-muted-foreground">({v.type})</span>
+                    <span className="font-mono text-muted-foreground/70 flex-1 truncate max-w-[300px]">{v.value.slice(0,120)}</span>
+                  </div>
+                ))}</div>
+              </div>}
+              {hbResult.jsRuntime?.storageAccess?.length>0&&<div>
+                <div className="text-xs font-semibold text-cyan-300 mb-2">Storage ({hbResult.jsRuntime.storageAccess.length})</div>
+                <div className="space-y-1 max-h-40 overflow-y-auto">{hbResult.jsRuntime.storageAccess.slice(0,30).map((s:any,i:number)=>(
+                  <div key={i} className="flex items-center gap-2 bg-muted/10 rounded px-2 py-1 text-[10px]">
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${s.type==="localStorage"?"bg-cyan-500/20 text-cyan-300":s.type==="cookie"?"bg-amber-500/20 text-amber-300":"bg-violet-500/20 text-violet-300"}`}>{s.type}</span>
+                    <span className="font-mono text-white/80 font-bold">{s.key}</span>
+                    <span className="font-mono text-muted-foreground/60 flex-1 truncate max-w-[300px]">{s.value.slice(0,80)}</span>
+                  </div>
+                ))}</div>
+              </div>}
+              {hbResult.jsRuntime?.dynamicScripts?.length>0&&<div>
+                <div className="text-xs font-semibold text-orange-300 mb-2">سكريبتات محملة ديناميكياً ({hbResult.jsRuntime.dynamicScripts.length})</div>
+                <div className="space-y-1 max-h-32 overflow-y-auto">{hbResult.jsRuntime.dynamicScripts.map((s:any,i:number)=><div key={i} className="text-[10px] font-mono text-orange-200/80 bg-orange-500/5 rounded px-2 py-1 break-all">{s.url}</div>)}</div>
+              </div>}
+              {hbResult.jsRuntime?.events?.filter((e:any)=>e.type==="error").length>0&&<div>
+                <div className="text-xs font-semibold text-red-300 mb-2">أخطاء JS Runtime ({hbResult.jsRuntime.events.filter((e:any)=>e.type==="error").length})</div>
+                <div className="space-y-1 max-h-40 overflow-y-auto">{hbResult.jsRuntime.events.filter((e:any)=>e.type==="error").slice(0,20).map((e:any,i:number)=>(
+                  <div key={i} className="bg-red-500/5 rounded-lg px-3 py-2 text-[10px]">
+                    <div className="text-red-200/90 font-mono break-all">{e.message}</div>
+                    {e.source&&<div className="text-red-200/50 text-[9px] mt-1">{e.source}</div>}
+                  </div>
+                ))}</div>
+              </div>}
+            </div>},
+            {key:"performance",title:"الأداء — Performance Metrics",icon:<Activity className="w-4 h-4"/>,color:"emerald",content:()=><div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
+                <div className="text-xl font-bold text-emerald-300">{hbResult.performance?.domContentLoaded||0}ms</div>
+                <div className="text-[9px] text-muted-foreground">DOM Content Loaded</div>
+              </div>
+              <div className="p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-center">
+                <div className="text-xl font-bold text-cyan-300">{hbResult.performance?.firstPaint||0}ms</div>
+                <div className="text-[9px] text-muted-foreground">First Paint</div>
+              </div>
+              <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-center">
+                <div className="text-xl font-bold text-blue-300">{hbResult.performance?.largestContentfulPaint||0}ms</div>
+                <div className="text-[9px] text-muted-foreground">LCP</div>
+              </div>
+              <div className="p-3 rounded-xl bg-violet-500/10 border border-violet-500/20 text-center">
+                <div className="text-xl font-bold text-violet-300">{hbResult.performance?.domNodes||0}</div>
+                <div className="text-[9px] text-muted-foreground">DOM Nodes</div>
+              </div>
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-center">
+                <div className="text-xl font-bold text-amber-300">{((hbResult.performance?.usedJSHeapSize||0)/1024).toFixed(1)} MB</div>
+                <div className="text-[9px] text-muted-foreground">JS Heap Used</div>
+              </div>
+              <div className="p-3 rounded-xl bg-orange-500/10 border border-orange-500/20 text-center">
+                <div className="text-xl font-bold text-orange-300">{((hbResult.performance?.totalJSHeapSize||0)/1024).toFixed(1)} MB</div>
+                <div className="text-[9px] text-muted-foreground">JS Heap Total</div>
+              </div>
+              <div className="p-3 rounded-xl bg-pink-500/10 border border-pink-500/20 text-center">
+                <div className="text-xl font-bold text-pink-300">{hbResult.performance?.fullLoad||0}ms</div>
+                <div className="text-[9px] text-muted-foreground">Full Load</div>
+              </div>
+              <div className="p-3 rounded-xl bg-teal-500/10 border border-teal-500/20 text-center">
+                <div className="text-xl font-bold text-teal-300">{hbResult.performance?.jsEventListeners>=0?hbResult.performance.jsEventListeners:"N/A"}</div>
+                <div className="text-[9px] text-muted-foreground">Event Listeners</div>
+              </div>
+            </div>},
+            {key:"security",title:"الأمان — Security",icon:<Shield className="w-4 h-4"/>,color:"red",content:()=><div className="space-y-3">
+              {hbResult.security?.mixedContent?.length>0&&<div>
+                <div className="text-xs font-semibold text-red-300 mb-2">Mixed Content ({hbResult.security.mixedContent.length})</div>
+                <div className="space-y-1 max-h-32 overflow-y-auto">{hbResult.security.mixedContent.slice(0,15).map((u:string,i:number)=><div key={i} className="text-[10px] font-mono text-red-200/80 bg-red-500/5 rounded px-2 py-1 break-all">{u}</div>)}</div>
+              </div>}
+              {hbResult.security?.exposedSourceMaps?.length>0&&<div>
+                <div className="text-xs font-semibold text-amber-300 mb-2">Source Maps مكشوفة ({hbResult.security.exposedSourceMaps.length})</div>
+                <div className="space-y-1 max-h-32 overflow-y-auto">{hbResult.security.exposedSourceMaps.slice(0,15).map((u:string,i:number)=><div key={i} className="text-[10px] font-mono text-amber-200/80 bg-amber-500/5 rounded px-2 py-1 break-all">{u}</div>)}</div>
+              </div>}
+              {Object.keys(hbResult.security?.corsHeaders||{}).length>0&&<div>
+                <div className="text-xs font-semibold text-cyan-300 mb-2">CORS Headers</div>
+                <div className="space-y-1">{Object.entries(hbResult.security.corsHeaders).map(([k,v]:any)=><div key={k} className="flex items-center gap-2 text-[10px]"><span className="font-mono text-cyan-300">{k}:</span><span className="font-mono text-muted-foreground">{v}</span></div>)}</div>
+              </div>}
+              {hbResult.security?.serviceWorkers?.length>0&&<div>
+                <div className="text-xs font-semibold text-violet-300 mb-2">Service Workers ({hbResult.security.serviceWorkers.length})</div>
+                <div className="space-y-1">{hbResult.security.serviceWorkers.map((u:string,i:number)=><div key={i} className="text-[10px] font-mono text-violet-200/80 bg-violet-500/5 rounded px-2 py-1 break-all">{u}</div>)}</div>
+              </div>}
+              {!hbResult.security?.mixedContent?.length&&!hbResult.security?.exposedSourceMaps?.length&&Object.keys(hbResult.security?.corsHeaders||{}).length===0&&<div className="text-center text-sm text-emerald-300 py-4">لم يُكتشف محتوى مختلط أو source maps مكشوفة</div>}
+            </div>},
+          ].map(section=>{
+            const isOpen=hbExpanded.has(section.key);
+            return(<div key={section.key} className={`bg-gradient-to-r from-${section.color}-900/20 to-${section.color}-900/10 border border-${section.color}-500/30 rounded-2xl overflow-hidden`}>
+              <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5 transition-all" onClick={()=>{const next=new Set(hbExpanded);if(next.has(section.key))next.delete(section.key);else next.add(section.key);setHbExpanded(next);}}>
+                <div className="flex items-center gap-2">
+                  {section.icon}
+                  <h3 className={`text-sm font-bold text-${section.color}-300`}>{section.title}</h3>
+                </div>
+                {isOpen?<ChevronDown className="w-4 h-4 text-muted-foreground"/>:<ChevronRight className="w-4 h-4 text-muted-foreground"/>}
+              </div>
+              {isOpen&&<div className="px-4 pb-4">{section.content()}</div>}
+            </div>);
+          })}
         </div>}
 
         {/* ══ CLONE RESULT (standalone — no pentest) ══ */}

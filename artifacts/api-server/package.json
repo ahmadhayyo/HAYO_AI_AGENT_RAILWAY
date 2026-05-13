@@ -39,6 +39,7 @@
     "pino": "^9",
     "pino-http": "^10",
     "pptxgenjs": "^4.0.1",
+    "puppeteer": "^24.43.1",
     "stripe": "^22.0.0",
     "superjson": "^2.2.2",
     "xlsx": "^0.18.5",
