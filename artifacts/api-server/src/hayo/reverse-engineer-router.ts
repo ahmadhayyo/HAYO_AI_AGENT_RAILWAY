@@ -416,6 +416,14 @@ export const reverseEngineerRouter = router({
       if (!info.exists) throw new TRPCError({ code: "NOT_FOUND", message: "الجلسة غير موجودة" });
       return info;
     }),
+
+  // ── 28. Headless Browser Analysis (Puppeteer) ──────────────────
+  headlessAnalyze: protectedProcedure
+    .input(z.object({ url: z.string().min(4) }))
+    .mutation(async ({ input }) => {
+      const { analyzeWithHeadlessBrowser } = await import("./services/web-analyzer.js");
+      return analyzeWithHeadlessBrowser(input.url);
+    }),
 });
 
 export type ReverseEngineerRouter = typeof reverseEngineerRouter;
