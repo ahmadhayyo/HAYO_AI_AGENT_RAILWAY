@@ -11225,6 +11225,18 @@ export interface ClonedFile {
   url: string;
 }
 
+export interface ScanIntel {
+  apis?: Array<{ url: string; method?: string }>;
+  secrets?: Array<{ type: string; value: string; source: string }>;
+  networkRequests?: Array<{ url: string; method: string; resourceType: string }>;
+  technologies?: string[];
+  crawledPages?: Array<{ url: string }>;
+  headlessBrowser?: {
+    network?: { requests?: Array<{ url: string; resourceType: string }> };
+    apis?: { discovered?: Array<{ url: string; method?: string }> };
+  };
+}
+
 export interface WebsiteCloneResult {
   success: boolean;
   url: string;
@@ -11236,9 +11248,10 @@ export interface WebsiteCloneResult {
   htmlContent: string;
   technologies: string[];
   cloneDir: string;
+  intelUsed?: { apiEndpoints: number; networkResources: number; crawledPages: number; totalIntelUrls: number };
 }
 
-export async function cloneWebsite(targetUrl: string): Promise<WebsiteCloneResult> {
+export async function cloneWebsite(targetUrl: string, intel?: ScanIntel): Promise<WebsiteCloneResult> {
   let url: URL;
   try {
     url = new URL(targetUrl.startsWith("http") ? targetUrl : `https://${targetUrl}`);
@@ -11295,6 +11308,57 @@ export async function cloneWebsite(targetUrl: string): Promise<WebsiteCloneResul
   // Manifest
   const manifestMatch = htmlText.match(/href="([^"]*manifest[^"]*)"/i);
   if (manifestMatch) resourceUrls.push({ url: manifestMatch[1], type: "manifest" });
+
+  // Step 2.5: Enrich with intel data from scan (if available)
+  let intelApiCount = 0;
+  let intelNetworkCount = 0;
+  let intelCrawledCount = 0;
+  const existingUrls = new Set(resourceUrls.map(r => r.url));
+
+  if (intel) {
+    // Add technologies from scan
+    if (intel.technologies) {
+      for (const t of intel.technologies) {
+        if (!technologies.includes(t)) technologies.push(t);
+      }
+    }
+
+    // Add network-intercepted resources (JS, CSS, images, fonts from Headless Browser)
+    const hbRequests = intel.headlessBrowser?.network?.requests || [];
+    for (const req of hbRequests) {
+      if (existingUrls.has(req.url) || !req.url.startsWith("http")) continue;
+      const rt = req.resourceType?.toLowerCase() || "";
+      let ftype: ClonedFile["type"] = "other";
+      if (rt === "stylesheet" || req.url.match(/\.css/i)) ftype = "css";
+      else if (rt === "script" || req.url.match(/\.js/i)) ftype = "js";
+      else if (rt === "font" || req.url.match(/\.woff2?|\.ttf|\.otf/i)) ftype = "font";
+      else if (rt === "image" || req.url.match(/\.png|\.jpg|\.jpeg|\.gif|\.svg|\.webp|\.ico/i)) ftype = "image";
+      else if (rt === "manifest") ftype = "manifest";
+      else continue;
+      resourceUrls.push({ url: req.url, type: ftype });
+      existingUrls.add(req.url);
+      intelNetworkCount++;
+    }
+
+    // Add crawled pages from Cipher-7
+    if (intel.crawledPages) {
+      for (const pg of intel.crawledPages) {
+        if (existingUrls.has(pg.url) || !pg.url.startsWith("http")) continue;
+        resourceUrls.push({ url: pg.url, type: "html" });
+        existingUrls.add(pg.url);
+        intelCrawledCount++;
+      }
+    }
+
+    // Add discovered API endpoints
+    const hbApis = intel.headlessBrowser?.apis?.discovered || [];
+    const allApis = [...(intel.apis || []), ...hbApis];
+    for (const api of allApis) {
+      if (existingUrls.has(api.url) || !api.url.startsWith("http")) continue;
+      intelApiCount++;
+      existingUrls.add(api.url);
+    }
+  }
 
   // Step 3: Download all resources in parallel
   const downloadPromises = resourceUrls.map(async (res) => {
@@ -11358,6 +11422,14 @@ export async function cloneWebsite(targetUrl: string): Promise<WebsiteCloneResul
     htmlContent: selfContainedHtml,
     technologies,
     cloneDir,
+    ...(intel ? {
+      intelUsed: {
+        apiEndpoints: intelApiCount,
+        networkResources: intelNetworkCount,
+        crawledPages: intelCrawledCount,
+        totalIntelUrls: intelApiCount + intelNetworkCount + intelCrawledCount,
+      },
+    } : {}),
   };
 }
 

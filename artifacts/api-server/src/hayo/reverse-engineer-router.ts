@@ -424,6 +424,24 @@ export const reverseEngineerRouter = router({
       const { analyzeWithHeadlessBrowser } = await import("./services/web-analyzer.js");
       return analyzeWithHeadlessBrowser(input.url);
     }),
+
+  // ── 29. Unified Web Scan (Cipher-7 + Headless Browser) ──────────
+  unifiedWebScan: protectedProcedure
+    .input(z.object({ url: z.string().min(4) }))
+    .mutation(async ({ input }) => {
+      const { runWebPentest } = await import("./services/reverse-engineer.js");
+      const pentestResult = await runWebPentest(input.url);
+
+      let headlessResult: any = null;
+      try {
+        const { analyzeWithHeadlessBrowser } = await import("./services/web-analyzer.js");
+        headlessResult = await analyzeWithHeadlessBrowser(input.url);
+      } catch (hbErr: any) {
+        headlessResult = { success: false, error: hbErr.message };
+      }
+
+      return { ...pentestResult, headlessBrowser: headlessResult, scanMode: "unified" as const };
+    }),
 });
 
 export type ReverseEngineerRouter = typeof reverseEngineerRouter;

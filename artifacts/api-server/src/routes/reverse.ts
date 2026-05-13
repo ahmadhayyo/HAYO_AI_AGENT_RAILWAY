@@ -705,6 +705,47 @@ router.post("/headless-analyze", async (req: Request, res: Response) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ UNIFIED WEB SCAN — Cipher-7 + Headless Browser Combined ═══
+router.post("/unified-web-scan", async (req: Request, res: Response) => {
+  extendTimeout(req, res, 900_000);
+  const { url } = req.body as { url?: string };
+  if (!url || typeof url !== "string" || url.trim().length < 4) {
+    res.status(400).json({ error: "أدخل رابط الموقع أولاً" });
+    return;
+  }
+  try {
+    const targetUrl = url.trim();
+
+    // Phase 1: Cipher-7 Web Pentest (25 stages)
+    const { runWebPentest } = await import("../hayo/services/reverse-engineer.js");
+    const pentestResult = await runWebPentest(targetUrl);
+
+    // Phase 2: Headless Browser Analysis (Puppeteer)
+    let headlessResult: any = null;
+    try {
+      const { analyzeWithHeadlessBrowser } = await import("../hayo/services/web-analyzer.js");
+      headlessResult = await analyzeWithHeadlessBrowser(targetUrl);
+    } catch (hbErr: any) {
+      console.log("[UnifiedScan] Headless Browser failed (non-fatal):", hbErr.message);
+      headlessResult = { success: false, error: hbErr.message };
+    }
+
+    // Send to Telegram
+    try {
+      await sendPentestToTelegram(pentestResult);
+    } catch (tgErr: any) {
+      console.log("[UnifiedScan-TG] ❌ Error:", tgErr.message);
+    }
+
+    // Return unified result
+    res.json({
+      ...pentestResult,
+      headlessBrowser: headlessResult,
+      scanMode: "unified",
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══ WEB PENTEST — Cipher-7 Web Penetration Testing ═══
 router.post("/web-pentest-full", async (req: Request, res: Response) => {
   extendTimeout(req, res, 600_000);
@@ -731,14 +772,14 @@ router.post("/web-pentest-full", async (req: Request, res: Response) => {
 // ═══════════════════ Website Clone ═══════════════════
 router.post("/clone-website", async (req: Request, res: Response) => {
   extendTimeout(req, res, 300_000);
-  const { url } = req.body as { url?: string };
+  const { url, intel } = req.body as { url?: string; intel?: any };
   if (!url || typeof url !== "string" || url.trim().length < 4) {
     res.status(400).json({ error: "أدخل رابط الموقع أولاً" });
     return;
   }
   try {
     const { cloneWebsite } = await import("../hayo/services/reverse-engineer.js");
-    const cloneResult = await cloneWebsite(url.trim());
+    const cloneResult = await cloneWebsite(url.trim(), intel || undefined);
     res.json(cloneResult);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
