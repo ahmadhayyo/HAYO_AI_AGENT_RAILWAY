@@ -19,7 +19,7 @@ import {
   ToggleLeft, ToggleRight, Rocket, Flame, Settings,
   Keyboard, Database, Activity, TrendingUp, BarChart3, Code,
   Microscope, Network, FileSearch, Diff, Layers, FileOutput, FileText,
-  ArrowUpDown, Braces, Hash, Link2, Monitor, type LucideIcon,
+  ArrowUpDown, Braces, Hash, Link2, Monitor, Cloud, type LucideIcon,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -927,8 +927,8 @@ export default function ReverseEngineer(){
     if(!cpFile){toast.error("ارفع ملف APK أولاً");return;}
     setCpLoading(true);setCpResult(null);setCpShowReport(false);setCpActiveStep(1);setCpStepsRevealed([]);setHbResult(null);
     const revealStep=(n:number)=>setCpStepsRevealed(prev=>[...prev,n]);
-    // 46 total phases: 14 APK + 25 Web Pentest + 7 Headless Browser
-    const totalSteps=46;
+    // 45 total phases: A(1-3) + B(4-8) + C(9-14) + D(15-21) + E(22-30) + F(31-33) + G(34-38) + H(39-42) + I(43-45)
+    const totalSteps=45;
     let stepTimer:any;
     const simulateSteps=()=>{
       let s=1;
@@ -942,8 +942,8 @@ export default function ReverseEngineer(){
       const d=await r.json();
       if(!r.ok)throw new Error(d.error);
       clearInterval(stepTimer);
-      setCpStepsRevealed(Array.from({length:totalSteps},(_,i)=>i+1));setCpActiveStep(0);
-      setCpResult(d);setCpExpanded(new Set(Array.from({length:totalSteps},(_,i)=>i+1)));
+      setCpStepsRevealed(Array.from({length:45},(_,i)=>i+1));setCpActiveStep(0);
+      setCpResult(d);setCpExpanded(new Set(Array.from({length:45},(_,i)=>i+1)));
       if(d.headlessBrowser)setHbResult(d.headlessBrowser);
       const webScore=d.webPentest?.summary?.riskScore;
       const hbReqs=d.headlessBrowser?.network?.totalRequests||0;
@@ -1804,7 +1804,7 @@ export default function ReverseEngineer(){
           {/* Individual buttons — secondary */}
           <div className="flex items-center gap-3 flex-wrap justify-center">
             <Button onClick={doCloudPentestFull} disabled={!cpFile||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-cyan-600 via-violet-600 to-orange-600 hover:from-cyan-500 hover:via-violet-500 hover:to-orange-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-cyan-900/30">
-              <Zap className="w-5 h-5"/>ابدأ الفحص الموحد — APK + Web Pentest + Headless (46 مرحلة)
+              <Zap className="w-5 h-5"/>ابدأ الفحص الموحد — 45 مرحلة (9 مجموعات A-I)
             </Button>
             <Button onClick={doDeepFirebaseAudit} disabled={!cpFile||dfbLoading||seqRunning} size="lg" className="gap-3 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-base px-8 py-6 rounded-xl shadow-lg shadow-orange-900/30">
               {dfbLoading?<Loader2 className="w-5 h-5 animate-spin"/>:<Flame className="w-5 h-5"/>}Deep Firebase Audit
@@ -3148,118 +3148,111 @@ export default function ReverseEngineer(){
             <div className="flex items-center gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-cyan-400"/>
               <div>
-                <h2 className="text-lg font-bold text-cyan-300">جاري الفحص الموحد — APK + Web Pentest + Headless Browser...</h2>
+                <h2 className="text-lg font-bold text-cyan-300">جاري الفحص الموحد — 45 مرحلة (9 مجموعات A-I)...</h2>
                 <p className="text-xs text-muted-foreground">الملف: {cpFile?.name} ({cpFile?((cpFile.size/1024/1024).toFixed(1)+" MB"):""})</p>
               </div>
             </div>
             <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-cyan-500 via-violet-500 to-orange-500 via-emerald-500 rounded-full transition-all duration-1000" style={{width:`${(cpActiveStep/46)*100}%`}}/>
+              <div className="h-full bg-gradient-to-r from-cyan-500 via-violet-500 to-orange-500 via-emerald-500 rounded-full transition-all duration-1000" style={{width:`${(cpActiveStep/45)*100}%`}}/>
             </div>
-            <div className="text-[11px] text-muted-foreground mt-2 text-left">{cpActiveStep}/46 مرحلة — {cpActiveStep<=14?"APK Cipher-7":cpActiveStep<=39?"Web Pentest (25 خطوة)":"Headless Browser"}</div>
+            <div className="text-[11px] text-muted-foreground mt-2 text-left">{cpActiveStep}/45 مرحلة — {cpActiveStep<=3?"A: التفكيك":cpActiveStep<=8?"B: الاستخراج العميق":cpActiveStep<=14?"C: اختبار المفاتيح":cpActiveStep<=21?"D: اختراق السحابة":cpActiveStep<=30?"E: فحص الويب":cpActiveStep<=33?"F: Headless Browser":cpActiveStep<=38?"G: تعديل APK":cpActiveStep<=42?"H: البناء والتوقيع":"I: التقرير النهائي"}</div>
           </div>
-          {/* APK Phases Group */}
-          <div className="border border-cyan-500/20 rounded-xl p-3 bg-cyan-950/10">
-            <h3 className="text-xs font-bold text-cyan-400 mb-2">المرحلة A — تحليل APK (14 خطوة Cipher-7)</h3>
+          {/* ═══ 9 Phase Groups (A-I) ═══ */}
           {[
-            {id:1,title:"تفكيك APK وتحليل الهيكل الداخلي",desc:"apktool + jadx + Manifest + google-services.json + smali",icon:"📦"},
-            {id:2,title:"استخراج التوكن الحقيقي (JWT/Bearer)",desc:"SharedPreferences + Frida + ADB + smali const-string",icon:"🔐"},
-            {id:3,title:"استخراج المفاتيح والتوكنات من الكود",desc:"Firebase keys, AWS, JWT, Bearer tokens, API keys",icon:"🔑"},
-            {id:4,title:"استغلال API وجلب بيانات المستخدمين (IDOR)",desc:"/api/users + /api/user/ID + IDOR enumeration",icon:"🌐"},
-            {id:5,title:"استغلال الحسابات — ترقية/تخفيض/تحويل/PIN",desc:"ترقية + تخفيض خطة + تحويل رصيد + إعادة تعيين PIN",icon:"💎"},
-            {id:6,title:"سحب قاعدة البيانات السحابية بالكامل",desc:"Firebase RTDB dump + REST API pagination + S3/MongoDB",icon:"📡"},
-            {id:7,title:"إرسال البيانات المسروقة إلى بوت Telegram",desc:"sendMessage + sendDocument + تقسيم 4096 حرف",icon:"🤖"},
-            {id:8,title:"السكريبت المتكامل + التقرير",desc:"Python script + تقرير احترافي + توصيات الإصلاح",icon:"⚙️"},
-            {id:9,title:"Cipher-7: تحليل التشفير والفك",desc:"Base64 + JWT decode + Hex + XOR brute-force + Reverse-Base64",icon:"🔓"},
-            {id:10,title:"Cipher-7: استغلال Firebase المعمّق",desc:"12 طبقة + Anonymous Auth + Deep Path Enum (50+) + Firestore",icon:"🔥"},
-            {id:11,title:"Cipher-7: تقييم أمان AWS",desc:"IAM + S3 + Lambda + API Gateway + Cognito + DynamoDB + WAF bypass",icon:"☁️"},
-            {id:12,title:"Cipher-7: تجاوز الحمايات",desc:"SSL Pinning + Signature + Root + Anti-Debug + Emulator + SafetyNet + Frida",icon:"🛡️"},
-            {id:13,title:"Cipher-7: تقرير الاستخبارات الموحّد",desc:"CVSS + مصفوفة المخاطر + التوصيات + ملخص تنفيذي",icon:"📊"},
-            {id:14,title:"Cipher-7: ترسانة الهجوم الكاملة",desc:"Frida scripts + AWS commands + WAF bypass + أوامر الاستغلال",icon:"⚔️"},
-          ].map(step=>{
-            const revealed=cpStepsRevealed.includes(step.id);
-            const active=cpActiveStep===step.id;
-            return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${!revealed?"opacity-20 border-border/20":"opacity-100"} ${active?"border-cyan-500/60 bg-cyan-500/5 shadow-lg shadow-cyan-900/20":"border-border/40 bg-card/30"}`}>
-              <div className="flex items-center gap-3 p-4">
-                <span className={`w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0 ${active?"bg-cyan-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-5 h-5 animate-spin text-cyan-400"/>:revealed?"✅":step.icon}</span>
-                <div className="flex-1 text-right">
-                  <div className={`font-semibold text-sm ${active?"text-cyan-300":"text-foreground/80"}`}>{step.title}</div>
-                  <div className="text-[11px] text-muted-foreground">{step.desc}</div>
-                </div>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full ${active?"bg-cyan-500/20 text-cyan-300 border border-cyan-500/40":"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":revealed?"مكتمل":"في الانتظار"}</span>
-              </div>
+            {group:"A",title:"التفكيك والاستطلاع",color:"cyan",steps:[
+              {id:1,title:"تفكيك APK ذكي حسب الذاكرة",desc:"APKTool + Memory-Aware decompilation",icon:"📦"},
+              {id:2,title:"تحليل AndroidManifest",desc:"الحزمة + الأذونات + المكونات + SDK",icon:"📋"},
+              {id:3,title:"حذف التوقيعات القديمة",desc:"META-INF Purge — تنظيف التوقيعات السابقة",icon:"🧹"},
+            ]},
+            {group:"B",title:"الاستخراج العميق",color:"blue",steps:[
+              {id:4,title:"استخراج الأسرار والتوكنات (25+ نمط)",desc:"Firebase + AWS + JWT + Stripe + GitHub + Bearer + DB URIs",icon:"🔑"},
+              {id:5,title:"اكتشاف Firebase العميق (12 طبقة)",desc:"google-services.json + smali + XML + strings + assets",icon:"🔥"},
+              {id:6,title:"استخراج نقاط النهاية (URLs/APIs)",desc:"جميع الروابط من smali/XML/JSON",icon:"🌐"},
+              {id:7,title:"تحليل google-services.json",desc:"Project ID + API Key + App ID + Storage Bucket",icon:"📄"},
+              {id:8,title:"استخراج معلومات التشفير والشهادات",desc:"Private Keys + Certificates + Keystores",icon:"🔐"},
+            ]},
+            {group:"C",title:"اختبار المفاتيح (حقيقي/وهمي)",color:"yellow",steps:[
+              {id:9,title:"اختبار مفاتيح Firebase API",desc:"identitytoolkit API — حقيقي أو وهمي",icon:"🔥"},
+              {id:10,title:"اختبار مفاتيح AWS",desc:"AKIA format validation + Secret Key check",icon:"☁️"},
+              {id:11,title:"اختبار Stripe/GitHub/Slack",desc:"API balance + user endpoint + webhook test",icon:"💳"},
+              {id:12,title:"اختبار JWT Tokens",desc:"decode header/payload + expiry + issuer",icon:"🎫"},
+              {id:13,title:"اختبار Database URIs",desc:"MongoDB + PostgreSQL + Redis + MySQL",icon:"🗄️"},
+              {id:14,title:"اختبار Bearer Tokens والمفاتيح العامة",desc:"طول + صيغة + اختبار يدوي",icon:"🔓"},
+            ]},
+            {group:"D",title:"اختراق السحابة",color:"red",steps:[
+              {id:15,title:"اختراق Firebase RTDB (قراءة)",desc:"/.json?shallow=true — root keys مكشوفة",icon:"📡"},
+              {id:16,title:"اختراق Firebase RTDB (كتابة)",desc:"PUT test — كتابة غير مصرّح بها",icon:"✏️"},
+              {id:17,title:"اختراق Firestore (قراءة/كتابة)",desc:"REST API — documents + collections",icon:"📊"},
+              {id:18,title:"اختراق Firebase Storage",desc:"قائمة ملفات + رفع غير مصرّح",icon:"📁"},
+              {id:19,title:"اختراق Firebase Auth",desc:"إنشاء حسابات مجهولة — Anonymous signup",icon:"👤"},
+              {id:20,title:"تحميل بيانات السحابة المكشوفة",desc:"RTDB dump + Firestore export",icon:"💾"},
+              {id:21,title:"تغيير الخطة إلى Pro + فتح النقاط",desc:"كتابة /users /subscriptions /premium /coins",icon:"💎"},
+            ]},
+            {group:"E",title:"فحص الويب على Backends (25 خطوة)",color:"violet",steps:[
+              {id:22,title:"استطلاع الخادم (Headers + Technologies)",desc:"HTTP fetch + headers + redirects",icon:"🔍"},
+              {id:23,title:"استخراج أسرار الويب",desc:"API keys + tokens في HTML/JS",icon:"🔐"},
+              {id:24,title:"IDOR + مسارات حساسة",desc:"/.env + /.git + user enumeration",icon:"📂"},
+              {id:25,title:"قواعد بيانات مكشوفة + Webhooks",desc:"MongoDB + Redis + Elasticsearch + callbacks",icon:"🗄️"},
+              {id:26,title:"SQLi + XSS Testing",desc:"SQL injection + Cross-Site Scripting",icon:"💉"},
+              {id:27,title:"SSRF + LFI + SSTI",desc:"Server-Side attacks + Local File Inclusion",icon:"🎯"},
+              {id:28,title:"Backend Fuzzing (Forced Browsing)",desc:"Bruteforce مسارات + LFI payloads + SSRF",icon:"🔨"},
+              {id:29,title:"Crawler + DOM XSS + WAF",desc:"Deep crawling + WAF detection",icon:"🕷️"},
+              {id:30,title:"ترويسات أمنية + مصادقة",desc:"CSP + CORS + Auth + rate limiting",icon:"🛡️"},
+            ]},
+            {group:"F",title:"Headless Browser (Puppeteer)",color:"orange",steps:[
+              {id:31,title:"إطلاق Puppeteer + Network Interception",desc:"Chromium headless على backend المستخرج",icon:"🌐"},
+              {id:32,title:"JS Runtime Analysis + API Discovery",desc:"eval() + fetch + XHR + WebSocket + dynamic scripts",icon:"🔍"},
+              {id:33,title:"تحليل الأداء والأمان",desc:"Mixed Content + Source Maps + Performance Metrics",icon:"⚡"},
+            ]},
+            {group:"G",title:"تعديل APK (Smali Patching)",color:"emerald",steps:[
+              {id:34,title:"إزالة الإعلانات (AdMob/Facebook/Unity)",desc:"حذف مكونات الإعلانات من Manifest + smali",icon:"🚫"},
+              {id:35,title:"فتح Premium + فتح النقاط",desc:"isPremium → true + coins/points unlock",icon:"💰"},
+              {id:36,title:"إزالة License Check (LVL/Play)",desc:"License Verification Library bypass",icon:"🔓"},
+              {id:37,title:"تجاوز تسجيل الدخول (Login Bypass)",desc:"إعادة توجيه Activity الرئيسية",icon:"🚪"},
+              {id:38,title:"تحييد حماية التطبيق",desc:"Root + Tamper + SSL Pin + Emulator detection",icon:"🛡️"},
+            ]},
+            {group:"H",title:"البناء والتوقيع",color:"pink",steps:[
+              {id:39,title:"إعادة بناء APK (APKTool)",desc:"--use-aapt2 + fallback build",icon:"🔧"},
+              {id:40,title:"محاذاة ZIP (zipalign — 4-byte)",desc:"zipalign -f 4 — تحسين أداء التحميل",icon:"📐"},
+              {id:41,title:"التوقيع الرقمي (V1+V2+V3)",desc:"apksigner — متوافق مع Android 7-14+",icon:"✍️"},
+              {id:42,title:"بوابة الجودة (التحقق)",desc:"Signature verify + ZIP integrity + Manifest check",icon:"🏁"},
+            ]},
+            {group:"I",title:"التقرير النهائي",color:"amber",steps:[
+              {id:43,title:"تقرير اختبار المفاتيح (حقيقي/وهمي)",desc:"ملخص كل مفتاح: valid/invalid/expired/partial",icon:"📝"},
+              {id:44,title:"تقرير استغلال السحابة",desc:"RTDB + Firestore + Storage + Auth + بيانات محمّلة",icon:"☁️"},
+              {id:45,title:"التقرير الموحد النهائي",desc:"حجم APK + أسرار + ثغرات + توقيع + ZIP",icon:"📊"},
+            ]},
+          ].map(g=>{
+            const colors:Record<string,{border:string,bg:string,text:string,activeBg:string,activeText:string,activeBorder:string}>={
+              cyan:{border:"border-cyan-500/20",bg:"bg-cyan-950/10",text:"text-cyan-400",activeBg:"bg-cyan-500/5",activeText:"text-cyan-300",activeBorder:"border-cyan-500/60"},
+              blue:{border:"border-blue-500/20",bg:"bg-blue-950/10",text:"text-blue-400",activeBg:"bg-blue-500/5",activeText:"text-blue-300",activeBorder:"border-blue-500/60"},
+              yellow:{border:"border-yellow-500/20",bg:"bg-yellow-950/10",text:"text-yellow-400",activeBg:"bg-yellow-500/5",activeText:"text-yellow-300",activeBorder:"border-yellow-500/60"},
+              red:{border:"border-red-500/20",bg:"bg-red-950/10",text:"text-red-400",activeBg:"bg-red-500/5",activeText:"text-red-300",activeBorder:"border-red-500/60"},
+              violet:{border:"border-violet-500/20",bg:"bg-violet-950/10",text:"text-violet-400",activeBg:"bg-violet-500/5",activeText:"text-violet-300",activeBorder:"border-violet-500/60"},
+              orange:{border:"border-orange-500/20",bg:"bg-orange-950/10",text:"text-orange-400",activeBg:"bg-orange-500/5",activeText:"text-orange-300",activeBorder:"border-orange-500/60"},
+              emerald:{border:"border-emerald-500/20",bg:"bg-emerald-950/10",text:"text-emerald-400",activeBg:"bg-emerald-500/5",activeText:"text-emerald-300",activeBorder:"border-emerald-500/60"},
+              pink:{border:"border-pink-500/20",bg:"bg-pink-950/10",text:"text-pink-400",activeBg:"bg-pink-500/5",activeText:"text-pink-300",activeBorder:"border-pink-500/60"},
+              amber:{border:"border-amber-500/20",bg:"bg-amber-950/10",text:"text-amber-400",activeBg:"bg-amber-500/5",activeText:"text-amber-300",activeBorder:"border-amber-500/60"},
+            };
+            const c=colors[g.color]||colors.cyan;
+            return(<div key={g.group} className={`${c.border} rounded-xl p-3 ${c.bg}`}>
+              <h3 className={`text-xs font-bold ${c.text} mb-2`}>المرحلة {g.group} — {g.title} ({g.steps.length} خطوات)</h3>
+              {g.steps.map(step=>{
+                const revealed=cpStepsRevealed.includes(step.id);
+                const active=cpActiveStep===step.id;
+                return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${!revealed?"opacity-20 border-border/20":"opacity-100"} ${active?`${c.activeBorder} ${c.activeBg} shadow-lg`:"border-border/40 bg-card/30"}`}>
+                  <div className="flex items-center gap-3 p-3">
+                    <span className={`w-9 h-9 rounded-full flex items-center justify-center text-base shrink-0 ${active?"animate-pulse bg-muted/30":"bg-muted/20"}`}>{active?<Loader2 className={`w-4 h-4 animate-spin ${c.activeText}`}/>:revealed?"✅":step.icon}</span>
+                    <div className="flex-1 text-right">
+                      <div className={`font-semibold text-sm ${active?c.activeText:"text-foreground/80"}`}>{step.id}. {step.title}</div>
+                      <div className="text-[11px] text-muted-foreground">{step.desc}</div>
+                    </div>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${active?`bg-muted/20 ${c.activeText} border ${c.activeBorder}`:"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":revealed?"مكتمل":"انتظار"}</span>
+                  </div>
+                </div>);
+              })}
             </div>);
           })}
-          </div>
-          {/* Web Pentest Phases Group */}
-          <div className="border border-violet-500/20 rounded-xl p-3 bg-violet-950/10">
-            <h3 className="text-xs font-bold text-violet-400 mb-2">المرحلة B — فحص الويب على Backends المستخرجة (25 خطوة Cipher-7)</h3>
-          {[
-            {id:15,title:"استطلاع الخادم",desc:"HTTP fetch + headers + redirects + تقنيات الخادم",icon:"🔍"},
-            {id:16,title:"أسرار مكشوفة في الكود",desc:"API keys + tokens + credentials في HTML/JS",icon:"🔐"},
-            {id:17,title:"Firebase مكشوف",desc:"Firestore + RTDB + Anonymous Auth + open rules",icon:"🔥"},
-            {id:18,title:"IDOR على endpoints",desc:"استغلال تغيير user IDs للوصول لبيانات آخرين",icon:"🌐"},
-            {id:19,title:"مسارات حساسة",desc:"/.env + /.git/config + /api/.env + /wp-config.php",icon:"📂"},
-            {id:20,title:"قواعد بيانات مكشوفة",desc:"MongoDB + Redis + Elasticsearch + CouchDB",icon:"🗄️"},
-            {id:21,title:"Webhooks",desc:"اكتشاف webhook URLs + API callbacks",icon:"🔗"},
-            {id:22,title:"سكريبت خبيث",desc:"eval() + inline scripts + dynamic imports",icon:"📜"},
-            {id:23,title:"تشفير Cipher-7",desc:"Crypto analysis + JWT + Base64 + XOR",icon:"🔓"},
-            {id:24,title:"Firebase+ معمّق",desc:"Deep path enumeration + Storage buckets",icon:"🔥"},
-            {id:25,title:"AWS تقييم أمان",desc:"S3 + Lambda + IAM + Cognito + API Gateway",icon:"☁️"},
-            {id:26,title:"ترويسات أمنية",desc:"CSP + CORS + X-Frame + HSTS + Referrer-Policy",icon:"🛡️"},
-            {id:27,title:"استخبارات",desc:"تحليل استخباراتي + تقييم المخاطر",icon:"📊"},
-            {id:28,title:"ترسانة الهجوم",desc:"Exploit guides + payloads + أوامر الاستغلال",icon:"⚔️"},
-            {id:29,title:"SQLi + XSS",desc:"SQL injection + Cross-Site Scripting على parameters",icon:"💉"},
-            {id:30,title:"SSRF + LFI",desc:"Server-Side Request Forgery + Local File Inclusion",icon:"🎯"},
-            {id:31,title:"نطاقات فرعية",desc:"Subdomain enumeration + DNS analysis",icon:"🌍"},
-            {id:32,title:"زاحف الصفحات",desc:"Deep crawling + sitemap + robots.txt",icon:"🕷️"},
-            {id:33,title:"كوكيز",desc:"Cookie security + HttpOnly + Secure + SameSite",icon:"🍪"},
-            {id:34,title:"DOM XSS",desc:"تحليل DOM للثغرات XSS (على صفحات الويب)",icon:"🖥️"},
-            {id:35,title:"WAF Detection",desc:"جدار الحماية + bypass techniques",icon:"🧱"},
-            {id:36,title:"نماذج",desc:"Form analysis + CSRF + auto-submit",icon:"📝"},
-            {id:37,title:"SSTI + CmdI",desc:"Server-Side Template Injection + Command Injection",icon:"🧨"},
-            {id:38,title:"HTTP Methods + تسريب",desc:"OPTIONS + PUT + DELETE + info disclosure",icon:"📡"},
-            {id:39,title:"مصادقة ضعيفة",desc:"Weak auth + session management + brute force",icon:"🔓"},
-          ].map(step=>{
-            const revealed=cpStepsRevealed.includes(step.id);
-            const active=cpActiveStep===step.id;
-            return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${!revealed?"opacity-20 border-border/20":"opacity-100"} ${active?"border-violet-500/60 bg-violet-500/5 shadow-lg shadow-violet-900/20":"border-border/40 bg-card/30"}`}>
-              <div className="flex items-center gap-3 p-4">
-                <span className={`w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0 ${active?"bg-violet-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-5 h-5 animate-spin text-violet-400"/>:revealed?"✅":step.icon}</span>
-                <div className="flex-1 text-right">
-                  <div className={`font-semibold text-sm ${active?"text-violet-300":"text-foreground/80"}`}>{step.title}</div>
-                  <div className="text-[11px] text-muted-foreground">{step.desc}</div>
-                </div>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full ${active?"bg-violet-500/20 text-violet-300 border border-violet-500/40":"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":revealed?"مكتمل":"في الانتظار"}</span>
-              </div>
-            </div>);
-          })}
-          </div>
-          {/* Headless Browser Phases Group */}
-          <div className="border border-orange-500/20 rounded-xl p-3 bg-orange-950/10">
-            <h3 className="text-xs font-bold text-orange-400 mb-2">المرحلة C — Headless Browser + إعادة البناء والتوقيع (7 خطوات)</h3>
-          {[
-            {id:40,title:"Headless Browser Launch",desc:"تشغيل Puppeteer Chromium على backend المستخرج",icon:"🌐"},
-            {id:41,title:"Network Interception",desc:"التقاط جميع طلبات XHR/Fetch مع Headers و Timing",icon:"📡"},
-            {id:42,title:"JS Runtime Analysis",desc:"eval() + setTimeout + Storage + dynamic scripts",icon:"🔍"},
-            {id:43,title:"API Discovery",desc:"اكتشاف REST/GraphQL/WebSocket من حركة الشبكة",icon:"🔗"},
-            {id:44,title:"محرك Smali Patching + إعادة البناء",desc:"إزالة إعلانات + Premium + License + حماية + إعادة بناء APK",icon:"🔧"},
-            {id:45,title:"توقيع APK (V1+V2+V3) + محاذاة",desc:"حذف META-INF + zipalign + apksigner (Android 7-14+)",icon:"✍️"},
-            {id:46,title:"بوابة الجودة + التقرير الموحد",desc:"التحقق من التوقيع + سلامة ZIP + Manifest + تقرير نهائي",icon:"✅"},
-          ].map(step=>{
-            const revealed=cpStepsRevealed.includes(step.id);
-            const active=cpActiveStep===step.id;
-            return(<div key={step.id} className={`rounded-xl border overflow-hidden transition-all duration-700 ${!revealed?"opacity-20 border-border/20":"opacity-100"} ${active?"border-orange-500/60 bg-orange-500/5 shadow-lg shadow-orange-900/20":"border-border/40 bg-card/30"}`}>
-              <div className="flex items-center gap-3 p-4">
-                <span className={`w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0 ${active?"bg-orange-500/20 animate-pulse":"bg-muted/20"}`}>{active?<Loader2 className="w-5 h-5 animate-spin text-orange-400"/>:revealed?"✅":step.icon}</span>
-                <div className="flex-1 text-right">
-                  <div className={`font-semibold text-sm ${active?"text-orange-300":"text-foreground/80"}`}>{step.title}</div>
-                  <div className="text-[11px] text-muted-foreground">{step.desc}</div>
-                </div>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full ${active?"bg-orange-500/20 text-orange-300 border border-orange-500/40":"bg-muted/10 text-muted-foreground border border-transparent"}`}>{active?"جاري...":revealed?"مكتمل":"في الانتظار"}</span>
-              </div>
-            </div>);
-          })}
-          </div>
         </div>}
 
         {/* ── Full Auto Clone: Live Progress ── */}
@@ -3516,7 +3509,7 @@ export default function ReverseEngineer(){
           <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
-                <h2 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-cyan-400"/>تقرير Cipher-7 الموحد — APK + Web Pentest + Headless Browser (46 مرحلة)</h2>
+                <h2 className="text-xl font-bold flex items-center gap-2"><Shield className="w-6 h-6 text-cyan-400"/>تقرير الفحص الموحد — 45 مرحلة (9 مجموعات A-I)</h2>
                 <p className="text-xs text-muted-foreground mt-1">الملف: <span className="text-cyan-300 font-mono">{cpResult.fileName||cpFile?.name}</span> · {cpResult.fileSize?((cpResult.fileSize/1024/1024).toFixed(1)+" MB"):""} · {new Date(cpResult.generatedAt).toLocaleString("ar-EG")}</p>
               </div>
               <div className="flex items-center gap-2">
@@ -3576,7 +3569,7 @@ export default function ReverseEngineer(){
 
           {/* 7 Steps with full details */}
           <div className="space-y-3">
-            <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Terminal className="w-4 h-4"/>الخطوات التنفيذية (8 خطوات)</div>
+            <div className="text-sm font-semibold text-cyan-300 flex items-center gap-2"><Terminal className="w-4 h-4"/>الخطوات التنفيذية ({cpResult.steps?.length||45} خطوة)</div>
             {(cpResult.steps||[]).map((step:any)=>{
               const isOpen=cpExpanded.has(step.id);
               const statusColors:Record<string,string>={critical:"border-red-500/40 bg-red-500/5",warning:"border-orange-500/30 bg-orange-500/5",info:"border-blue-500/20 bg-blue-500/5",success:"border-emerald-500/30 bg-emerald-500/5"};
@@ -3628,6 +3621,43 @@ export default function ReverseEngineer(){
               </div>);
             })}
           </div>
+
+          {/* Secret Validations Table (حقيقي/وهمي) */}
+          {cpResult.secretValidations?.length>0&&<div className="bg-gradient-to-r from-yellow-900/20 to-orange-900/20 border border-yellow-500/30 rounded-xl p-4 space-y-3">
+            <div className="text-sm font-semibold flex items-center gap-2"><Key className="w-4 h-4 text-yellow-400"/>اختبار المفاتيح — حقيقي/وهمي ({cpResult.secretValidations.length} مفتاح)</div>
+            <div className="grid grid-cols-5 gap-2 text-center">
+              <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30"><div className="text-xl font-bold text-emerald-400">{cpResult.secretValidations.filter((v:any)=>v.status==="valid").length}</div><div className="text-[10px] text-emerald-300">حقيقي</div></div>
+              <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/30"><div className="text-xl font-bold text-red-400">{cpResult.secretValidations.filter((v:any)=>v.status==="invalid").length}</div><div className="text-[10px] text-red-300">وهمي</div></div>
+              <div className="p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30"><div className="text-xl font-bold text-yellow-400">{cpResult.secretValidations.filter((v:any)=>v.status==="partial").length}</div><div className="text-[10px] text-yellow-300">جزئي</div></div>
+              <div className="p-2 rounded-lg bg-gray-500/10 border border-gray-500/30"><div className="text-xl font-bold text-gray-400">{cpResult.secretValidations.filter((v:any)=>v.status==="expired").length}</div><div className="text-[10px] text-gray-300">منتهي</div></div>
+              <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/30"><div className="text-xl font-bold text-blue-400">{cpResult.secretValidations.filter((v:any)=>v.status==="unknown").length}</div><div className="text-[10px] text-blue-300">غير مؤكد</div></div>
+            </div>
+            <div className="max-h-64 overflow-y-auto space-y-2">
+              {cpResult.secretValidations.map((v:any,i:number)=><div key={i} className={`rounded-lg border p-3 ${v.status==="valid"?"border-emerald-500/40 bg-emerald-500/5":v.status==="invalid"?"border-red-500/30 bg-red-500/5":v.status==="partial"?"border-yellow-500/30 bg-yellow-500/5":"border-border/30 bg-card/30"}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold">{v.status==="valid"?"✅":"❌"} {v.service} — {v.type}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${v.status==="valid"?"bg-emerald-500/20 text-emerald-300":v.status==="invalid"?"bg-red-500/20 text-red-300":"bg-yellow-500/20 text-yellow-300"}`}>{v.status==="valid"?"حقيقي":v.status==="invalid"?"وهمي":v.status==="partial"?"جزئي":v.status==="expired"?"منتهي":"غير مؤكد"}</span>
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-1 font-mono">{v.value?.slice(0,40)}...</div>
+                <div className="text-[11px] mt-1">{v.liveProof}</div>
+              </div>)}
+            </div>
+          </div>}
+
+          {/* Cloud Exploits Report */}
+          {cpResult.cloudExploits?.length>0&&<div className="bg-gradient-to-r from-red-900/20 to-pink-900/20 border border-red-500/30 rounded-xl p-4 space-y-3">
+            <div className="text-sm font-semibold flex items-center gap-2"><Cloud className="w-4 h-4 text-red-400"/>استغلال السحابة ({cpResult.cloudExploits.length} اختبار — {cpResult.cloudExploits.filter((e:any)=>e.accessible).length} ثغرة)</div>
+            <div className="max-h-64 overflow-y-auto space-y-2">
+              {cpResult.cloudExploits.map((e:any,i:number)=><div key={i} className={`rounded-lg border p-3 ${e.accessible?"border-red-500/40 bg-red-500/5":"border-border/30 bg-card/30"}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold">{e.accessible?"🔓":"🔒"} {e.service}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${e.accessible?"bg-red-500/20 text-red-300":"bg-emerald-500/20 text-emerald-300"}`}>{e.accessible?"مكشوف!":"محمي"}</span>
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-1 font-mono">{e.url}</div>
+                <div className="text-[11px] mt-1">{e.details}</div>
+              </div>)}
+            </div>
+          </div>}
 
           {/* Extracted Endpoints */}
           {cpResult.summary?.extractedEndpoints?.length>0&&<div className="bg-card/70 border border-border rounded-xl p-4 space-y-2">
