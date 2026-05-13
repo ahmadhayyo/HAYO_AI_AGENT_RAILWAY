@@ -4283,10 +4283,23 @@ export async function runUnifiedAPKScan(
     // ╔══════════════════════════════════════════════════════════════╗
     // ║  GROUP E: فحص الويب على Backends (Web Pentest) 22-30       ║
     // ╚══════════════════════════════════════════════════════════════╝
-    const apiTargets = allEndpoints.filter(u => /\/api\/|\/v[12]\/|\/graphql|\/rest\/|\/auth\//.test(u));
-    const firebaseEps = allEndpoints.filter(u => /firebaseio\.com|googleapis\.com/.test(u));
-    const backendUrls = allEndpoints.filter(u => { try { const p = new URL(u); return !/(google\.com|android\.com|schemas\.android|w3\.org|apache\.org|xml\.org)/.test(u) && p.pathname.length > 1; } catch { return false; } });
-    const primaryTarget = apiTargets[0] || firebaseEps[0] || backendUrls[0];
+
+    // Blocklist: CDN, SDK, analytics, ad networks, third-party services — NOT the app's own backend
+    const thirdPartyHosts = /\b(googleapis\.com|google\.com|gstatic\.com|googleusercontent\.com|googlesyndication\.com|googleadservices\.com|google-analytics\.com|googletagmanager\.com|android\.com|schemas\.android|w3\.org|apache\.org|xml\.org|jsdelivr\.(com|net)|cdnjs\.cloudflare\.com|cloudflare\.com|unpkg\.com|cdn\.jsdelivr\.net|fastly\.net|akamaized\.net|akamai\.com|cloudfront\.net|amazonaws\.com\/sdk|facebook\.(com|net)|fbcdn\.net|fb\.com|fbsbx\.com|instagram\.com|twitter\.com|x\.com|twimg\.com|linkedin\.com|github\.com|github\.io|githubusercontent\.com|gitlab\.com|bitbucket\.org|npmjs\.org|npmjs\.com|yarnpkg\.com|maven\.org|gradle\.org|jitpack\.io|bintray\.com|crashlytics\.com|fabric\.io|sentry\.io|bugsnag\.com|appsflyer\.com|adjust\.com|branch\.io|onesignal\.com|mixpanel\.com|amplitude\.com|segment\.(io|com)|intercom\.io|zendesk\.com|freshdesk\.com|hotjar\.com|mouseflow\.com|fullstory\.com|heap\.io|pendo\.io|appcenter\.ms|codepush\.com|expo\.(io|dev)|reactnative\.dev|flutter\.(dev|io)|dart\.dev|kotlinlang\.org|swift\.org|apple\.com|microsoft\.com|windows\.net|azure\.com|heroku\.com|netlify\.(com|app)|vercel\.(com|app)|render\.com|digitalocean\.com|linode\.com|vultr\.com|fontawesome\.com|fonts\.googleapis\.com|fonts\.gstatic\.com|bootstrapcdn\.com|jquery\.com|maxcdn\.com|rawgit\.com|statically\.io|polyfill\.io|recaptcha\.net|hcaptcha\.com|stripe\.com\/v3|js\.stripe\.com|paypal\.com\/sdk|braintreegateway\.com|admob\.(com|google)|unity3d\.com|unityads\.unity3d\.com|applovin\.com|chartboost\.com|ironsrc\.com|mopub\.com|vungle\.com|tapjoy\.com|adcolony\.com|inmobi\.com)\b/i;
+
+    const isAppBackend = (url: string): boolean => {
+      try {
+        const u = new URL(url);
+        if (thirdPartyHosts.test(u.hostname)) return false;
+        if (/^(localhost|127\.|10\.|192\.168\.|0\.0\.0)/.test(u.hostname)) return false;
+        if (u.pathname.length <= 1 && !u.search) return false;
+        return true;
+      } catch { return false; }
+    };
+
+    const apiTargets = allEndpoints.filter(u => /\/api\/|\/v[12]\/|\/graphql|\/rest\/|\/auth\//.test(u)).filter(isAppBackend);
+    const backendUrls = allEndpoints.filter(isAppBackend);
+    const primaryTarget = apiTargets[0] || backendUrls[0];
 
     // Phases 22-30 are sub-phases of the web pentest — they map to the 25-step Cipher-7 engine
     // We run runWebPentest as a single call but report results across phases
@@ -4295,7 +4308,7 @@ export async function runUnifiedAPKScan(
       let webPentestUrl: string;
       try { const p = new URL(primaryTarget); webPentestUrl = `${p.protocol}//${p.host}`; } catch { webPentestUrl = primaryTarget; }
 
-      addPhase(22, "استطلاع الخادم (Headers + Technologies)", "E", "success", [`هدف: ${webPentestUrl}`, `مصدر: ${apiTargets.length} API + ${firebaseEps.length} Firebase + ${backendUrls.length} backend`], 0);
+      addPhase(22, "استطلاع الخادم (Headers + Technologies)", "E", "success", [`هدف: ${webPentestUrl}`, `مصدر: ${apiTargets.length} API + ${backendUrls.length} backend (بعد فلترة CDN/SDK)`], 0);
 
       try {
         const { runWebPentest } = await import("./reverse-engineer.js");
@@ -4321,8 +4334,11 @@ export async function runUnifiedAPKScan(
         for (let i = 24; i <= 30; i++) addPhase(i, `خطوة ويب ${i}`, "E", "skipped", ["تخطي بسبب خطأ"], 0);
       }
     } else {
-      addPhase(22, "استطلاع الخادم", "E", "warning", ["لا توجد backends مكتشفة — تخطي فحص الويب"], 0);
-      for (let i = 23; i <= 30; i++) addPhase(i, `خطوة ويب ${i - 21}`, "E", "skipped", ["تخطي — لا توجد URLs"], 0);
+      const totalUrls = allEndpoints.length;
+      const filteredOut = totalUrls - backendUrls.length;
+      addPhase(22, "استطلاع الخادم", "E", "info", [`تخطي — لا توجد backends خاصة بالتطبيق`, `إجمالي URLs: ${totalUrls} — تم استبعاد ${filteredOut} (CDN/SDK/مكتبات خارجية)`], 0);
+      const skipNames = ["استخراج أسرار الويب", "IDOR + مسارات حساسة", "قواعد بيانات + Webhooks", "SQLi + XSS", "SSRF + LFI + SSTI", "Backend Fuzzing", "Crawler + DOM XSS + WAF", "ترويسات أمنية + مصادقة"];
+      for (let i = 23; i <= 30; i++) addPhase(i, skipNames[i - 23] || `خطوة ويب ${i - 21}`, "E", "skipped", ["تخطي — لا يوجد backend خاص بالتطبيق لفحصه"], 0);
     }
 
     // ╔══════════════════════════════════════════════════════════════╗
@@ -4332,7 +4348,7 @@ export async function runUnifiedAPKScan(
     if (primaryTarget) {
       let headlessUrl: string;
       try { const p = new URL(primaryTarget); headlessUrl = `${p.protocol}//${p.host}`; } catch { headlessUrl = primaryTarget; }
-      addPhase(31, "إطلاق Puppeteer + Network Interception", "F", "success", [`هدف: ${headlessUrl}`], 0);
+      addPhase(31, "إطلاق Puppeteer + Network Interception", "F", "success", [`هدف: ${headlessUrl}`, `(بعد فلترة CDN/SDK)`], 0);
       try {
         const { analyzeWithHeadlessBrowser } = await import("./web-analyzer.js");
         headlessResult = await analyzeWithHeadlessBrowser(headlessUrl);
@@ -4344,9 +4360,9 @@ export async function runUnifiedAPKScan(
         addPhase(33, "تحليل الأداء والأمان", "F", "skipped", ["تخطي"], 0);
       }
     } else {
-      addPhase(31, "إطلاق Puppeteer", "F", "warning", ["تخطي — لا توجد URLs"], 0);
-      addPhase(32, "JS Runtime Analysis", "F", "skipped", ["تخطي"], 0);
-      addPhase(33, "تحليل الأداء والأمان", "F", "skipped", ["تخطي"], 0);
+      addPhase(31, "إطلاق Puppeteer", "F", "info", ["تخطي — لا يوجد backend خاص بالتطبيق (URLs المستخرجة كلها CDN/SDK/خارجية)"], 0);
+      addPhase(32, "JS Runtime Analysis", "F", "skipped", ["تخطي — لا يوجد هدف"], 0);
+      addPhase(33, "تحليل الأداء والأمان", "F", "skipped", ["تخطي — لا يوجد هدف"], 0);
     }
 
     // ╔══════════════════════════════════════════════════════════════╗
