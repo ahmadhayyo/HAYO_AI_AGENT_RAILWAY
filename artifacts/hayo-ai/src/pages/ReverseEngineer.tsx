@@ -3522,6 +3522,7 @@ export default function ReverseEngineer(){
               <div className="flex items-center gap-2">
                 <Button onClick={()=>{setCpResult(null);setCpFile(null);setCpStepsRevealed([]);setCpActiveStep(0);}} variant="outline" className="gap-2 border-cyan-500/30 text-cyan-300"><Undo2 className="w-4 h-4"/>اختبار جديد</Button>
                 <Button onClick={()=>{const blob=new Blob([JSON.stringify(cpResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`cloud-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-cyan-500/30 text-cyan-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
+                {cpResult.downloadId&&<Button onClick={()=>{const a=document.createElement("a");a.href=`/api/reverse/stream/download/${cpResult.downloadId}`;a.download=`unified-${cpFile?.name||"app.apk"}`;a.click();}} className="gap-2 bg-emerald-600 hover:bg-emerald-500"><Download className="w-4 h-4"/>تحميل APK</Button>}
               </div>
             </div>
           </div>

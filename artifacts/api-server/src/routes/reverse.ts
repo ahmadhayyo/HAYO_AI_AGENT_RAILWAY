@@ -701,10 +701,23 @@ router.post("/unified-apk-scan", upload.single("file"), async (req: Request, res
       req.file.originalname,
     );
 
-    // Send to Telegram
+    // Strip apkBuffer from JSON response — serialising a ~50 MB Buffer as
+    // JSON numbers array produces ~200 MB of text and causes the response to hang.
+    const { apkBuffer, ...jsonSafeResult } = result as any;
+
+    // Persist APK for download if available
+    let downloadId: string | undefined;
+    if (apkBuffer) {
+      downloadId = `dl_unified_${Date.now()}`;
+      const outPath = path.join(os.tmpdir(), `${downloadId}.apk`);
+      fs.writeFileSync(outPath, apkBuffer);
+      uploadStore.set(downloadId, { filePath: outPath, fileName: `unified-${req.file.originalname}`, uploadedAt: Date.now() });
+    }
+
+    // Send to Telegram (without apkBuffer)
     try {
       await sendPentestToTelegram({
-        ...result,
+        ...jsonSafeResult,
         fileName: req.file.originalname,
         fileSize: req.file.size,
       });
@@ -714,7 +727,8 @@ router.post("/unified-apk-scan", upload.single("file"), async (req: Request, res
     }
 
     res.json({
-      ...result,
+      ...jsonSafeResult,
+      downloadId,
       fileName: req.file.originalname,
       fileSize: req.file.size,
     });
