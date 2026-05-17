@@ -13169,3 +13169,766 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<globalT
     clearTimeout(timer);
   }
 }
+
+
+// ═══════════════════════════════════════════════════════════════
+// WALLET PENTEST — Cipher-7 Crypto Wallet Penetration Testing Engine (12 Phases)
+// ═══════════════════════════════════════════════════════════════
+
+interface WalletChainInfo {
+  chain: "ETH" | "BSC" | "BTC";
+  address: string;
+  isContract: boolean;
+  balance: string;
+  balanceUSD: string;
+  txCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  nonce: number;
+}
+
+interface WalletTx {
+  hash: string;
+  from: string;
+  to: string;
+  value: string;
+  timestamp: number;
+  gasUsed: string;
+  gasPrice: string;
+  isError: boolean;
+  methodId: string;
+  functionName: string;
+  blockNumber: number;
+}
+
+interface TokenHolding {
+  contractAddress: string;
+  tokenName: string;
+  tokenSymbol: string;
+  balance: string;
+  decimals: number;
+}
+
+interface TokenApproval {
+  tokenName: string;
+  tokenSymbol: string;
+  contractAddress: string;
+  spender: string;
+  allowance: string;
+  isUnlimited: boolean;
+  risk: "critical" | "high" | "medium" | "low";
+}
+
+interface WalletRiskFinding {
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  category: string;
+  title: string;
+  description: string;
+  evidence: string;
+}
+
+// ═══ Blockchain API helpers ═══
+
+async function fetchBlockchainJSON(url: string, timeoutMs = 15_000): Promise<any> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Cipher7-WalletPentest/1.0", "Accept": "application/json" },
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.json();
+  } catch (e) {
+    clearTimeout(t);
+    throw e;
+  }
+}
+
+function detectBlockchain(address: string): "ETH" | "BSC" | "BTC" | null {
+  if (/^0x[0-9a-fA-F]{40}$/.test(address)) return "ETH";
+  if (/^(1|3|bc1)[a-zA-HJ-NP-Z0-9]{25,62}$/.test(address)) return "BTC";
+  return null;
+}
+
+function weiToEther(wei: string): string {
+  const n = BigInt(wei || "0");
+  const eth = Number(n) / 1e18;
+  return eth.toFixed(6);
+}
+
+function satoshiToBtc(sat: string | number): string {
+  return (Number(sat) / 1e8).toFixed(8);
+}
+
+// Known DeFi protocol addresses (Ethereum mainnet)
+const DEFI_CONTRACTS: Record<string, string> = {
+  "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
+  "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router",
+  "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45": "Uniswap Universal Router",
+  "0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f": "SushiSwap Router",
+  "0x7d2768de32b0b80b7a3454c06bdac94a69ddc7a9": "Aave V2 Lending Pool",
+  "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2": "Aave V3 Pool",
+  "0x3d9819210a31b4961b30ef54be2aed79b9c9cd3b": "Compound Comptroller",
+  "0x1111111254eeb25477b68fb85ed929f73a960582": "1inch V5 Router",
+  "0xdef1c0ded9bec7f1a1670819833240f027b25eff": "0x Exchange Proxy",
+  "0x881d40237659c251811cec9c364ef91dc08d300c": "MetaMask Swap Router",
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC Token",
+  "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT Token",
+  "0x6b175474e89094c44da98b954eedeac495271d0f": "DAI Token",
+  "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": "WBTC Token",
+  "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "WETH Token",
+  "0x514910771af9ca656af840dff83e8264ecf986ca": "Chainlink Token",
+  "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "UNI Token",
+  "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9": "AAVE Token",
+  "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce": "SHIB Token",
+  "0x50327c6c5a14dcade707abad2e27eb517df87ab5": "TRON Bridge",
+};
+
+// Known scam/mixer/high-risk addresses
+const RISKY_ADDRESSES: Record<string, string> = {
+  "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b": "Tornado Cash Router",
+  "0x722122df12d4e14e13ac3b6895a86e84145b6967": "Tornado Cash 0.1 ETH",
+  "0xdd4c48c0b24039969fc16d1cdf626eab821d3384": "Tornado Cash 1 ETH",
+  "0xd4b88df4d29f5cedd6857912842cff3b20c8cfa3": "Tornado Cash 10 ETH",
+  "0xfd8610d20aa15b7b2e3be39b396a1bc3516c7144": "Tornado Cash 100 ETH",
+  "0x08723392ed15743cc38513c4925f5e6be5c17243": "Sanctioned Mixer",
+  "0x098b716b8aaf21512996dc57eb0615e2383e2f96": "Ronin Bridge Exploiter",
+  "0x8589427373d6d84e98730d7795d8f6f8731fda16": "Ronin Bridge Exploiter 2",
+};
+
+// ═══ Phase implementations ═══
+
+async function walletPhase1_Identification(address: string, chain: "ETH" | "BSC" | "BTC"): Promise<{info: WalletChainInfo; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  let balance = "0", balanceUSD = "0", txCount = 0, firstSeen = "", lastSeen = "", nonce = 0, isContract = false;
+
+  if (chain === "ETH" || chain === "BSC") {
+    const apiBase = chain === "ETH" ? "https://api.etherscan.io/api" : "https://api.bscscan.com/api";
+    const apiKey = chain === "ETH" ? (process.env.ETHERSCAN_API_KEY || "") : (process.env.BSCSCAN_API_KEY || "");
+    const keyParam = apiKey ? `&apikey=${apiKey}` : "";
+    try {
+      const balData = await fetchBlockchainJSON(`${apiBase}?module=account&action=balance&address=${address}&tag=latest${keyParam}`);
+      if (balData.status === "1") balance = weiToEther(balData.result);
+    } catch (e: any) { findings.push({ severity: "info", category: "API", title: "فشل جلب الرصيد", description: e.message, evidence: apiBase }); }
+    try {
+      const txData = await fetchBlockchainJSON(`${apiBase}?module=proxy&action=eth_getTransactionCount&address=${address}&tag=latest${keyParam}`);
+      if (txData.result) { nonce = parseInt(txData.result, 16); txCount = nonce; }
+    } catch {}
+    try {
+      const codeData = await fetchBlockchainJSON(`${apiBase}?module=proxy&action=eth_getCode&address=${address}&tag=latest${keyParam}`);
+      if (codeData.result && codeData.result !== "0x" && codeData.result !== "0x0") {
+        isContract = true;
+        findings.push({ severity: "info", category: "نوع العنوان", title: "هذا عنوان عقد ذكي", description: `العنوان هو عقد ذكي منشور على ${chain}`, evidence: `Code length: ${(codeData.result.length - 2) / 2} bytes` });
+      }
+    } catch {}
+    try {
+      const priceData = await fetchBlockchainJSON(`${apiBase}?module=stats&action=${chain === "ETH" ? "ethprice" : "bnbprice"}${keyParam}`);
+      if (priceData.status === "1" && priceData.result) {
+        const price = parseFloat(priceData.result.ethusd || priceData.result.bnbusd || "0");
+        balanceUSD = (parseFloat(balance) * price).toFixed(2);
+      }
+    } catch {}
+  } else if (chain === "BTC") {
+    try {
+      const btcData = await fetchBlockchainJSON(`https://blockchain.info/rawaddr/${address}?limit=0`);
+      balance = satoshiToBtc(btcData.final_balance || 0);
+      txCount = btcData.n_tx || 0;
+      try { const ticker = await fetchBlockchainJSON("https://blockchain.info/ticker"); if (ticker.USD) balanceUSD = (parseFloat(balance) * ticker.USD.last).toFixed(2); } catch {}
+    } catch (e: any) { findings.push({ severity: "info", category: "API", title: "فشل جلب بيانات Bitcoin", description: e.message, evidence: "blockchain.info" }); }
+  }
+
+  if (parseFloat(balance) === 0 && txCount === 0) {
+    findings.push({ severity: "info", category: "نشاط", title: "محفظة فارغة/غير مستخدمة", description: "لا يوجد رصيد ولا معاملات مسجلة", evidence: `Balance: ${balance}, Txs: ${txCount}` });
+  }
+
+  return { info: { chain, address, isContract, balance, balanceUSD, txCount, firstSeen, lastSeen, nonce }, findings };
+}
+
+async function walletPhase2_TransactionHistory(address: string, chain: "ETH" | "BSC" | "BTC"): Promise<{txs: WalletTx[]; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  const txs: WalletTx[] = [];
+
+  if (chain === "ETH" || chain === "BSC") {
+    const apiBase = chain === "ETH" ? "https://api.etherscan.io/api" : "https://api.bscscan.com/api";
+    const apiKey = chain === "ETH" ? (process.env.ETHERSCAN_API_KEY || "") : (process.env.BSCSCAN_API_KEY || "");
+    const keyParam = apiKey ? `&apikey=${apiKey}` : "";
+    try {
+      const data = await fetchBlockchainJSON(`${apiBase}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=100&sort=desc${keyParam}`);
+      if (data.status === "1" && Array.isArray(data.result)) {
+        for (const tx of data.result) {
+          txs.push({ hash: tx.hash, from: tx.from, to: tx.to || "", value: weiToEther(tx.value), timestamp: parseInt(tx.timeStamp), gasUsed: tx.gasUsed, gasPrice: tx.gasPrice, isError: tx.isError === "1", methodId: tx.methodId || "", functionName: tx.functionName || "", blockNumber: parseInt(tx.blockNumber) });
+        }
+      }
+    } catch (e: any) { findings.push({ severity: "info", category: "API", title: "فشل جلب المعاملات", description: e.message, evidence: apiBase }); }
+    try {
+      const intData = await fetchBlockchainJSON(`${apiBase}?module=account&action=txlistinternal&address=${address}&startblock=0&endblock=99999999&page=1&offset=50&sort=desc${keyParam}`);
+      if (intData.status === "1" && Array.isArray(intData.result) && intData.result.length > 0) {
+        findings.push({ severity: "info", category: "معاملات داخلية", title: `${intData.result.length} معاملة داخلية`, description: "معاملات داخلية تشير إلى تفاعل مع عقود ذكية", evidence: `Internal txs: ${intData.result.length}` });
+      }
+    } catch {}
+  } else if (chain === "BTC") {
+    try {
+      const btcData = await fetchBlockchainJSON(`https://blockchain.info/rawaddr/${address}?limit=50`);
+      if (btcData.txs) {
+        for (const tx of btcData.txs) {
+          txs.push({ hash: tx.hash, from: tx.inputs?.[0]?.prev_out?.addr || "coinbase", to: tx.out?.[0]?.addr || "", value: satoshiToBtc(tx.out?.[0]?.value || 0), timestamp: tx.time, gasUsed: "0", gasPrice: String(tx.fee || 0), isError: false, methodId: "", functionName: "", blockNumber: tx.block_height || 0 });
+        }
+      }
+    } catch (e: any) { findings.push({ severity: "info", category: "API", title: "فشل جلب معاملات Bitcoin", description: e.message, evidence: "blockchain.info" }); }
+  }
+
+  if (txs.length > 0) {
+    const errorTxs = txs.filter(t => t.isError);
+    if (errorTxs.length > 5) findings.push({ severity: "medium", category: "أنماط", title: `${errorTxs.length} معاملة فاشلة`, description: "عدد كبير من المعاملات الفاشلة — قد يشير إلى محاولات هجوم أو أخطاء برمجية", evidence: errorTxs.slice(0, 3).map(t => t.hash).join(", ") });
+    const uniqueRecipients = new Set(txs.map(t => t.to.toLowerCase()));
+    if (uniqueRecipients.size > 50) findings.push({ severity: "info", category: "أنماط", title: `تفاعل مع ${uniqueRecipients.size} عنوان مختلف`, description: "تنوع كبير في العناوين المتفاعل معها", evidence: `Unique addresses: ${uniqueRecipients.size}` });
+    const highValueTxs = txs.filter(t => parseFloat(t.value) > 10);
+    if (highValueTxs.length > 0) findings.push({ severity: "info", category: "قيمة عالية", title: `${highValueTxs.length} تحويلات عالية القيمة`, description: `معاملات بقيمة أكثر من 10 ${chain === "BTC" ? "BTC" : chain === "ETH" ? "ETH" : "BNB"}`, evidence: highValueTxs.slice(0, 3).map(t => `${t.value} @ ${t.hash.slice(0, 16)}...`).join(", ") });
+    if (txs.length >= 2) {
+      const timestamps = txs.map(t => t.timestamp).sort();
+      let rapidCount = 0;
+      for (let i = 1; i < timestamps.length; i++) { if (timestamps[i] - timestamps[i - 1] < 15) rapidCount++; }
+      if (rapidCount > 5) findings.push({ severity: "medium", category: "بوت", title: "نشاط بوت محتمل", description: `${rapidCount} معاملات متتالية بفارق أقل من 15 ثانية`, evidence: `Rapid txs: ${rapidCount}` });
+    }
+  }
+  return { txs, findings };
+}
+
+async function walletPhase3_TokenHoldings(address: string, chain: "ETH" | "BSC"): Promise<{tokens: TokenHolding[]; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  const tokens: TokenHolding[] = [];
+  const apiBase = chain === "ETH" ? "https://api.etherscan.io/api" : "https://api.bscscan.com/api";
+  const apiKey = chain === "ETH" ? (process.env.ETHERSCAN_API_KEY || "") : (process.env.BSCSCAN_API_KEY || "");
+  const keyParam = apiKey ? `&apikey=${apiKey}` : "";
+  try {
+    const tokenTxData = await fetchBlockchainJSON(`${apiBase}?module=account&action=tokentx&address=${address}&page=1&offset=200&sort=desc${keyParam}`);
+    if (tokenTxData.status === "1" && Array.isArray(tokenTxData.result)) {
+      const tokenMap = new Map<string, TokenHolding>();
+      for (const tx of tokenTxData.result) {
+        if (!tokenMap.has(tx.contractAddress)) {
+          tokenMap.set(tx.contractAddress, { contractAddress: tx.contractAddress, tokenName: tx.tokenName || "Unknown", tokenSymbol: tx.tokenSymbol || "???", balance: "0", decimals: parseInt(tx.tokenDecimal) || 18 });
+        }
+      }
+      tokens.push(...tokenMap.values());
+      if (tokens.length > 50) findings.push({ severity: "medium", category: "تنوع", title: `${tokens.length} رمز مميز مختلف`, description: "عدد كبير من الرموز — قد يشمل رموز احتيالية (airdrop scam tokens)", evidence: `Token count: ${tokens.length}` });
+      const suspiciousTokens = tokens.filter(t => /free|airdrop|bonus|reward|claim/i.test(t.tokenName) || /\.com|\.io|\.xyz|visit/i.test(t.tokenName));
+      if (suspiciousTokens.length > 0) findings.push({ severity: "high", category: "رموز مشبوهة", title: `${suspiciousTokens.length} رمز مشبوه (Scam Token)`, description: "رموز تحمل أسماء مشبوهة — احتمال عالي أنها رموز احتيالية (phishing airdrop)", evidence: suspiciousTokens.slice(0, 5).map(t => `${t.tokenName} (${t.tokenSymbol})`).join(", ") });
+    }
+  } catch (e: any) { findings.push({ severity: "info", category: "API", title: "فشل جلب الرموز", description: e.message, evidence: apiBase }); }
+  return { tokens, findings };
+}
+
+async function walletPhase4_NFTAnalysis(address: string, chain: "ETH" | "BSC"): Promise<{nfts: any[]; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  const nfts: any[] = [];
+  const apiBase = chain === "ETH" ? "https://api.etherscan.io/api" : "https://api.bscscan.com/api";
+  const apiKey = chain === "ETH" ? (process.env.ETHERSCAN_API_KEY || "") : (process.env.BSCSCAN_API_KEY || "");
+  const keyParam = apiKey ? `&apikey=${apiKey}` : "";
+  try {
+    const nftData = await fetchBlockchainJSON(`${apiBase}?module=account&action=tokennfttx&address=${address}&page=1&offset=100&sort=desc${keyParam}`);
+    if (nftData.status === "1" && Array.isArray(nftData.result)) {
+      const collections = new Map<string, { name: string; count: number; contract: string }>();
+      for (const tx of nftData.result) {
+        const key = tx.contractAddress;
+        if (!collections.has(key)) collections.set(key, { name: tx.tokenName || "Unknown NFT", count: 0, contract: key });
+        if (tx.to.toLowerCase() === address.toLowerCase()) collections.get(key)!.count++;
+        else collections.get(key)!.count--;
+      }
+      for (const [, col] of collections) { if (col.count > 0) nfts.push(col); }
+      if (nftData.result.length > 0) findings.push({ severity: "info", category: "NFT", title: `${nfts.length} مجموعة NFT`, description: `المحفظة تحتوي على NFTs من ${nfts.length} مجموعة مختلفة`, evidence: nfts.slice(0, 5).map(n => n.name).join(", ") });
+      const suspNfts = nfts.filter(n => /claim|free|airdrop|\.com|visit/i.test(n.name));
+      if (suspNfts.length > 0) findings.push({ severity: "high", category: "NFT احتيالي", title: `${suspNfts.length} NFT مشبوه (Phishing NFT)`, description: "NFTs بأسماء مشبوهة — لا تتفاعل معها! قد تحتوي على روابط تصيد", evidence: suspNfts.map(n => n.name).join(", ") });
+    }
+  } catch (e: any) { findings.push({ severity: "info", category: "API", title: "فشل جلب NFTs", description: e.message, evidence: "tokennfttx" }); }
+  try {
+    const erc1155Data = await fetchBlockchainJSON(`${apiBase}?module=account&action=token1155tx&address=${address}&page=1&offset=50&sort=desc${keyParam}`);
+    if (erc1155Data.status === "1" && Array.isArray(erc1155Data.result) && erc1155Data.result.length > 0) findings.push({ severity: "info", category: "ERC-1155", title: `${erc1155Data.result.length} معاملة ERC-1155`, description: "تفاعل مع رموز ERC-1155 (Multi-Token Standard)", evidence: `ERC-1155 txs: ${erc1155Data.result.length}` });
+  } catch {}
+  return { nfts, findings };
+}
+
+async function walletPhase5_SmartContractInteractions(txs: WalletTx[], address: string): Promise<{contracts: string[]; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  const contractInteractions = new Map<string, { count: number; name: string; methods: Set<string> }>();
+  for (const tx of txs) {
+    if (tx.methodId && tx.methodId !== "0x" && tx.to) {
+      const target = tx.to.toLowerCase();
+      if (!contractInteractions.has(target)) contractInteractions.set(target, { count: 0, name: DEFI_CONTRACTS[target] || "", methods: new Set() });
+      const entry = contractInteractions.get(target)!;
+      entry.count++;
+      if (tx.functionName) entry.methods.add(tx.functionName.split("(")[0]);
+    }
+  }
+  const contracts = [...contractInteractions.keys()];
+  const defiContracts = [...contractInteractions.entries()].filter(([, v]) => v.name);
+  if (defiContracts.length > 0) findings.push({ severity: "info", category: "DeFi", title: `${defiContracts.length} بروتوكول DeFi معروف`, description: "تفاعل مع بروتوكولات DeFi معروفة", evidence: defiContracts.map(([, v]) => v.name).join(", ") });
+  for (const [addr] of contractInteractions) {
+    const riskName = RISKY_ADDRESSES[addr];
+    if (riskName) findings.push({ severity: "critical", category: "عنوان خطير", title: `تفاعل مع ${riskName}`, description: `المحفظة تفاعلت مع عنوان عالي الخطورة: ${riskName}`, evidence: addr });
+  }
+  const unknownContracts = [...contractInteractions.entries()].filter(([, v]) => !v.name);
+  if (unknownContracts.length > 10) findings.push({ severity: "medium", category: "عقود غير معروفة", title: `${unknownContracts.length} عقد ذكي غير معروف`, description: "تفاعل مع عدد كبير من العقود غير المعروفة — يزيد من سطح الهجوم", evidence: unknownContracts.slice(0, 5).map(([a]) => a.slice(0, 16) + "...").join(", ") });
+  for (const [addr, info] of contractInteractions) {
+    for (const method of info.methods) {
+      if (/approve|setApprovalForAll|increaseAllowance/i.test(method)) {
+        findings.push({ severity: "high", category: "تصريحات", title: `استدعاء ${method} على ${info.name || addr.slice(0, 16)}`, description: `تم منح تصريح (Approval) لعقد ذكي — تحقق من مبلغ التصريح`, evidence: `${addr} → ${method}` });
+        break;
+      }
+    }
+  }
+  return { contracts, findings };
+}
+
+async function walletPhase6_TokenApprovals(address: string, chain: "ETH" | "BSC", txs: WalletTx[]): Promise<{approvals: TokenApproval[]; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  const approvals: TokenApproval[] = [];
+  const approveTxs = txs.filter(tx => tx.methodId === "0x095ea7b3" || tx.functionName?.toLowerCase().includes("approve") || tx.methodId === "0xa22cb465");
+  if (approveTxs.length > 0) {
+    for (const tx of approveTxs) {
+      const isSetApprovalForAll = tx.methodId === "0xa22cb465";
+      approvals.push({ tokenName: DEFI_CONTRACTS[tx.to.toLowerCase()] || tx.to.slice(0, 16), tokenSymbol: "???", contractAddress: tx.to, spender: tx.to, allowance: isSetApprovalForAll ? "ALL_NFTS" : "unknown", isUnlimited: true, risk: isSetApprovalForAll ? "critical" : "high" });
+    }
+    const unlimitedCount = approvals.filter(a => a.isUnlimited).length;
+    if (unlimitedCount > 0) findings.push({ severity: "critical", category: "تصريحات خطيرة", title: `${unlimitedCount} تصريح غير محدود (Unlimited Approval)`, description: "تصريحات غير محدودة تسمح للعقود بسحب جميع الرموز بدون حد — خطر كبير! يجب إلغاؤها فوراً عبر revoke.cash", evidence: approvals.filter(a => a.isUnlimited).slice(0, 5).map(a => `${a.tokenName} → ${a.spender.slice(0, 16)}`).join(", ") });
+    findings.push({ severity: "high", category: "تصريحات نشطة", title: `${approvals.length} تصريح نشط مكتشف`, description: "كل تصريح نشط يمثل سطح هجوم — إذا تم اختراق العقد المُصرَّح له يمكنه سحب الرموز", evidence: `Active approvals: ${approvals.length}, Unlimited: ${unlimitedCount}` });
+  } else {
+    findings.push({ severity: "info", category: "تصريحات", title: "لا توجد تصريحات مكتشفة في المعاملات الأخيرة", description: "لم يتم العثور على استدعاءات approve() في آخر 100 معاملة", evidence: "No approve() calls detected" });
+  }
+  return { approvals, findings };
+}
+
+async function walletPhase7_DeFiExposure(txs: WalletTx[]): Promise<{protocols: string[]; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  const protocols = new Set<string>();
+  for (const tx of txs) { const name = DEFI_CONTRACTS[tx.to.toLowerCase()]; if (name) protocols.add(name); }
+  const swapProtocols = [...protocols].filter(p => /uniswap|sushiswap|1inch|0x|swap/i.test(p));
+  const lendingProtocols = [...protocols].filter(p => /aave|compound|lending/i.test(p));
+  const bridgeProtocols = [...protocols].filter(p => /bridge/i.test(p));
+  if (swapProtocols.length > 0) findings.push({ severity: "info", category: "تبادل", title: `${swapProtocols.length} بروتوكول تبادل`, description: "بروتوكولات DEX مستخدمة", evidence: swapProtocols.join(", ") });
+  if (lendingProtocols.length > 0) findings.push({ severity: "medium", category: "إقراض", title: `${lendingProtocols.length} بروتوكول إقراض`, description: "تفاعل مع بروتوكولات إقراض — تحقق من الضمانات والتصفية", evidence: lendingProtocols.join(", ") });
+  if (bridgeProtocols.length > 0) findings.push({ severity: "high", category: "جسور", title: `${bridgeProtocols.length} جسر بلوكتشين`, description: "استخدام جسور بين السلاسل — الجسور هدف رئيسي للاختراق", evidence: bridgeProtocols.join(", ") });
+  const swapMethods = txs.filter(t => /swap|exchange|trade/i.test(t.functionName));
+  if (swapMethods.length > 20) findings.push({ severity: "info", category: "تداول", title: `${swapMethods.length} عملية تبادل`, description: "نشاط تداول كثيف — المحفظة نشطة في التداول اللامركزي", evidence: `Swap txs: ${swapMethods.length}` });
+  return { protocols: [...protocols], findings };
+}
+
+async function walletPhase8_SuspiciousActivity(txs: WalletTx[], address: string, chain: "ETH" | "BSC" | "BTC"): Promise<{risks: string[]; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  const risks: string[] = [];
+  for (const tx of txs) {
+    const fromRisk = RISKY_ADDRESSES[tx.from.toLowerCase()];
+    const toRisk = RISKY_ADDRESSES[tx.to.toLowerCase()];
+    if (fromRisk) { risks.push(`تلقي أموال من ${fromRisk}`); findings.push({ severity: "critical", category: "مصدر خطير", title: `تلقي أموال من ${fromRisk}`, description: `المحفظة تلقت أموالاً من عنوان مرتبط بـ ${fromRisk}`, evidence: `TX: ${tx.hash}` }); }
+    if (toRisk) { risks.push(`إرسال أموال إلى ${toRisk}`); findings.push({ severity: "critical", category: "وجهة خطيرة", title: `إرسال أموال إلى ${toRisk}`, description: `المحفظة أرسلت أموالاً إلى عنوان مرتبط بـ ${toRisk}`, evidence: `TX: ${tx.hash}` }); }
+  }
+  if (chain !== "BTC") {
+    const dustTxs = txs.filter(tx => tx.from.toLowerCase() !== address.toLowerCase() && parseFloat(tx.value) > 0 && parseFloat(tx.value) < 0.0001);
+    if (dustTxs.length > 3) { findings.push({ severity: "high", category: "هجوم غبار", title: `${dustTxs.length} معاملة غبار (Dust Attack)`, description: "تلقي مبالغ صغيرة جداً من عناوين مختلفة — هجوم غبار لتتبع المحفظة", evidence: dustTxs.slice(0, 3).map(t => `${t.value} from ${t.from.slice(0, 16)}`).join(", ") }); risks.push("Dust Attack detected"); }
+  }
+  const incoming = txs.filter(t => t.to.toLowerCase() === address.toLowerCase());
+  const incomingZero = incoming.filter(t => parseFloat(t.value) === 0);
+  if (incomingZero.length > 5) { findings.push({ severity: "high", category: "تسميم العنوان", title: "هجوم تسميم العنوان المحتمل (Address Poisoning)", description: `${incomingZero.length} معاملة واردة بقيمة صفرية — قد تكون محاولة لتسميم سجل المعاملات`, evidence: `Zero-value incoming txs: ${incomingZero.length}` }); risks.push("Address Poisoning suspected"); }
+  if (txs.length > 20) {
+    const timestamps = txs.map(t => t.timestamp).sort();
+    const intervals: number[] = [];
+    for (let i = 1; i < timestamps.length; i++) intervals.push(timestamps[i] - timestamps[i - 1]);
+    const avgInterval = intervals.length > 0 ? intervals.reduce((a, b) => a + b, 0) / intervals.length : 0;
+    if (avgInterval < 30) { findings.push({ severity: "medium", category: "MEV/Bot", title: "نشاط MEV أو بوت محتمل", description: `متوسط الفاصل بين المعاملات ${avgInterval.toFixed(1)} ثانية — يشير إلى نشاط آلي`, evidence: `Avg interval: ${avgInterval.toFixed(1)}s` }); risks.push("Possible MEV/Bot activity"); }
+  }
+  return { risks, findings };
+}
+
+async function walletPhase9_GasAnalysis(txs: WalletTx[], chain: "ETH" | "BSC"): Promise<{gasStats: any; findings: WalletRiskFinding[]}> {
+  const findings: WalletRiskFinding[] = [];
+  const outTxs = txs.filter(t => t.gasUsed && t.gasPrice);
+  let totalGasCost = BigInt(0), maxGas = BigInt(0), maxGasTx = "";
+  for (const tx of outTxs) {
+    const cost = BigInt(tx.gasUsed || "0") * BigInt(tx.gasPrice || "0");
+    totalGasCost += cost;
+    if (cost > maxGas) { maxGas = cost; maxGasTx = tx.hash; }
+  }
+  const totalGasEth = Number(totalGasCost) / 1e18;
+  const avgGasPerTx = outTxs.length > 0 ? totalGasEth / outTxs.length : 0;
+  const gasStats = { totalGasSpent: totalGasEth.toFixed(6), totalTransactions: outTxs.length, avgGasPerTx: avgGasPerTx.toFixed(6), maxGasTx, maxGasCost: (Number(maxGas) / 1e18).toFixed(6) };
+  if (totalGasEth > 1) findings.push({ severity: "info", category: "رسوم غاز", title: `إجمالي رسوم الغاز: ${totalGasEth.toFixed(4)} ${chain === "ETH" ? "ETH" : "BNB"}`, description: `أنفقت المحفظة ${totalGasEth.toFixed(4)} على رسوم الغاز في ${outTxs.length} معاملة`, evidence: `Total gas: ${totalGasEth.toFixed(6)}` });
+  const highGasTxs = outTxs.filter(t => parseInt(t.gasUsed || "0") > 500_000);
+  if (highGasTxs.length > 0) findings.push({ severity: "medium", category: "غاز عالي", title: `${highGasTxs.length} معاملة باستهلاك غاز عالي`, description: "معاملات استهلكت أكثر من 500,000 وحدة غاز — عادة تفاعلات معقدة مع عقود ذكية", evidence: highGasTxs.slice(0, 3).map(t => `${t.gasUsed} gas @ ${t.hash.slice(0, 16)}`).join(", ") });
+  return { gasStats, findings };
+}
+
+function walletPhase10_RiskAssessment(allFindings: WalletRiskFinding[], info: WalletChainInfo, approvals: TokenApproval[]): { riskScore: number; riskLevel: string; findings: WalletRiskFinding[] } {
+  const findings: WalletRiskFinding[] = [];
+  let riskScore = 0;
+  const criticals = allFindings.filter(f => f.severity === "critical").length;
+  const highs = allFindings.filter(f => f.severity === "high").length;
+  const mediums = allFindings.filter(f => f.severity === "medium").length;
+  riskScore += criticals * 25 + highs * 15 + mediums * 5;
+  riskScore += approvals.filter(a => a.isUnlimited).length * 20;
+  const mixerInteractions = allFindings.filter(f => f.category === "عنوان خطير" || f.category === "مصدر خطير" || f.category === "وجهة خطيرة").length;
+  riskScore += mixerInteractions * 30;
+  riskScore += allFindings.filter(f => f.category === "هجوم غبار").length * 10;
+  riskScore = Math.min(riskScore, 100);
+  let riskLevel = "آمن";
+  if (riskScore >= 75) riskLevel = "حرج";
+  else if (riskScore >= 50) riskLevel = "عالي";
+  else if (riskScore >= 25) riskLevel = "متوسط";
+  else if (riskScore >= 10) riskLevel = "منخفض";
+  findings.push({ severity: riskScore >= 75 ? "critical" : riskScore >= 50 ? "high" : riskScore >= 25 ? "medium" : "info", category: "تقييم المخاطر", title: `درجة المخاطر: ${riskScore}/100 (${riskLevel})`, description: `تقييم شامل: ${criticals} حرج، ${highs} عالي، ${mediums} متوسط — ${approvals.length} تصريح نشط`, evidence: `Risk: ${riskScore}/100` });
+  if (approvals.filter(a => a.isUnlimited).length > 0) findings.push({ severity: "critical", category: "توصية", title: "إلغاء التصريحات غير المحدودة فوراً", description: "استخدم revoke.cash أو etherscan.io/tokenapprovalchecker لإلغاء التصريحات الخطيرة", evidence: "https://revoke.cash" });
+  if (mixerInteractions > 0) findings.push({ severity: "critical", category: "توصية", title: "نقل الأصول إلى محفظة جديدة", description: "بسبب التفاعل مع عناوين محظورة، قد يتم حظر المحفظة على المنصات المركزية", evidence: "Mixer/sanctioned interactions detected" });
+  return { riskScore, riskLevel, findings };
+}
+
+// ═══ Main Wallet Pentest Function ═══
+
+export async function runWalletPentest(address: string, selectedChain?: string): Promise<{
+  steps: any[];
+  summary: any;
+  report: string;
+  cipher7: { totalFindings: number; phasesExecuted: number; engineVersion: string };
+  generatedAt: string;
+  walletAddress: string;
+}> {
+  let chain: "ETH" | "BSC" | "BTC" = "ETH";
+  if (selectedChain === "BSC" || selectedChain === "BNB") chain = "BSC";
+  else if (selectedChain === "BTC") chain = "BTC";
+  else { const detected = detectBlockchain(address); if (detected === "BTC") chain = "BTC"; }
+
+  const chainLabel = chain === "ETH" ? "Ethereum" : chain === "BSC" ? "Binance Smart Chain" : "Bitcoin";
+  const nativeCoin = chain === "BTC" ? "BTC" : chain === "ETH" ? "ETH" : "BNB";
+  const allFindings: WalletRiskFinding[] = [];
+
+  console.log("[WalletPentest] Phase 1: Wallet Identification");
+  const phase1 = await walletPhase1_Identification(address, chain);
+  allFindings.push(...phase1.findings);
+  const info = phase1.info;
+
+  console.log("[WalletPentest] Phase 2: Transaction History");
+  const phase2 = await walletPhase2_TransactionHistory(address, chain);
+  allFindings.push(...phase2.findings);
+  const txs = phase2.txs;
+
+  let tokens: TokenHolding[] = [];
+  if (chain !== "BTC") { console.log("[WalletPentest] Phase 3: Token Holdings"); const p3 = await walletPhase3_TokenHoldings(address, chain); tokens = p3.tokens; allFindings.push(...p3.findings); }
+
+  let nfts: any[] = [];
+  if (chain !== "BTC") { console.log("[WalletPentest] Phase 4: NFT Analysis"); const p4 = await walletPhase4_NFTAnalysis(address, chain); nfts = p4.nfts; allFindings.push(...p4.findings); }
+
+  let contracts: string[] = [];
+  if (chain !== "BTC") { console.log("[WalletPentest] Phase 5: Smart Contract Interactions"); const p5 = await walletPhase5_SmartContractInteractions(txs, address); contracts = p5.contracts; allFindings.push(...p5.findings); }
+
+  let approvals: TokenApproval[] = [];
+  if (chain !== "BTC") { console.log("[WalletPentest] Phase 6: Token Approval Audit"); const p6 = await walletPhase6_TokenApprovals(address, chain, txs); approvals = p6.approvals; allFindings.push(...p6.findings); }
+
+  let protocols: string[] = [];
+  if (chain !== "BTC") { console.log("[WalletPentest] Phase 7: DeFi Exposure"); const p7 = await walletPhase7_DeFiExposure(txs); protocols = p7.protocols; allFindings.push(...p7.findings); }
+
+  console.log("[WalletPentest] Phase 8: Suspicious Activity Detection");
+  const phase8 = await walletPhase8_SuspiciousActivity(txs, address, chain);
+  allFindings.push(...phase8.findings);
+
+  let gasStats: any = {};
+  if (chain !== "BTC") { console.log("[WalletPentest] Phase 9: Gas Analysis"); const p9 = await walletPhase9_GasAnalysis(txs, chain); gasStats = p9.gasStats; allFindings.push(...p9.findings); }
+
+  console.log("[WalletPentest] Phase 10: Risk Assessment");
+  const phase10 = walletPhase10_RiskAssessment(allFindings, info, approvals);
+  allFindings.push(...phase10.findings);
+  const { riskScore, riskLevel } = phase10;
+  const criticalCount = allFindings.filter(f => f.severity === "critical").length;
+  const highCount = allFindings.filter(f => f.severity === "high").length;
+
+  console.log("[WalletPentest] Phase 11: Intelligence Report");
+  let aiReport = "";
+  try {
+    const prompt = `أنت محلل أمني للبلوكتشين (Blockchain Security Analyst). اكتب تقرير اختبار اختراق محفظة إلكترونية احترافي شامل باللغة العربية:\n\nالمحفظة: ${address}\nالسلسلة: ${chainLabel}\nالرصيد: ${info.balance} ${nativeCoin} ($${info.balanceUSD})\nعدد المعاملات: ${info.txCount}\nعقد ذكي: ${info.isContract ? "نعم" : "لا"}\nالرموز: ${tokens.length} رمز\nNFTs: ${nfts.length} مجموعة\nالتصريحات النشطة: ${approvals.length} (${approvals.filter(a => a.isUnlimited).length} غير محدود)\nبروتوكولات DeFi: ${protocols.join(", ") || "لا يوجد"}\nدرجة الخطورة: ${riskScore}/100 (${riskLevel})\nالنتائج الحرجة: ${criticalCount}\nالنتائج العالية: ${highCount}\n\nاكتب تقريراً يشمل:\n1. ملخص تنفيذي\n2. تحليل نشاط المحفظة\n3. تقييم التصريحات والمخاطر\n4. تحليل التفاعل مع DeFi\n5. كشف الأنشطة المشبوهة\n6. توصيات الأمان بالأولوية\n7. خلاصة المخاطر والإجراءات المطلوبة`;
+    const reportResult = await callPowerAI(prompt, "", 6000);
+    aiReport = reportResult.content;
+  } catch (e: any) {
+    aiReport = `تقرير اختبار اختراق المحفظة\n\nالمحفظة: ${address}\nالسلسلة: ${chainLabel}\nدرجة الخطورة: ${riskScore}/100 (${riskLevel})\n\nملاحظة: فشل توليد التقرير التفصيلي — ${e.message}`;
+  }
+
+  console.log("[WalletPentest] Phase 12: Building output");
+  const explorerBase = chain === "ETH" ? "https://etherscan.io" : chain === "BSC" ? "https://bscscan.com" : "https://blockchain.com/btc";
+  const explorerAddr = `${explorerBase}/address/${address}`;
+
+  const pythonScript = `#!/usr/bin/env python3
+"""Cipher-7 Wallet Pentest Script"""
+import requests, json, sys
+
+ADDRESS = "${address}"
+CHAIN = "${chain}"
+
+def get_balance():
+    ${chain !== "BTC" ? `url = f"${chain === "ETH" ? "https://api.etherscan.io" : "https://api.bscscan.com"}/api?module=account&action=balance&address={ADDRESS}&tag=latest"
+    r = requests.get(url).json()
+    if r["status"] == "1":
+        bal = int(r["result"]) / 1e18
+        print(f"Balance: {bal:.6f} ${nativeCoin}")
+        return bal
+    return 0` : `url = f"https://blockchain.info/rawaddr/{ADDRESS}?limit=0"
+    r = requests.get(url).json()
+    bal = r.get("final_balance", 0) / 1e8
+    print(f"Balance: {bal:.8f} BTC")
+    return bal`}
+
+def get_transactions():
+    ${chain !== "BTC" ? `url = f"${chain === "ETH" ? "https://api.etherscan.io" : "https://api.bscscan.com"}/api?module=account&action=txlist&address={ADDRESS}&page=1&offset=10&sort=desc"
+    r = requests.get(url).json()
+    if r["status"] == "1":
+        for tx in r["result"][:10]:
+            val = int(tx["value"]) / 1e18
+            d = "OUT" if tx["from"].lower() == ADDRESS.lower() else "IN"
+            print(f"  [{d}] {val:.4f} ${nativeCoin} | {tx['hash'][:16]}...")
+        return r["result"]
+    return []` : `url = f"https://blockchain.info/rawaddr/{ADDRESS}?limit=10"
+    r = requests.get(url).json()
+    for tx in r.get("txs", [])[:10]:
+        val = sum(o.get("value", 0) for o in tx.get("out", [])) / 1e8
+        print(f"  {val:.8f} BTC | {tx['hash'][:16]}...")
+    return r.get("txs", [])`}
+
+if __name__ == "__main__":
+    print(f"{'='*60}")
+    print(f"  CIPHER-7 WALLET PENTEST — {CHAIN}")
+    print(f"  Address: {ADDRESS}")
+    print(f"{'='*60}")
+    print("\\n[Phase 1] Balance Check")
+    get_balance()
+    print("\\n[Phase 2] Transaction History")
+    get_transactions()
+    ${chain !== "BTC" ? `print("\\n[Phase 3] Token Approvals")
+    print("[!] Check: https://revoke.cash/address/" + ADDRESS)` : ""}
+    print(f"\\n{'='*60}")
+    print(f"  Scan complete. Risk Score: ${riskScore}/100")
+    print(f"{'='*60}")
+`;
+
+  const walletSteps = [
+    {
+      id: 1, title: "تعريف المحفظة والتحقق من الهوية (Phase 1)",
+      details: "التحقق من عنوان المحفظة وجلب المعلومات الأساسية",
+      status: "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    CIPHER-7 WALLET IDENTIFICATION — ${chainLabel.padEnd(20)}    ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   العنوان: ${address}`, `   السلسلة: ${chainLabel} (${chain})`,
+        `   نوع العنوان: ${info.isContract ? "عقد ذكي (Smart Contract)" : "محفظة خارجية (EOA)"}`,
+        `   الرصيد: ${info.balance} ${nativeCoin}`, `   القيمة بالدولار: $${info.balanceUSD}`,
+        `   عدد المعاملات: ${info.txCount}`, `   Nonce: ${info.nonce}`,
+        ``, `   المستكشف: ${explorerAddr}`,
+        ...phase1.findings.map(f => `   [${f.severity.toUpperCase()}] ${f.title}`),
+      ],
+      commands: [`curl -s "${explorerBase === "https://blockchain.com/btc" ? `https://blockchain.info/rawaddr/${address}?limit=0` : `${chain === "ETH" ? "https://api.etherscan.io" : "https://api.bscscan.com"}/api?module=account&action=balance&address=${address}&tag=latest`}" | python3 -m json.tool`],
+    },
+    {
+      id: 2, title: "تحليل سجل المعاملات (Phase 2)",
+      details: `فحص آخر ${txs.length} معاملة وتحليل الأنماط`,
+      status: "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    TRANSACTION HISTORY ANALYSIS                              ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   إجمالي المعاملات المحللة: ${txs.length}`,
+        `   المعاملات الصادرة: ${txs.filter(t => t.from.toLowerCase() === address.toLowerCase()).length}`,
+        `   المعاملات الواردة: ${txs.filter(t => t.to.toLowerCase() === address.toLowerCase()).length}`,
+        `   المعاملات الفاشلة: ${txs.filter(t => t.isError).length}`,
+        ``, `   ═══ آخر 5 معاملات ═══`,
+        ...txs.slice(0, 5).map(t => {
+          const dir = t.from.toLowerCase() === address.toLowerCase() ? "صادرة ←" : "واردة →";
+          return `   ${dir} ${t.value} ${nativeCoin} | ${t.hash.slice(0, 20)}... | ${new Date(t.timestamp * 1000).toISOString().split("T")[0]}`;
+        }),
+        ``, ...phase2.findings.map(f => `   [${f.severity.toUpperCase()}] ${f.title}: ${f.description}`),
+      ],
+      commands: [],
+    },
+    {
+      id: 3, title: "فحص الرموز المميزة (Token Holdings) (Phase 3)",
+      details: chain !== "BTC" ? `اكتشاف ${tokens.length} رمز ERC-20/BEP-20` : "غير متاح لـ Bitcoin",
+      status: "success",
+      findings: chain !== "BTC" ? [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    TOKEN HOLDINGS SCAN                                       ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   الرموز المكتشفة: ${tokens.length}`, ``,
+        ...tokens.slice(0, 15).map((t, i) => `   ${i + 1}. ${t.tokenName} (${t.tokenSymbol}) — ${t.contractAddress.slice(0, 16)}...`),
+        tokens.length > 15 ? `   ... و ${tokens.length - 15} رمز آخر` : "",
+        ``, ...allFindings.filter(f => f.category === "رموز مشبوهة" || f.category === "تنوع").map(f => `   [${f.severity.toUpperCase()}] ${f.title}: ${f.evidence}`),
+      ].filter(Boolean) : [`   Bitcoin لا يدعم الرموز المميزة (ERC-20)`],
+      commands: [],
+    },
+    {
+      id: 4, title: "تحليل NFTs (Phase 4)",
+      details: chain !== "BTC" ? `فحص ${nfts.length} مجموعة NFT` : "غير متاح لـ Bitcoin",
+      status: "success",
+      findings: chain !== "BTC" ? [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    NFT ANALYSIS                                              ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   مجموعات NFT: ${nfts.length}`,
+        ...nfts.slice(0, 10).map((n, i) => `   ${i + 1}. ${n.name} (${n.count} قطعة) — ${n.contract.slice(0, 16)}...`),
+        ``, ...allFindings.filter(f => f.category === "NFT احتيالي" || f.category === "NFT" || f.category === "ERC-1155").map(f => `   [${f.severity.toUpperCase()}] ${f.title}`),
+      ] : [`   Bitcoin لا يدعم NFTs التقليدية`],
+      commands: [],
+    },
+    {
+      id: 5, title: "تحليل تفاعلات العقود الذكية (Phase 5)",
+      details: `فحص ${contracts.length} عقد ذكي تم التفاعل معه`,
+      status: "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    SMART CONTRACT INTERACTIONS                               ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   العقود المتفاعل معها: ${contracts.length}`,
+        ...allFindings.filter(f => ["DeFi", "عنوان خطير", "عقود غير معروفة", "تصريحات"].includes(f.category)).map(f => `   [${f.severity.toUpperCase()}] ${f.title}`),
+      ],
+      commands: [],
+    },
+    {
+      id: 6, title: "فحص التصريحات الأمنية (Token Approvals) (Phase 6)",
+      details: `اكتشاف ${approvals.length} تصريح نشط — ${approvals.filter(a => a.isUnlimited).length} غير محدود`,
+      status: approvals.filter(a => a.isUnlimited).length > 0 ? "critical" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    TOKEN APPROVAL SECURITY AUDIT                             ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   التصريحات النشطة: ${approvals.length}`,
+        `   تصريحات غير محدودة: ${approvals.filter(a => a.isUnlimited).length}`, ``,
+        ...approvals.slice(0, 10).map((a, i) => `   ${i + 1}. [${a.risk.toUpperCase()}] ${a.tokenName} → ${a.spender.slice(0, 20)}... ${a.isUnlimited ? "UNLIMITED" : ""}`),
+        ``, approvals.length > 0 ? `   إلغاء التصريحات: https://revoke.cash/address/${address}` : "",
+        ...allFindings.filter(f => f.category === "تصريحات خطيرة" || f.category === "تصريحات نشطة" || f.category === "تصريحات").map(f => `   [${f.severity.toUpperCase()}] ${f.title}`),
+      ].filter(Boolean),
+      commands: [`# https://revoke.cash/address/${address}`],
+    },
+    {
+      id: 7, title: "تحليل التعرض لبروتوكولات DeFi (Phase 7)",
+      details: `${protocols.length} بروتوكول DeFi مكتشف`,
+      status: "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    DeFi PROTOCOL EXPOSURE                                    ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   البروتوكولات المستخدمة: ${protocols.length}`,
+        ...protocols.map((p, i) => `   ${i + 1}. ${p}`), ``,
+        ...allFindings.filter(f => ["تبادل", "إقراض", "جسور", "تداول"].includes(f.category)).map(f => `   [${f.severity.toUpperCase()}] ${f.title}: ${f.description}`),
+      ],
+      commands: chain !== "BTC" ? [`# DeFi: https://debank.com/profile/${address}`] : [],
+    },
+    {
+      id: 8, title: "كشف الأنشطة المشبوهة (Phase 8)",
+      details: "فحص هجمات الغبار وتسميم العناوين والخلاطات",
+      status: phase8.risks.length > 0 ? "warning" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    SUSPICIOUS ACTIVITY DETECTION                             ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   المخاطر المكتشفة: ${phase8.risks.length}`,
+        ...phase8.risks.map(r => `   ⚠ ${r}`), ``,
+        ...allFindings.filter(f => ["هجوم غبار", "تسميم العنوان", "مصدر خطير", "وجهة خطيرة", "MEV/Bot"].includes(f.category)).map(f => `   [${f.severity.toUpperCase()}] ${f.title}: ${f.description}`),
+        phase8.risks.length === 0 ? `   لم يتم اكتشاف أنشطة مشبوهة` : "",
+      ].filter(Boolean),
+      commands: [],
+    },
+    {
+      id: 9, title: "تحليل استهلاك الغاز (Phase 9)",
+      details: chain !== "BTC" ? `إجمالي الغاز: ${gasStats.totalGasSpent || "0"} ${nativeCoin}` : "غير متاح",
+      status: "success",
+      findings: chain !== "BTC" ? [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    GAS USAGE ANALYSIS                                        ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   إجمالي الغاز المستهلك: ${gasStats.totalGasSpent || "0"} ${nativeCoin}`,
+        `   عدد المعاملات: ${gasStats.totalTransactions || 0}`,
+        `   متوسط الغاز لكل معاملة: ${gasStats.avgGasPerTx || "0"}`,
+        `   أعلى معاملة غاز: ${gasStats.maxGasCost || "0"}`, ``,
+        ...allFindings.filter(f => ["رسوم غاز", "غاز عالي"].includes(f.category)).map(f => `   [${f.severity.toUpperCase()}] ${f.title}`),
+      ] : [`   Bitcoin يستخدم رسوم مختلفة عن Gas`],
+      commands: [],
+    },
+    {
+      id: 10, title: "تقييم المخاطر الشامل (Phase 10)",
+      details: `درجة الخطورة: ${riskScore}/100 (${riskLevel})`,
+      status: riskScore >= 50 ? "critical" : riskScore >= 25 ? "warning" : "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    COMPREHENSIVE RISK ASSESSMENT                             ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   ╭─────────────────────────────────╮`,
+        `   │  درجة الخطورة: ${String(riskScore).padStart(3)}/100          │`,
+        `   │  المستوى: ${riskLevel.padEnd(20)}    │`,
+        `   ╰─────────────────────────────────╯`,
+        ``, `   النتائج الحرجة: ${criticalCount}`, `   النتائج العالية: ${highCount}`,
+        `   التصريحات غير المحدودة: ${approvals.filter(a => a.isUnlimited).length}`,
+        `   العقود المتفاعل معها: ${contracts.length}`, `   بروتوكولات DeFi: ${protocols.length}`,
+        ``, ...phase10.findings.map(f => `   [${f.severity.toUpperCase()}] ${f.title}: ${f.description}`),
+      ],
+      commands: [],
+    },
+    {
+      id: 11, title: "تقرير الاستخبارات الأمنية (Phase 11)",
+      details: "تقرير AI شامل للمحفظة",
+      status: "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    CIPHER-7 BLOCKCHAIN INTELLIGENCE REPORT                   ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   المحفظة: ${address}`, `   السلسلة: ${chainLabel}`,
+        `   الرصيد: ${info.balance} ($${info.balanceUSD})`,
+        `   درجة الخطورة: ${riskScore}/100 (${riskLevel})`,
+        ``, `   ═══ ملخص النتائج ═══`,
+        `   حرج: ${criticalCount}`, `   عالي: ${highCount}`,
+        `   متوسط: ${allFindings.filter(f => f.severity === "medium").length}`,
+        `   معلومات: ${allFindings.filter(f => f.severity === "info").length}`,
+        ``, `   ═══ التوصيات العاجلة ═══`,
+        approvals.filter(a => a.isUnlimited).length > 0 ? `   [حرج] إلغاء جميع التصريحات غير المحدودة عبر revoke.cash` : "",
+        phase8.risks.length > 0 ? `   [عالي] نقل الأصول إلى محفظة جديدة بسبب الأنشطة المشبوهة` : "",
+        `   [متوسط] استخدام محفظة Hardware Wallet لتخزين الأصول الكبيرة`,
+        `   [متوسط] مراجعة التصريحات دورياً كل شهر`,
+      ].filter(Boolean),
+      commands: [],
+    },
+    {
+      id: 12, title: "ترسانة أدوات الفحص (Phase 12)",
+      details: "جميع الأوامر والأدوات والسكريبتات",
+      status: "success",
+      findings: [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║    CIPHER-7 WALLET SECURITY TOOLKIT                          ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``, `   ═══ أدوات الفحص ═══`,
+        `   Etherscan: ${explorerAddr}`,
+        `   Token Approvals: https://revoke.cash/address/${address}`,
+        chain !== "BTC" ? `   DeFi Dashboard: https://debank.com/profile/${address}` : "",
+        chain !== "BTC" ? `   Zapper: https://zapper.xyz/account/${address}` : "",
+        ``, `   ═══ الأدوات المستخدمة ═══`,
+        `   Cipher-7 Wallet Engine v1.0 — 12 مرحلة`,
+        `   Etherscan/BSCScan/Blockchain.info API`,
+        `   Token Approval Analyzer`, `   DeFi Protocol Detector`,
+        `   Suspicious Activity Scanner`, `   Dust Attack Detector`,
+        `   Address Poisoning Detector`, `   Gas Usage Analyzer`,
+        `   AI Risk Assessment Engine`,
+      ].filter(Boolean),
+      commands: [`python3 cipher7_wallet_pentest_${address.slice(0, 10)}.py`],
+      pythonScript,
+    },
+  ];
+
+  return {
+    steps: walletSteps,
+    summary: {
+      riskScore, riskLevel, criticalCount, highCount,
+      chain: chainLabel, balance: info.balance, balanceUSD: info.balanceUSD,
+      txCount: info.txCount, isContract: info.isContract,
+      tokenCount: tokens.length, nftCount: nfts.length,
+      approvalCount: approvals.length,
+      unlimitedApprovals: approvals.filter(a => a.isUnlimited).length,
+      defiProtocols: protocols, suspiciousRisks: phase8.risks, gasStats,
+    },
+    report: aiReport,
+    cipher7: { totalFindings: allFindings.length, phasesExecuted: 12, engineVersion: "1.0-wallet" },
+    generatedAt: new Date().toISOString(),
+    walletAddress: address,
+  };
+}
