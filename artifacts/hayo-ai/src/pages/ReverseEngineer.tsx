@@ -19,7 +19,7 @@ import {
   ToggleLeft, ToggleRight, Rocket, Flame, Settings,
   Keyboard, Database, Activity, TrendingUp, BarChart3, Code,
   Microscope, Network, FileSearch, Diff, Layers, FileOutput, FileText,
-  ArrowUpDown, Braces, Hash, Link2, Monitor, Cloud, type LucideIcon,
+  ArrowUpDown, Braces, Hash, Link2, Monitor, Cloud, Wallet, type LucideIcon,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -655,6 +655,15 @@ export default function ReverseEngineer(){
   const[hbResult,setHbResult]=useState<any>(null);
   const[hbActivePhase,setHbActivePhase]=useState(0);
   const[hbExpanded,setHbExpanded]=useState<Set<string>>(new Set(["network"]));
+  // Wallet Pentest
+  const[walAddr,setWalAddr]=useState("");
+  const[walChain,setWalChain]=useState<"ETH"|"BSC"|"BTC">("ETH");
+  const[walLoading,setWalLoading]=useState(false);
+  const[walResult,setWalResult]=useState<any>(null);
+  const[walActiveStep,setWalActiveStep]=useState(0);
+  const[walStepsRevealed,setWalStepsRevealed]=useState<number[]>([]);
+  const[walExpanded,setWalExpanded]=useState<Set<number>>(new Set([1]));
+  const[walShowReport,setWalShowReport]=useState(false);
 
   // Auto-run Intel when switching to intel tab with active session
   useEffect(()=>{
@@ -1028,6 +1037,28 @@ export default function ReverseEngineer(){
       setHbResult(d);setHbActivePhase(phases.length);
       toast.success(`تحليل Headless Browser — ${d.apis?.totalAPIs||0} API · ${d.network?.totalRequests||0} طلب · ${d.jsRuntime?.errors||0} خطأ`);
     }catch(e:any){clearInterval(timer);toast.error(`فشل التحليل: ${e.message}`);}finally{setHbLoading(false);}
+  };
+
+  const doWalletPentest=async()=>{
+    if(!walAddr.trim()){toast.error("أدخل عنوان المحفظة أولاً");return;}
+    setWalLoading(true);setWalResult(null);setWalShowReport(false);setWalActiveStep(1);setWalStepsRevealed([]);
+    const revealStep=(n:number)=>setWalStepsRevealed(prev=>[...prev,n]);
+    let stepTimer:any;
+    const simulateSteps=()=>{
+      let s=1;
+      revealStep(1);setWalActiveStep(1);
+      stepTimer=setInterval(()=>{s++;if(s<=12){revealStep(s);setWalActiveStep(s);}else clearInterval(stepTimer);},2500);
+    };
+    simulateSteps();
+    try{
+      const r=await fetchRE("/api/reverse/wallet-pentest-full",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({address:walAddr.trim(),chain:walChain})});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.error);
+      clearInterval(stepTimer);
+      setWalStepsRevealed([1,2,3,4,5,6,7,8,9,10,11,12]);setWalActiveStep(0);
+      setWalResult(d);setWalExpanded(new Set([1,2,3,4,5,6,7,8,9,10,11,12]));
+      toast.success(`اكتمل اختبار المحفظة — درجة الخطورة: ${d.summary?.riskScore}/100`);
+    }catch(e:any){clearInterval(stepTimer);toast.error(e.message);}finally{setWalLoading(false);}
   };
 
   const doDeepFirebaseAudit=async()=>{
@@ -3071,6 +3102,228 @@ export default function ReverseEngineer(){
               ))}
             </div>
           </div>}
+        </>}
+
+        {/* ══ WALLET PENTEST — Address Input & Start ══ */}
+        {!walResult&&!walLoading&&<div className="flex-1 flex flex-col items-center justify-center gap-5 py-6">
+          <div className="text-center space-y-2">
+            <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-amber-500/20 to-orange-600/20 border border-amber-500/30 flex items-center justify-center">
+              <Wallet className="w-10 h-10 text-amber-400"/>
+            </div>
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-amber-300 to-orange-400 bg-clip-text text-transparent">اختبار اختراق محفظة إلكترونية — Cipher-7</h2>
+            <p className="text-sm text-muted-foreground max-w-lg mx-auto">أدخل عنوان المحفظة واختر السلسلة واضغط "ابدأ العمل" — سيتم تنفيذ 12 مرحلة تلقائياً: تعريف المحفظة، سجل المعاملات، الرموز، NFTs، العقود الذكية، التصريحات، DeFi، الأنشطة المشبوهة، الغاز، تقييم المخاطر، تقرير استخباراتي، وترسانة الأدوات</p>
+          </div>
+          <div className="w-full max-w-xl space-y-3">
+            <div className="relative">
+              <Wallet className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-amber-400"/>
+              <input value={walAddr} onChange={e=>setWalAddr(e.target.value)} placeholder="أدخل عنوان المحفظة — مثال: 0x..." className="w-full bg-muted/30 border-2 border-amber-500/30 rounded-2xl px-12 py-4 text-base text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-amber-500/60 transition-all font-mono" onKeyDown={e=>{if(e.key==="Enter"&&walAddr.trim())doWalletPentest();}}/>
+              <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground"/>
+            </div>
+            <div className="flex gap-2">
+              {(["ETH","BSC","BTC"] as const).map(c=>(
+                <button key={c} onClick={()=>setWalChain(c)} className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all border-2 ${walChain===c?"bg-gradient-to-r from-amber-600/30 to-orange-600/30 border-amber-500/60 text-amber-300 shadow-lg shadow-amber-900/20":"bg-muted/20 border-border/30 text-muted-foreground hover:border-amber-500/30"}`}>
+                  {c==="ETH"?"Ethereum (ETH)":c==="BSC"?"BNB Chain (BSC)":"Bitcoin (BTC)"}
+                </button>
+              ))}
+            </div>
+            <Button onClick={doWalletPentest} disabled={!walAddr.trim()||walLoading} size="lg" className="gap-3 bg-gradient-to-r from-amber-600 via-orange-600 to-red-600 hover:from-amber-500 hover:via-orange-500 hover:to-red-500 text-lg px-10 py-7 rounded-2xl shadow-xl shadow-amber-900/40 font-bold w-full">
+              {walLoading?<Loader2 className="w-6 h-6 animate-spin"/>:<Zap className="w-6 h-6"/>}
+              {walLoading?"جاري اختبار المحفظة...":"ابدأ العمل — اختبار اختراق المحفظة"}
+            </Button>
+          </div>
+          <div className="grid grid-cols-6 gap-1 w-full max-w-xl">
+            {["تعريف","معاملات","رموز","NFTs","عقود ذكية","تصريحات"].map((s,i)=><div key={i} className="text-center">
+              <div className="w-6 h-6 mx-auto rounded-full bg-muted/20 border border-amber-500/30 flex items-center justify-center text-[9px] font-bold text-muted-foreground">{i+1}</div>
+              <div className="text-[7px] text-muted-foreground mt-0.5">{s}</div>
+            </div>)}
+          </div>
+          <div className="grid grid-cols-6 gap-1 w-full max-w-xl">
+            {["DeFi","مشبوه","غاز","مخاطر","استخبارات","أدوات"].map((s,i)=><div key={i} className="text-center">
+              <div className="w-6 h-6 mx-auto rounded-full bg-gradient-to-br from-amber-500/20 to-orange-500/20 border border-amber-500/30 flex items-center justify-center text-[9px] font-bold text-amber-400">{i+7}</div>
+              <div className="text-[7px] text-amber-400/70 mt-0.5">{s}</div>
+            </div>)}
+          </div>
+        </div>}
+
+        {/* ══ WALLET PENTEST — Live Execution Progress ══ */}
+        {walLoading&&<div className="space-y-4">
+          <div className="bg-gradient-to-r from-amber-900/40 to-orange-900/40 border border-amber-500/30 rounded-2xl p-5">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-amber-400"/>
+              <div>
+                <h2 className="text-lg font-bold text-amber-300">جاري تنفيذ اختبار اختراق المحفظة...</h2>
+                <p className="text-xs text-muted-foreground">المحفظة: <span className="text-amber-300 font-mono">{walAddr.slice(0,10)}...{walAddr.slice(-6)}</span> · {walChain}</p>
+              </div>
+            </div>
+            <div className="mt-4 h-2 bg-muted/20 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 rounded-full transition-all duration-1000" style={{width:`${(walActiveStep/12)*100}%`}}/>
+            </div>
+            <div className="text-[11px] text-muted-foreground mt-2 text-left">{walActiveStep}/12 مرحلة Cipher-7 Wallet</div>
+          </div>
+          {[
+            {id:1,title:"تعريف المحفظة (Wallet Identification)",icon:"🔍"},
+            {id:2,title:"تحليل سجل المعاملات (Transaction History)",icon:"📊"},
+            {id:3,title:"فحص الرموز المميزة (Token Holdings)",icon:"🪙"},
+            {id:4,title:"تحليل NFTs",icon:"🖼️"},
+            {id:5,title:"تفاعلات العقود الذكية (Smart Contracts)",icon:"📜"},
+            {id:6,title:"فحص التصريحات (Token Approvals)",icon:"🔓"},
+            {id:7,title:"تعرض DeFi (DeFi Exposure)",icon:"🏦"},
+            {id:8,title:"كشف الأنشطة المشبوهة (Suspicious Activity)",icon:"⚠️"},
+            {id:9,title:"تحليل الغاز (Gas Analysis)",icon:"⛽"},
+            {id:10,title:"تقييم المخاطر الشامل (Risk Assessment)",icon:"🎯"},
+            {id:11,title:"تقرير الاستخبارات (Intelligence Report)",icon:"📋"},
+            {id:12,title:"ترسانة الأدوات (Toolkit)",icon:"🛠️"},
+          ].map(step=>{
+            const revealed=walStepsRevealed.includes(step.id);
+            const active=walActiveStep===step.id;
+            return <div key={step.id} className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-500 ${revealed?"bg-amber-500/10 border border-amber-500/20":active?"bg-amber-500/5 border border-amber-500/10 animate-pulse":"bg-muted/5 border border-transparent opacity-40"}`}>
+              <span className="text-lg">{step.icon}</span>
+              <span className={`text-sm font-medium ${revealed?"text-amber-300":active?"text-amber-400/70":"text-muted-foreground"}`}>{step.title}</span>
+              {revealed&&<CheckCircle2 className="w-4 h-4 text-green-400 ml-auto"/>}
+              {active&&!revealed&&<Loader2 className="w-4 h-4 text-amber-400 animate-spin ml-auto"/>}
+            </div>;
+          })}
+        </div>}
+
+        {/* ══ WALLET PENTEST — Results ══ */}
+        {walResult&&<>
+          <div className="space-y-4 w-full">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold bg-gradient-to-r from-amber-300 to-orange-400 bg-clip-text text-transparent flex items-center gap-2"><Wallet className="w-5 h-5 text-amber-400"/>نتائج اختبار اختراق المحفظة</h2>
+                <p className="text-xs text-muted-foreground mt-1">المحفظة: <span className="text-amber-300 font-mono">{walResult.walletAddress}</span> · {walResult.summary?.chain} · {new Date(walResult.generatedAt).toLocaleString("ar-EG")}</p>
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={()=>{const blob=new Blob([JSON.stringify(walResult,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`wallet-pentest-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" className="gap-2 border-amber-500/30 text-amber-300"><Download className="w-4 h-4"/>تصدير JSON</Button>
+                <Button onClick={()=>setWalShowReport(v=>!v)} variant="outline" className="gap-2 border-amber-500/30 text-amber-300"><BookOpen className="w-4 h-4"/>{walShowReport?"إخفاء التقرير":"التقرير الكامل"}</Button>
+              </div>
+            </div>
+
+            {/* Summary Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className={`p-4 rounded-xl border text-center ${walResult.summary.riskScore>60?"bg-red-500/10 border-red-500/40 shadow-lg shadow-red-900/20":"bg-amber-500/10 border-amber-500/30"}`}>
+                <div className={`text-4xl font-black ${walResult.summary.riskScore>60?"text-red-400":walResult.summary.riskScore>30?"text-yellow-400":"text-emerald-400"}`}>{walResult.summary.riskScore}</div>
+                <div className="text-[11px] text-muted-foreground">درجة الخطورة /100</div>
+                <div className={`text-[11px] mt-1 font-semibold ${walResult.summary.riskScore>60?"text-red-400":"text-emerald-400"}`}>{walResult.summary.riskLevel}</div>
+              </div>
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-center">
+                <div className="text-2xl font-bold text-amber-300">{walResult.summary.balance}</div>
+                <div className="text-[10px] text-muted-foreground">{walResult.summary.chain}</div>
+                <div className="text-[10px] text-emerald-400">${walResult.summary.balanceUSD}</div>
+              </div>
+              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-center">
+                <div className="text-3xl font-bold text-red-400">{walResult.summary.criticalCount}</div>
+                <div className="text-[10px] text-muted-foreground">حرج</div>
+              </div>
+              <div className="p-3 rounded-xl bg-orange-500/10 border border-orange-500/20 text-center">
+                <div className="text-3xl font-bold text-orange-400">{walResult.summary.highCount}</div>
+                <div className="text-[10px] text-muted-foreground">عالي</div>
+              </div>
+              <div className="p-3 rounded-xl bg-violet-500/10 border border-violet-500/20 text-center">
+                <div className="text-3xl font-bold text-violet-400">{walResult.summary.approvalCount}</div>
+                <div className="text-[10px] text-muted-foreground">تصريحات نشطة</div>
+              </div>
+            </div>
+
+            {/* Extra info row */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-center">
+                <div className="text-2xl font-bold text-blue-300">{walResult.summary.txCount}</div>
+                <div className="text-[10px] text-muted-foreground">معاملات</div>
+              </div>
+              <div className="p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-center">
+                <div className="text-2xl font-bold text-cyan-300">{walResult.summary.tokenCount}</div>
+                <div className="text-[10px] text-muted-foreground">رموز مميزة</div>
+              </div>
+              <div className="p-3 rounded-xl bg-pink-500/10 border border-pink-500/20 text-center">
+                <div className="text-2xl font-bold text-pink-300">{walResult.summary.nftCount}</div>
+                <div className="text-[10px] text-muted-foreground">NFTs</div>
+              </div>
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
+                <div className="text-2xl font-bold text-emerald-300">{walResult.summary.defiProtocols?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground">بروتوكولات DeFi</div>
+              </div>
+            </div>
+
+            {/* DeFi Protocols */}
+            {walResult.summary?.defiProtocols?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-amber-500/20 rounded-xl px-4 py-3">
+              <span className="text-[11px] font-semibold text-amber-300">DeFi:</span>
+              {walResult.summary.defiProtocols.map((p:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full font-medium bg-amber-500/10 border border-amber-500/30 text-amber-300">{p}</span>)}
+            </div>}
+
+            {/* Suspicious Risks */}
+            {walResult.summary?.suspiciousRisks?.length>0&&<div className="flex items-center gap-2 flex-wrap bg-card/50 border border-red-500/20 rounded-xl px-4 py-3">
+              <span className="text-[11px] font-semibold text-red-300">مخاطر:</span>
+              {walResult.summary.suspiciousRisks.map((r:string,i:number)=><span key={i} className="text-[11px] px-3 py-1 rounded-full font-medium bg-red-500/10 border border-red-500/30 text-red-300">{r}</span>)}
+            </div>}
+
+            {/* AI Report */}
+            {walShowReport&&walResult.report&&<div className="bg-black/30 border border-amber-500/20 rounded-2xl p-5 max-h-[500px] overflow-y-auto">
+              <h3 className="text-sm font-bold text-amber-300 mb-3">تقرير الاستخبارات الأمنية — AI</h3>
+              <div className="whitespace-pre-wrap text-[12px] text-muted-foreground leading-relaxed font-mono">{walResult.report}</div>
+            </div>}
+
+            {/* Steps Accordion */}
+            {walResult.steps.map((step:any)=>{
+              const isOpen=walExpanded.has(step.id);
+              const statusIcons:Record<string,string>={"success":"✅","critical":"🔴","warning":"⚠️"};
+              const statusLabels:Record<string,string>={"success":"مكتمل","critical":"حرج","warning":"تحذير"};
+              return <div key={step.id} className="border border-border/30 rounded-xl overflow-hidden bg-card/30">
+                <button onClick={()=>{const n=new Set(walExpanded);if(n.has(step.id))n.delete(step.id);else n.add(step.id);setWalExpanded(n);}} className="w-full flex items-center gap-3 p-4 hover:bg-white/5 transition-all text-right">
+                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500/20 to-orange-500/20 border border-amber-500/30 flex items-center justify-center text-xs font-bold text-amber-300 shrink-0">{step.id}</div>
+                  <div className="flex-1 text-right">
+                    <div className="font-semibold text-sm">{step.title}</div>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">{step.details}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[11px] px-2 py-1 rounded-full border bg-muted/20 font-medium">{statusIcons[step.status]||"✅"} {statusLabels[step.status]||"مكتمل"}</span>
+                    <span className="text-[10px] text-muted-foreground bg-muted/10 px-2 py-0.5 rounded-full">{step.findings?.length||0} نتائج</span>
+                    {isOpen?<ChevronDown className="w-4 h-4 text-muted-foreground"/>:<ChevronRight className="w-4 h-4 text-muted-foreground"/>}
+                  </div>
+                </button>
+                {isOpen&&<div className="border-t border-border/30 p-4 space-y-3 bg-black/20">
+                  {step.findings?.length>0&&<div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-amber-300 flex items-center gap-1"><Search className="w-3 h-3"/>الاكتشافات ({step.findings.length})</div>
+                    <div className="bg-black/30 rounded-lg p-3 max-h-[400px] overflow-y-auto space-y-0.5">
+                      {step.findings.map((f:string,fi:number)=><div key={fi} className={`text-[11px] font-mono ${f.includes("CRITICAL")?"text-red-300":f.includes("HIGH")?"text-orange-300":f.includes("MEDIUM")?"text-yellow-300":f.includes("═══")||f.includes("╔")?"text-amber-300 font-bold":"text-muted-foreground"}`}>{f}</div>)}
+                    </div>
+                  </div>}
+                  {step.commands?.length>0&&<div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-amber-300 flex items-center gap-1"><Terminal className="w-3 h-3"/>أوامر ({step.commands.length})</div>
+                    <div className="bg-black/40 rounded-lg p-3 space-y-1">
+                      {step.commands.map((cmd:string,ci:number)=><div key={ci} className="flex items-center gap-2 text-[11px] font-mono text-amber-200/80 hover:text-amber-100 cursor-pointer" onClick={()=>{navigator.clipboard.writeText(cmd);toast.success("تم النسخ");}}><span className="text-amber-500">$</span>{cmd}</div>)}
+                    </div>
+                  </div>}
+                  {step.pythonScript&&<div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-amber-300 flex items-center gap-1"><Code className="w-3 h-3"/>Python Script</div>
+                    <div className="bg-black/40 rounded-lg p-3 max-h-48 overflow-y-auto">
+                      <pre className="text-[10px] text-green-300/80 font-mono whitespace-pre-wrap">{step.pythonScript}</pre>
+                    </div>
+                    <Button onClick={()=>{const b=new Blob([step.pythonScript],{type:"text/plain"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`cipher7_wallet_pentest.py`;a.click();URL.revokeObjectURL(u);}} variant="outline" size="sm" className="gap-1 text-[10px] border-amber-500/30 text-amber-300"><Download className="w-3 h-3"/>تحميل السكريبت</Button>
+                  </div>}
+                </div>}
+              </div>;
+            })}
+
+            {/* Cipher-7 Summary */}
+            {walResult.cipher7&&<div className="bg-gradient-to-r from-amber-900/30 to-orange-900/30 border border-amber-500/30 rounded-2xl p-5 space-y-3">
+              <h3 className="text-sm font-bold text-amber-300 flex items-center gap-2"><Shield className="w-4 h-4"/>ملخص Cipher-7 Wallet Engine</h3>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-center">
+                  <div className="text-2xl font-bold text-amber-300">{walResult.cipher7.totalFindings}</div>
+                  <div className="text-[10px] text-muted-foreground">إجمالي الاكتشافات</div>
+                </div>
+                <div className="p-3 rounded-xl bg-orange-500/10 border border-orange-500/20 text-center">
+                  <div className="text-2xl font-bold text-orange-300">{walResult.cipher7.phasesExecuted}</div>
+                  <div className="text-[10px] text-muted-foreground">مراحل منفذة</div>
+                </div>
+                <div className="p-3 rounded-xl bg-pink-500/10 border border-pink-500/20 text-center">
+                  <div className="text-lg font-bold text-pink-300">v{walResult.cipher7.engineVersion}</div>
+                  <div className="text-[10px] text-muted-foreground">إصدار المحرك</div>
+                </div>
+              </div>
+            </div>}
+          </div>
         </>}
 
         {/* ── Sequential Pipeline: Live Progress ── */}

@@ -857,6 +857,28 @@ router.get("/clone-download/:cloneId", async (req: Request, res: Response) => {
   }
 });
 
+// ═══ WALLET PENTEST — Cipher-7 Crypto Wallet Penetration Testing ═══
+router.post("/wallet-pentest-full", async (req: Request, res: Response) => {
+  extendTimeout(req, res, 600_000);
+  const { address, chain } = req.body as { address?: string; chain?: string };
+  if (!address || typeof address !== "string" || address.trim().length < 26) {
+    res.status(400).json({ error: "أدخل عنوان المحفظة أولاً" });
+    return;
+  }
+  try {
+    const { runWalletPentest } = await import("../hayo/services/reverse-engineer.js");
+    const pentestResult = await runWalletPentest(address.trim(), chain);
+
+    try {
+      await sendPentestToTelegram(pentestResult);
+      console.log("[WalletPentest-TG] ✅ Sent to Telegram");
+    } catch (tgErr: any) {
+      console.log("[WalletPentest-TG] ❌ Error:", tgErr.message);
+    }
+
+    res.json(pentestResult);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
 async function sendPentestToTelegram(result: any) {
   const botToken = process.env.PENTEST_BOT_TOKEN;
   const chatId = process.env.PENTEST_CHAT_ID;
