@@ -646,6 +646,7 @@ export default function ReverseEngineer(){
   const[wpShowExposedSecrets,setWpShowExposedSecrets]=useState(false);
   const[wpShowPoE,setWpShowPoE]=useState(false);
   const[wpShowBackendExposures,setWpShowBackendExposures]=useState(false);
+  const[wpShowBrowser,setWpShowBrowser]=useState(false);
   // Website Clone
   const[cloneLoading,setCloneLoading]=useState(false);
   const[cloneResult,setCloneResult]=useState<any>(null);
@@ -1877,8 +1878,8 @@ export default function ReverseEngineer(){
             <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-600/20 border border-purple-500/30 flex items-center justify-center">
               <Globe className="w-10 h-10 text-purple-400"/>
             </div>
-            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-300 to-pink-400 bg-clip-text text-transparent">فحص شامل موحد — Cipher-7 + Headless Browser</h2>
-            <p className="text-sm text-muted-foreground max-w-lg mx-auto">أدخل رابط الموقع واضغط "ابدأ الفحص الشامل" — سيتم تنفيذ 32 مرحلة تلقائياً: 25 مرحلة Cipher-7 (استطلاع، أسرار، Firebase، SQLi، XSS، SSRF، LFI، Backend Fuzzing) + 7 مراحل Headless Browser (Puppeteer: تشغيل Chromium، اعتراض الشبكة، JS Runtime، اكتشاف APIs، أداء، أمان) — تقرير موحد شامل → ثم اضغط "استنساخ" لاستخدام جميع البيانات المستخرجة</p>
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-300 to-pink-400 bg-clip-text text-transparent">فحص شامل موحد — Cipher-7 v15.0 + Headless Browser</h2>
+            <p className="text-sm text-muted-foreground max-w-lg mx-auto">أدخل رابط الموقع واضغط "ابدأ الفحص الشامل" — سيتم تنفيذ 32+ مرحلة تلقائياً: 25 مرحلة Cipher-7 (استطلاع، أسرار، Firebase، SQLi، XSS، SSRF، LFI، Backend Fuzzing، JWT، CVSS) + 7 مراحل Headless Browser (Puppeteer: تشغيل Chromium، اعتراض الشبكة، JS Runtime، اكتشاف APIs، Window Vars، WAF Bypass) — تقرير موحد شامل → ثم اضغط "استنساخ" لاستخدام جميع البيانات المستخرجة</p>
           </div>
           <div className="w-full max-w-xl space-y-3">
             <div className="relative">
@@ -2278,6 +2279,7 @@ export default function ReverseEngineer(){
                 <Button onClick={()=>setWpShowExposedSecrets(v=>!v)} variant="outline" className="gap-2 border-red-500/30 text-red-300"><Key className="w-4 h-4"/>{wpShowExposedSecrets?"إخفاء الأسرار":"الأسرار المكشوفة"}</Button>
                 <Button onClick={()=>setWpShowPoE(v=>!v)} variant="outline" className={`gap-2 ${(wpResult.proof_of_exposure?.totalExposures>0||wpResult.proof_of_exposure?.validSecrets>0)?"border-red-500/50 text-red-300 bg-red-500/10":"border-emerald-500/30 text-emerald-300"}`}><Shield className="w-4 h-4"/>{wpShowPoE?"إخفاء PoE":`إثبات التعرض (${wpResult.proof_of_exposure?.totalExposures||0}) + تحقق (${wpResult.proof_of_exposure?.totalValidated||0})`}</Button>
                 <Button onClick={()=>setWpShowBackendExposures(v=>!v)} variant="outline" className={`gap-2 ${wpResult.backendExposures?.totalBackendExposures>0?"border-rose-500/50 text-rose-300 bg-rose-500/10 animate-pulse":"border-slate-500/30 text-slate-300"}`}><Flame className="w-4 h-4"/>{wpShowBackendExposures?"إخفاء Backend":"استغلال الخادم"+(wpResult.backendExposures?.totalBackendExposures>0?` (${wpResult.backendExposures.totalBackendExposures})`:"")}</Button>
+                <Button onClick={()=>setWpShowBrowser(v=>!v)} variant="outline" className={`gap-2 ${wpResult.headlessBrowser?.enabled?"border-cyan-500/50 text-cyan-300 bg-cyan-500/10":"border-muted text-muted-foreground"}`}><Monitor className="w-4 h-4"/>{wpShowBrowser?"إخفاء المتصفح":`المتصفح الحقيقي ${wpResult.headlessBrowser?.enabled?"✅":"❌"}`}</Button>
                 <Button onClick={()=>setWpShowDevMsg(v=>!v)} variant="outline" className="gap-2 border-yellow-500/30 text-yellow-300"><AlertTriangle className="w-4 h-4"/>{wpShowDevMsg?"إخفاء رسالة المبرمج":"رسالة للمبرمج"}</Button>
                 <Button onClick={()=>doCloneWebsite(wpResult?.targetUrl||wpUrl)} disabled={cloneLoading} variant="outline" className="gap-2 border-emerald-500/30 text-emerald-300 bg-emerald-500/10">{cloneLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Layers className="w-4 h-4"/>}{cloneLoading?"جاري الاستنساخ...":"استنساخ الموقع (مع بيانات الفحص)"}</Button>
               </div>
@@ -2848,6 +2850,97 @@ export default function ReverseEngineer(){
             :<div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5 text-center">
               <div className="text-lg font-bold text-emerald-400">لم يتم العثور على أي تعرضات في الخادم الخلفي</div>
               <div className="text-sm text-muted-foreground mt-1">تم فحص {wpResult.backendExposures.forcedBrowsing?.totalProbed||0} مسار + {wpResult.backendExposures.lfiFuzzing?.totalPayloads||0} payload LFI + {wpResult.backendExposures.ssrfMetadata?.totalPayloads||0} payload SSRF — لا تسريبات</div>
+            </div>}
+          </div>}
+
+          {/* ══ HEADLESS BROWSER ENGINE RESULTS ══ */}
+          {wpShowBrowser&&wpResult.headlessBrowser&&<div className="bg-gradient-to-r from-cyan-900/40 via-blue-900/30 to-indigo-900/40 border-2 border-cyan-500/50 rounded-2xl p-5 space-y-5">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-cyan-300 flex items-center gap-2"><Monitor className="w-5 h-5"/>محرك المتصفح الحقيقي — Headless Browser Engine v14.0</h3>
+              <Button onClick={()=>{const blob=new Blob([JSON.stringify(wpResult.headlessBrowser,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`browser-intel-${Date.now()}.json`;a.click();URL.revokeObjectURL(url);}} variant="outline" size="sm" className="gap-1 text-[10px] border-cyan-500/30 text-cyan-300"><Download className="w-3 h-3"/>تصدير</Button>
+            </div>
+
+            {/* Browser Status Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className={`p-3 rounded-xl border text-center ${wpResult.headlessBrowser.enabled?"bg-cyan-500/10 border-cyan-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-2xl font-bold text-cyan-400">{wpResult.headlessBrowser.enabled?"فعّال":"غير متوفر"}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">حالة المتصفح</div>
+              </div>
+              <div className={`p-3 rounded-xl border text-center ${wpResult.headlessBrowser.wafBypassed?"bg-green-500/10 border-green-500/40":"bg-muted/10 border-border/30"}`}>
+                <div className="text-2xl font-bold text-green-400">{wpResult.headlessBrowser.wafBypassed?"تم التجاوز ✅":"لا WAF"}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">تجاوز WAF</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-blue-500/10 border-blue-500/40 text-center">
+                <div className="text-2xl font-bold text-blue-400">{wpResult.headlessBrowser.networkRequestsCaptured}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">طلبات ملتقطة</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-purple-500/10 border-purple-500/40 text-center">
+                <div className="text-2xl font-bold text-purple-400">{wpResult.headlessBrowser.windowVarsExtracted}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">متغيرات مستخرجة</div>
+              </div>
+              <div className="p-3 rounded-xl border bg-indigo-500/10 border-indigo-500/40 text-center">
+                <div className="text-2xl font-bold text-indigo-400">{wpResult.headlessBrowser.apiEndpointsDiscovered?.length||0}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">نقاط API</div>
+              </div>
+            </div>
+
+            {/* Window Variables */}
+            {wpResult.headlessBrowser.windowVars&&Object.keys(wpResult.headlessBrowser.windowVars).length>0&&<div className="bg-black/40 rounded-xl p-4 space-y-2">
+              <h4 className="text-sm font-bold text-cyan-300">المتغيرات المكتشفة في ذاكرة المتصفح (window.*)</h4>
+              <div className="space-y-1 max-h-[300px] overflow-y-auto">
+                {Object.entries(wpResult.headlessBrowser.windowVars).map(([key,val]:any,i:number)=>(
+                  <div key={i} className="flex items-start gap-2 p-2 bg-cyan-500/5 rounded border border-cyan-500/20 text-[11px]">
+                    <span className="text-cyan-400 font-mono font-bold shrink-0">{key}:</span>
+                    <span className="text-white/80 font-mono break-all">{typeof val==="object"?JSON.stringify(val,null,1).slice(0,300):String(val)}</span>
+                    <button onClick={()=>{navigator.clipboard.writeText(typeof val==="object"?JSON.stringify(val):String(val));toast.success("تم النسخ");}} className="shrink-0 text-cyan-400 hover:text-cyan-200"><Copy className="w-3 h-3"/></button>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* API Endpoints */}
+            {wpResult.headlessBrowser.apiEndpointsDiscovered?.length>0&&<div className="bg-black/40 rounded-xl p-4 space-y-2">
+              <h4 className="text-sm font-bold text-blue-300">نقاط API المكتشفة (Network Interception)</h4>
+              <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                {wpResult.headlessBrowser.apiEndpointsDiscovered.map((ep:any,i:number)=>(
+                  <div key={i} className="flex items-center gap-2 p-1.5 bg-blue-500/5 rounded border border-blue-500/20 text-[11px]">
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${ep.method==="GET"?"bg-green-500/20 text-green-400":"bg-orange-500/20 text-orange-400"}`}>{ep.method}</span>
+                    <span className="text-white/80 font-mono break-all">{ep.url}</span>
+                    {ep.hasBody&&<span className="text-yellow-400 text-[9px]">[+Body]</span>}
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* Intercepted JSON Responses */}
+            {wpResult.headlessBrowser.interceptedResponses?.length>0&&<div className="bg-black/40 rounded-xl p-4 space-y-2">
+              <h4 className="text-sm font-bold text-purple-300">استجابات API الملتقطة (JSON)</h4>
+              <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                {wpResult.headlessBrowser.interceptedResponses.map((r:any,i:number)=>(
+                  <div key={i} className="p-2 bg-purple-500/5 rounded border border-purple-500/20 text-[11px]">
+                    <div className="flex items-center gap-2">
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${r.status<300?"bg-green-500/20 text-green-400":"bg-red-500/20 text-red-400"}`}>{r.status}</span>
+                      <span className="text-white/70 font-mono break-all text-[10px]">{r.url}</span>
+                    </div>
+                    <pre className="text-[10px] text-white/60 mt-1 font-mono whitespace-pre-wrap">{r.bodyPreview}</pre>
+                  </div>
+                ))}
+              </div>
+            </div>}
+
+            {/* Console Messages */}
+            {wpResult.headlessBrowser.consoleMessages?.length>0&&<div className="bg-black/40 rounded-xl p-4 space-y-2">
+              <h4 className="text-sm font-bold text-yellow-300">رسائل الكونسول</h4>
+              <div className="space-y-0.5 max-h-[150px] overflow-y-auto">
+                {wpResult.headlessBrowser.consoleMessages.map((m:string,i:number)=>(
+                  <div key={i} className="text-[10px] font-mono text-white/60 p-1">{m}</div>
+                ))}
+              </div>
+            </div>}
+
+            {!wpResult.headlessBrowser.enabled&&<div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-5 text-center">
+              <div className="text-lg font-bold text-cyan-400">المتصفح الحقيقي غير متوفر</div>
+              <div className="text-sm text-muted-foreground mt-1">يتطلب تثبيت Chromium في بيئة التشغيل — استُخدم محرك HTTP فقط</div>
             </div>}
           </div>}
 

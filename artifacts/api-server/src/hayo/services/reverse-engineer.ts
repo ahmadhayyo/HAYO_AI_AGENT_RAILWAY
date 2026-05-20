@@ -11,6 +11,19 @@ import os from "os";
 import crypto from "crypto";
 import { callPowerAI, callFastAI } from "../providers.js";
 
+// ═══ HEADLESS BROWSER ENGINE — Puppeteer (lazy-loaded) ═══
+let puppeteerCore: typeof import("puppeteer-core") | null = null;
+async function getPuppeteer() {
+  if (!puppeteerCore) {
+    try {
+      puppeteerCore = await import("puppeteer-core");
+    } catch {
+      puppeteerCore = null;
+    }
+  }
+  return puppeteerCore;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════════════════════════════
@@ -8628,6 +8641,392 @@ async function fetchWebTarget(targetUrl: string): Promise<WebFetchResult> {
   return { url: finalUrl, html, headers, scripts, status, redirectChain, technologies, cookies, crawledPages, allForms, domXssSinks, wafDetected, jsDiscoveredAPIs: uniqueJSAPIs };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// HEADLESS BROWSER ENGINE — Puppeteer-powered deep scanning
+// Bypasses WAF/Security Checkpoints, executes JavaScript, intercepts network
+// ═══════════════════════════════════════════════════════════════════════════
+interface BrowserNetworkRequest {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  postData: string | null;
+  resourceType: string;
+}
+interface BrowserNetworkResponse {
+  url: string;
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+  mimeType: string;
+}
+interface HeadlessBrowserResult {
+  html: string;
+  scripts: string[];
+  cookies: CookieInfo[];
+  networkRequests: BrowserNetworkRequest[];
+  networkResponses: BrowserNetworkResponse[];
+  windowVars: Record<string, unknown>;
+  consoleMessages: string[];
+  technologies: string[];
+  status: number;
+  finalUrl: string;
+  headers: Record<string, string>;
+  domXssSinks: DomXssSink[];
+  wafBypassed: boolean;
+}
+
+async function fetchWithHeadlessBrowser(targetUrl: string): Promise<HeadlessBrowserResult | null> {
+  const pptr = await getPuppeteer();
+  if (!pptr) return null;
+
+  // Find Chromium executable
+  const chromePaths = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+  ].filter(Boolean) as string[];
+
+  let executablePath: string | undefined;
+  for (const p of chromePaths) {
+    try {
+      if (fs.existsSync(p)) { executablePath = p; break; }
+    } catch {}
+  }
+  if (!executablePath) return null;
+
+  let browser: Awaited<ReturnType<typeof pptr.default.launch>> | null = null;
+  const networkRequests: BrowserNetworkRequest[] = [];
+  const networkResponses: BrowserNetworkResponse[] = [];
+  const consoleMessages: string[] = [];
+  const scripts: string[] = [];
+
+  try {
+    browser = await pptr.default.launch({
+      executablePath,
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-web-security",
+        "--disable-features=VizDisplayCompositor",
+        "--window-size=1920,1080",
+        "--ignore-certificate-errors",
+        "--disable-blink-features=AutomationControlled",
+      ],
+    });
+
+    const page = await browser.newPage();
+
+    // ═══ ANTI-BOT STEALTH — Make Puppeteer undetectable ═══
+    await page.evaluateOnNewDocument(() => {
+      // Remove webdriver flag
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+      // Override navigator.plugins
+      Object.defineProperty(navigator, "plugins", {
+        get: () => [
+          { name: "Chrome PDF Plugin", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+          { name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", description: "" },
+          { name: "Native Client", filename: "internal-nacl-plugin", description: "" },
+        ],
+      });
+      // Override navigator.languages
+      Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en", "ar"] });
+      // Override chrome.runtime
+      (window as any).chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
+      // Override permissions query
+      const origQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+      (window.navigator.permissions as any).query = (params: any) =>
+        params.name === "notifications" ? Promise.resolve({ state: "prompt" } as PermissionStatus) : origQuery(params);
+    });
+
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+      "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+    });
+
+    // ═══ NETWORK INTERCEPTION — Capture ALL requests/responses ═══
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      networkRequests.push({
+        url: req.url(),
+        method: req.method(),
+        headers: req.headers(),
+        postData: req.postData() || null,
+        resourceType: req.resourceType(),
+      });
+      req.continue();
+    });
+
+    page.on("response", async (resp) => {
+      try {
+        const url = resp.url();
+        const contentType = resp.headers()["content-type"] || "";
+        // Capture JS files, JSON responses, and API calls
+        if (
+          contentType.includes("javascript") ||
+          contentType.includes("json") ||
+          contentType.includes("text/html") ||
+          url.includes("/api/") ||
+          url.includes("/graphql")
+        ) {
+          const body = await resp.text().catch(() => "");
+          if (body.length > 0 && body.length < 3_000_000) {
+            networkResponses.push({
+              url,
+              status: resp.status(),
+              headers: resp.headers(),
+              body,
+              mimeType: contentType,
+            });
+            // Save JS content for secret extraction
+            if (contentType.includes("javascript") && body.length > 50) {
+              scripts.push(body);
+            }
+          }
+        }
+      } catch {}
+    });
+
+    // Capture console messages (may reveal secrets/debug info)
+    page.on("console", (msg) => {
+      const text = msg.text();
+      if (text.length > 0 && text.length < 10000) {
+        consoleMessages.push(`[${msg.type()}] ${text}`);
+      }
+    });
+
+    // ═══ NAVIGATE AND WAIT FOR FULL LOAD ═══
+    const response = await page.goto(targetUrl, {
+      waitUntil: "networkidle2",
+      timeout: 45_000,
+    });
+
+    const mainStatus = response?.status() || 0;
+    const mainHeaders: Record<string, string> = {};
+    if (response) {
+      const h = response.headers();
+      for (const [k, v] of Object.entries(h)) {
+        mainHeaders[k] = v;
+      }
+    }
+
+    // Wait extra time for dynamic content + WAF challenge solving
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Check if WAF challenge was solved
+    const currentUrl = page.url();
+    const wafBypassed = currentUrl !== targetUrl && !currentUrl.includes("challenge");
+
+    // ═══ EXTRACT FULL RENDERED HTML (after JS execution) ═══
+    const html = await page.content();
+
+    // ═══ EXTRACT WINDOW VARIABLES — secrets hidden in JS runtime ═══
+    const windowVars = await page.evaluate(() => {
+      const vars: Record<string, unknown> = {};
+
+      // __NEXT_DATA__ (Next.js)
+      if ((window as any).__NEXT_DATA__) {
+        try { vars.__NEXT_DATA__ = JSON.parse(JSON.stringify((window as any).__NEXT_DATA__)); } catch {}
+      }
+      // __NUXT__ (Nuxt.js)
+      if ((window as any).__NUXT__) {
+        try { vars.__NUXT__ = JSON.parse(JSON.stringify((window as any).__NUXT__)); } catch {}
+      }
+      // Firebase config
+      if ((window as any).firebase?.apps?.length > 0) {
+        try {
+          const app = (window as any).firebase.apps[0];
+          vars.firebaseConfig = app.options || {};
+        } catch {}
+      }
+      // __GATSBY, __APP_DATA, __REMIX_CONTEXT
+      for (const key of ["__GATSBY", "__APP_DATA", "__REMIX_CONTEXT", "__PRELOADED_STATE__", "__APOLLO_STATE__", "APP_CONFIG", "ENV", "CONFIG", "SETTINGS"]) {
+        if ((window as any)[key]) {
+          try { vars[key] = JSON.parse(JSON.stringify((window as any)[key])); } catch {}
+        }
+      }
+      // Scan all window properties for API keys and secrets
+      const secretPatterns = [
+        /api[_-]?key/i, /secret/i, /token/i, /password/i, /credential/i,
+        /firebase/i, /stripe/i, /aws/i, /supabase/i, /convex/i, /posthog/i,
+        /auth/i, /database[_-]?url/i, /connection[_-]?string/i, /endpoint/i,
+      ];
+      for (const key of Object.getOwnPropertyNames(window)) {
+        if (secretPatterns.some(p => p.test(key))) {
+          try {
+            const val = (window as any)[key];
+            if (val && typeof val !== "function" && typeof val !== "object") {
+              vars[`window.${key}`] = val;
+            }
+          } catch {}
+        }
+      }
+      // Extract from meta tags
+      const metaTags = document.querySelectorAll("meta[name], meta[property], meta[content]");
+      metaTags.forEach((meta) => {
+        const name = meta.getAttribute("name") || meta.getAttribute("property") || "";
+        const content = meta.getAttribute("content") || "";
+        if (content && secretPatterns.some(p => p.test(name))) {
+          vars[`meta:${name}`] = content;
+        }
+      });
+      // Extract from data attributes
+      document.querySelectorAll("[data-api-key], [data-token], [data-secret], [data-firebase-config], [data-config]").forEach((el) => {
+        for (const attr of el.getAttributeNames()) {
+          if (attr.startsWith("data-")) {
+            vars[`data:${attr}`] = el.getAttribute(attr) || "";
+          }
+        }
+      });
+
+      return vars;
+    });
+
+    // ═══ EXTRACT INLINE SCRIPTS ═══
+    const inlineScripts = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll("script")).map(s => s.textContent || "").filter(s => s.trim().length > 10);
+    });
+    scripts.push(...inlineScripts);
+
+    // ═══ DISCOVER TECHNOLOGIES ═══
+    const technologies = await page.evaluate(() => {
+      const techs: string[] = [];
+      const html = document.documentElement.outerHTML.toLowerCase();
+      if (html.includes("__next") || html.includes("_next/")) techs.push("Next.js");
+      if (html.includes("__nuxt") || html.includes("nuxt")) techs.push("Nuxt.js");
+      if (html.includes("react") || html.includes("reactdom")) techs.push("React");
+      if (html.includes("ng-") || html.includes("angular")) techs.push("Angular");
+      if (html.includes("vue") || html.includes("__vue__")) techs.push("Vue.js");
+      if (html.includes("svelte")) techs.push("Svelte");
+      if (html.includes("gatsby")) techs.push("Gatsby");
+      if (html.includes("remix")) techs.push("Remix");
+      if ((window as any).firebase) techs.push("Firebase");
+      if ((window as any).Stripe) techs.push("Stripe");
+      if ((window as any).posthog) techs.push("PostHog");
+      if (html.includes("tailwind")) techs.push("Tailwind CSS");
+      if (html.includes("bootstrap")) techs.push("Bootstrap");
+      if (html.includes("jquery") || (window as any).jQuery) techs.push("jQuery");
+      if (html.includes("convex")) techs.push("Convex");
+      if (html.includes("supabase")) techs.push("Supabase");
+      if (html.includes("clerk")) techs.push("Clerk Auth");
+      if (html.includes("auth0")) techs.push("Auth0");
+      return techs;
+    });
+
+    // ═══ EXTRACT COOKIES ═══
+    const browserCookies = await page.cookies();
+    const cookies: CookieInfo[] = browserCookies.map(c => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path,
+      httpOnly: c.httpOnly,
+      secure: c.secure,
+      sameSite: c.sameSite || "None",
+      expires: c.expires ? new Date(c.expires * 1000).toISOString() : "",
+      issues: [
+        ...(!c.httpOnly ? ["❌ لا يوجد HttpOnly — يمكن سرقة الكوكي عبر XSS"] : []),
+        ...(!c.secure ? ["❌ لا يوجد Secure — يُرسل عبر HTTP غير مشفر"] : []),
+        ...((!c.sameSite || c.sameSite === "None") ? ["❌ SameSite=None — عرضة لهجمات CSRF"] : []),
+      ],
+    }));
+
+    // ═══ DOM XSS SINK DETECTION (in-browser) ═══
+    const domXssSinks: DomXssSink[] = [];
+    const sinkData = await page.evaluate(() => {
+      const sinks: Array<{ sink: string; context: string; severity: string }> = [];
+      const scriptEls = document.querySelectorAll("script");
+      scriptEls.forEach((script) => {
+        const text = script.textContent || "";
+        const patterns = [
+          { sink: "innerHTML", severity: "critical" },
+          { sink: "outerHTML", severity: "critical" },
+          { sink: "document.write", severity: "critical" },
+          { sink: "eval(", severity: "critical" },
+          { sink: "setTimeout(", severity: "high" },
+          { sink: "setInterval(", severity: "high" },
+          { sink: "Function(", severity: "critical" },
+          { sink: "dangerouslySetInnerHTML", severity: "high" },
+          { sink: "location.href", severity: "medium" },
+          { sink: "location.assign", severity: "medium" },
+          { sink: "window.open", severity: "medium" },
+          { sink: "postMessage", severity: "medium" },
+        ];
+        for (const p of patterns) {
+          const idx = text.indexOf(p.sink);
+          if (idx >= 0) {
+            const start = Math.max(0, idx - 30);
+            const end = Math.min(text.length, idx + p.sink.length + 30);
+            sinks.push({ sink: p.sink, context: text.slice(start, end), severity: p.severity });
+          }
+        }
+      });
+      return sinks;
+    });
+    for (const s of sinkData) {
+      domXssSinks.push({
+        sink: s.sink,
+        file: "inline-script",
+        context: s.context,
+        severity: s.severity as "critical" | "high" | "medium",
+      });
+    }
+
+    // ═══ CRAWL INTERNAL LINKS ═══
+    const discoveredLinks = await page.evaluate((baseOrigin: string) => {
+      return Array.from(document.querySelectorAll("a[href]"))
+        .map(a => (a as HTMLAnchorElement).href)
+        .filter(h => h.startsWith(baseOrigin) && !h.includes("#"))
+        .slice(0, 50);
+    }, new URL(targetUrl).origin);
+
+    // Visit discovered links to extract more content
+    const crawledScripts: string[] = [];
+    for (const link of discoveredLinks.slice(0, 15)) {
+      try {
+        await page.goto(link, { waitUntil: "networkidle2", timeout: 15000 });
+        await new Promise(r => setTimeout(r, 1000));
+        const pageScripts = await page.evaluate(() =>
+          Array.from(document.querySelectorAll("script")).map(s => s.textContent || "").filter(s => s.trim().length > 10)
+        );
+        crawledScripts.push(...pageScripts);
+      } catch {}
+    }
+    scripts.push(...crawledScripts);
+
+    return {
+      html,
+      scripts,
+      cookies,
+      networkRequests,
+      networkResponses,
+      windowVars,
+      consoleMessages,
+      technologies,
+      status: mainStatus,
+      finalUrl: currentUrl,
+      headers: mainHeaders,
+      domXssSinks,
+      wafBypassed,
+    };
+  } catch (err) {
+    console.error("[HeadlessBrowser] Error:", err);
+    return null;
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch {}
+    }
+  }
+}
+
 export async function runWebPentest(targetUrl: string): Promise<{
   steps: any[];
   summary: any;
@@ -8680,6 +9079,17 @@ export async function runWebPentest(targetUrl: string): Promise<{
   intelligentReport: any;
   hiddenParameters: any;
   dbFingerprint: any;
+  headlessBrowser: {
+    enabled: boolean;
+    wafBypassed: boolean;
+    networkRequestsCaptured: number;
+    networkResponsesCaptured: number;
+    windowVarsExtracted: number;
+    consoleMessages: string[];
+    windowVars: Record<string, unknown>;
+    apiEndpointsDiscovered: { url: string; method: string; hasBody: boolean }[];
+    interceptedResponses: { url: string; status: number; bodyPreview: string }[];
+  };
   generatedAt: string;
   targetUrl: string;
   engineVersion: string;
@@ -8691,6 +9101,61 @@ export async function runWebPentest(targetUrl: string): Promise<{
     webData = await fetchWebTarget(targetUrl);
   } catch (err: any) {
     throw new Error(`فشل الاتصال بالموقع: ${err.message}`);
+  }
+
+  // ═══ HEADLESS BROWSER FALLBACK — Activate when WAF blocks fetch ═══
+  let browserResult: HeadlessBrowserResult | null = null;
+  let browserNetworkRequests: BrowserNetworkRequest[] = [];
+  let browserNetworkResponses: BrowserNetworkResponse[] = [];
+  let browserWindowVars: Record<string, unknown> = {};
+  let browserConsoleMessages: string[] = [];
+  const isWafBlocked = webData.status === 403 && (
+    webData.html.toLowerCase().includes("security checkpoint") ||
+    webData.html.toLowerCase().includes("challenge") ||
+    webData.html.toLowerCase().includes("captcha") ||
+    webData.html.toLowerCase().includes("bot detection") ||
+    webData.html.toLowerCase().includes("just a moment") ||
+    webData.html.toLowerCase().includes("access denied") ||
+    webData.scripts.length <= 1
+  );
+
+  // Always try headless browser for richer results; prioritize when WAF detected
+  try {
+    browserResult = await fetchWithHeadlessBrowser(targetUrl);
+  } catch {}
+
+  if (browserResult) {
+    browserNetworkRequests = browserResult.networkRequests;
+    browserNetworkResponses = browserResult.networkResponses;
+    browserWindowVars = browserResult.windowVars;
+    browserConsoleMessages = browserResult.consoleMessages;
+
+    if (isWafBlocked || browserResult.scripts.length > webData.scripts.length) {
+      // Browser got past WAF or found more content — use browser data
+      webData.html = browserResult.html;
+      webData.scripts = [...new Set([...webData.scripts, ...browserResult.scripts])];
+      webData.status = browserResult.status;
+      webData.url = browserResult.finalUrl;
+      webData.domXssSinks = browserResult.domXssSinks.length > webData.domXssSinks.length ? browserResult.domXssSinks : webData.domXssSinks;
+      webData.wafDetected = isWafBlocked ? (webData.wafDetected || "WAF") + " (تم التجاوز عبر المتصفح)" : webData.wafDetected;
+      // Merge cookies (browser cookies are richer)
+      if (browserResult.cookies.length > webData.cookies.length) {
+        webData.cookies = browserResult.cookies;
+      }
+      // Merge technologies
+      webData.technologies = [...new Set([...webData.technologies, ...browserResult.technologies])];
+    } else {
+      // Merge scripts from browser even if fetch worked
+      webData.scripts = [...new Set([...webData.scripts, ...browserResult.scripts])];
+      webData.technologies = [...new Set([...webData.technologies, ...browserResult.technologies])];
+    }
+
+    // Extract secrets from network responses (API calls intercepted by browser)
+    for (const resp of browserNetworkResponses) {
+      if (resp.mimeType.includes("json") && resp.body.length > 10 && resp.body.length < 500_000) {
+        webData.scripts.push(resp.body); // Will be scanned by secret extraction engine
+      }
+    }
   }
 
   const allContent = [webData.html, ...webData.scripts].join("\n");
@@ -10181,6 +10646,45 @@ if __name__ == "__main__":
       }
     }
   });
+
+  // ═══ PHASE 1.5: Browser Window Variable Secret Extraction ═══
+  if (Object.keys(browserWindowVars).length > 0) {
+    const windowSecretPatterns: [RegExp, string][] = [
+      [/AIza[0-9A-Za-z_-]{33}/, "Firebase API Key"],
+      [/AKIA[0-9A-Z]{16}/, "AWS Access Key"],
+      [/(sk|pk)_(live|test)_[0-9A-Za-z]{24,}/, "Stripe Key"],
+      [/eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "JWT Token"],
+      [/xox[bpras]-[0-9A-Za-z-]{10,}/, "Slack Token"],
+      [/ghp_[A-Za-z0-9]{36}/, "GitHub Token"],
+      [/sk-[A-Za-z0-9]{20,}/, "OpenAI API Key"],
+      [/phc_[A-Za-z0-9]{30,}/, "PostHog API Key"],
+      [/https:\/\/[a-z0-9-]+\.convex\.cloud/, "Convex Cloud URL"],
+      [/https:\/\/[a-z0-9-]+\.supabase\.co/, "Supabase URL"],
+      [/mongodb(\+srv)?:\/\/[^\s"']+/, "MongoDB URI"],
+      [/postgres(ql)?:\/\/[^\s"']+/, "Database URL"],
+      [/https?:\/\/[^\s"']*firebase[^\s"']*/, "Firebase URL"],
+    ];
+    const windowVarStr = JSON.stringify(browserWindowVars);
+    for (const [pattern, type] of windowSecretPatterns) {
+      const matches = windowVarStr.match(new RegExp(pattern.source, "g"));
+      if (matches) {
+        for (const val of matches) {
+          if (isPoeRealSecret(val, type) && !poeSecrets.some(s => s.value === val)) {
+            poeSecrets.push({ type, value: val, source: `window.* (Browser Memory)` });
+          }
+        }
+      }
+    }
+    // Extract key-value pairs from __NEXT_DATA__ and other framework state
+    const windowSensitivePattern = /(?:PASSWORD|SECRET|KEY|TOKEN|CREDENTIAL|DATABASE_URL|DB_|MONGO|REDIS|SMTP|AWS_|API_KEY|PRIVATE|AUTH|SESSION|SALT|HASH|ENCRYPTION|MASTER|ROOT_|ADMIN_|ACCESS_|REFRESH_)/i;
+    for (const [key, val] of Object.entries(browserWindowVars)) {
+      if (typeof val === "string" && val.length > 8 && windowSensitivePattern.test(key)) {
+        if (!poeSecrets.some(s => s.value === val)) {
+          poeSecrets.push({ type: key, value: val, source: `window.${key} (Browser Memory)` });
+        }
+      }
+    }
+  }
 
   // ═══ PHASE 2: Exposed Configuration Bruteforcing ═══
   const poeConfigPaths = [
@@ -12522,6 +13026,60 @@ if __name__ == "__main__":
       ].filter(Boolean),
       commands: guide.commands,
     })),
+    // ═══ HEADLESS BROWSER INTELLIGENCE ═══
+    {
+      id: 28 + exploitGuides.length,
+      title: `Cipher-7: محرك المتصفح الحقيقي — Headless Browser Engine v14.0`,
+      details: browserResult
+        ? `متصفح Chromium حقيقي — ${browserNetworkRequests.length} طلب ملتقط — ${Object.keys(browserWindowVars).length} متغير مستخرج — WAF: ${browserResult.wafBypassed ? "تم التجاوز ✅" : "لم يُكتشف"}`
+        : "المتصفح غير متوفر — استُخدم محرك HTTP فقط",
+      status: (browserResult ? "danger" as const : "info" as const),
+      findings: browserResult ? [
+        `╔══════════════════════════════════════════════════════════════╗`,
+        `║   HEADLESS BROWSER ENGINE — محرك التصفح الحقيقي v1.0       ║`,
+        `║   Cipher-7 v14.0 — Real Browser Intelligence               ║`,
+        `╚══════════════════════════════════════════════════════════════╝`,
+        ``,
+        `═══ ملخص المتصفح الحقيقي ═══`,
+        `   🌐 المتصفح: Chromium (Headless)`,
+        `   🔑 تجاوز WAF: ${browserResult.wafBypassed ? "نعم ✅ — تم حل التحدي تلقائياً" : "لم يُكتشف WAF"}`,
+        `   📡 طلبات الشبكة الملتقطة: ${browserNetworkRequests.length}`,
+        `   📥 استجابات ملتقطة: ${browserNetworkResponses.length}`,
+        `   🔍 متغيرات النافذة المستخرجة: ${Object.keys(browserWindowVars).length}`,
+        `   💬 رسائل الكونسول: ${browserConsoleMessages.length}`,
+        ``,
+        ...(Object.keys(browserWindowVars).length > 0 ? [
+          `═══ المتغيرات المكتشفة في ذاكرة المتصفح (window.*) ═══`,
+          ...Object.entries(browserWindowVars).map(([key, val]) => {
+            const valStr = typeof val === "object" ? JSON.stringify(val, null, 2).slice(0, 300) : String(val);
+            return `   🔹 ${key}: ${valStr}`;
+          }),
+          ``,
+        ] : []),
+        ...(browserNetworkRequests.filter(r => r.resourceType === "fetch" || r.resourceType === "xhr").length > 0 ? [
+          `═══ نقاط API المكتشفة (Network Interception) ═══`,
+          ...browserNetworkRequests
+            .filter(r => r.resourceType === "fetch" || r.resourceType === "xhr")
+            .slice(0, 30)
+            .map(r => `   📡 ${r.method} ${r.url}${r.postData ? " [+Body]" : ""}`),
+          ``,
+        ] : []),
+        ...(browserNetworkResponses.filter(r => r.mimeType.includes("json")).length > 0 ? [
+          `═══ استجابات API الملتقطة (JSON) ═══`,
+          ...browserNetworkResponses
+            .filter(r => r.mimeType.includes("json"))
+            .slice(0, 20)
+            .map(r => `   📄 [${r.status}] ${r.url}\n      ${r.body.slice(0, 200).replace(/\n/g, " ")}`),
+          ``,
+        ] : []),
+        ...(browserConsoleMessages.length > 0 ? [
+          `═══ رسائل الكونسول (قد تحتوي معلومات حساسة) ═══`,
+          ...browserConsoleMessages.slice(0, 20).map(m => `   💬 ${m}`),
+          ``,
+        ] : []),
+      ] : [`المتصفح الحقيقي (Chromium) غير متوفر في بيئة التشغيل — استُخدم محرك HTTP فقط`],
+      commands: [],
+    },
   ];
 
   // Build exposed secrets listing for the report
@@ -12723,8 +13281,8 @@ ${backendExposureResults.flatMap(e => e.extractedSecrets.map(s => `    → [${s.
       aws: webCipher7AWS,
       securityHeaders: secHeaders,
       totalFindings: webCipher7Crypto.length + webCipher7AWS.length + allSecrets.length + accessiblePaths.length + missingHeaders.length + vulnResults.length + webData.domXssSinks.length + webData.cookies.filter(c => c.issues.length > 0).length + infoDisclosures.length + authWeaknesses.length + poeSecrets.length + poeConfigFiles.length + poeLFIResults.length + poeSSRFResults.length + backendExposureResults.length + firebaseWebExploits.length + jwtAnalysisResults.length + hiddenParamResults.length,
-      phasesExecuted: 25,
-      engineVersion: "15.0-deep-pentest-8axis",
+      phasesExecuted: 26,
+      engineVersion: "15.0-deep-pentest-headless",
     },
     proof_of_exposure: {
       extracted_plaintext_secrets: poeSecrets.map(s => ({ type: s.type, value: s.value, source: s.source })),
@@ -12812,9 +13370,26 @@ ${backendExposureResults.flatMap(e => e.extractedSecrets.map(s => `    → [${s.
     },
     // DB fingerprinting
     dbFingerprint: dbFingerprint || null,
+    headlessBrowser: {
+      enabled: browserResult !== null,
+      wafBypassed: browserResult?.wafBypassed || false,
+      networkRequestsCaptured: browserNetworkRequests.length,
+      networkResponsesCaptured: browserNetworkResponses.length,
+      windowVarsExtracted: Object.keys(browserWindowVars).length,
+      consoleMessages: browserConsoleMessages.slice(0, 50),
+      windowVars: browserWindowVars,
+      apiEndpointsDiscovered: browserNetworkRequests
+        .filter(r => r.resourceType === "fetch" || r.resourceType === "xhr")
+        .map(r => ({ url: r.url, method: r.method, hasBody: !!r.postData }))
+        .slice(0, 100),
+      interceptedResponses: browserNetworkResponses
+        .filter(r => r.mimeType.includes("json"))
+        .map(r => ({ url: r.url, status: r.status, bodyPreview: r.body.slice(0, 500) }))
+        .slice(0, 50),
+    },
     generatedAt: new Date().toISOString(),
     targetUrl: webData.url,
-    engineVersion: "15.0-deep-pentest-8axis",
+    engineVersion: "15.0-deep-pentest-headless",
   };
 }
 

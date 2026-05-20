@@ -176,6 +176,9 @@ importers:
       puppeteer:
         specifier: ^24.43.1
         version: 24.43.1(typescript@5.9.3)
+      puppeteer-core:
+        specifier: ^24.0.0
+        version: 24.43.1
       stripe:
         specifier: ^22.0.0
         version: 22.0.0(@types/node@25.3.5)
