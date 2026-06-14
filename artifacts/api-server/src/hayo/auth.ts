@@ -6,9 +6,10 @@ import { eq } from "drizzle-orm";
 import type { User } from "@workspace/db/schema";
 import { createHash } from "crypto";
 import { randomBytes } from "crypto";
+import { SESSION_SECRET } from "../lib/secrets";
 
 const COOKIE_NAME = "app_session_id";
-const JWT_SECRET = new TextEncoder().encode(process.env.SESSION_SECRET || "hayo-ai-secret-change-me-in-production");
+const JWT_SECRET = new TextEncoder().encode(SESSION_SECRET);
 const ONE_YEAR_MS = 1000 * 60 * 60 * 24 * 365;
 
 export { COOKIE_NAME };

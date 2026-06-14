@@ -618,15 +618,15 @@ export const appRouter = router({
 
     updateTitle: protectedProcedure
       .input(z.object({ id: z.number(), title: z.string() }))
-      .mutation(async ({ input }) => {
-        await updateConversationTitle(input.id, input.title);
+      .mutation(async ({ input, ctx }) => {
+        await updateConversationTitle(input.id, ctx.user.id, input.title);
         return { success: true };
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await deleteConversation(input.id);
+      .mutation(async ({ input, ctx }) => {
+        await deleteConversation(input.id, ctx.user.id);
         return { success: true };
       }),
   }),

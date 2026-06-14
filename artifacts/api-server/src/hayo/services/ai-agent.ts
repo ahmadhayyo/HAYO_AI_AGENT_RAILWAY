@@ -294,17 +294,56 @@ ${relevantContext ? `## سياق إضافي:\n${relevantContext}` : ""}
 // Bash execution (used by the agentic streaming endpoint)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Substring denylist for the most obviously destructive / privilege / exfil
+// operations. NOTE: a shell denylist is fundamentally bypassable — it is the
+// SECOND line of defence only. The PRIMARY defence is `buildSafeEnv()` below,
+// which strips every secret from the environment the command runs in, so even
+// a denylist bypass cannot read API keys, DB credentials, or the owner password.
 const DENIED_BASH_PATTERNS = [
-  "rm -rf /", "rm -rf ~", "mkfs", ":(){:|:&};:", "shutdown", "reboot",
-  "halt", "passwd", "sudo rm", "sudo dd",
+  "rm -rf /", "rm -rf ~", "rm -rf /*", "mkfs", ":(){:|:&};:", "shutdown",
+  "reboot", "halt", "poweroff", "passwd", "sudo ", "su -", "doas ",
+  "/etc/shadow", "/etc/passwd", "id_rsa", ".ssh/", ".env", "/proc/self/environ",
+  "/proc/1/environ", "printenv", "chown -r", "chmod -r 777",
 ];
+
+// Regex denylist — catches `env`, network-pipe-to-shell, and process-substitution
+// secret reads that a plain substring check would miss.
+const DENIED_BASH_REGEX: RegExp[] = [
+  /\benv\b\s*$/i,                       // bare `env` dump
+  /\benv\b\s*\|/i,                      // `env | ...`
+  /\b(curl|wget|fetch)\b[^|]*\|\s*(sh|bash|zsh|node|python3?)\b/i, // pipe remote → shell
+  /\bnc\b\s+-/i,                        // netcat reverse shells
+  /\bcat\b[^\n]*\.env/i,               // cat .env files
+];
+
+const SECRET_ENV_PATTERN =
+  /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS$|CREDENTIAL|DATABASE_URL|DB_URL|DBNAME|STRIPE|ANTHROPIC|OPENAI|GEMINI|GOOGLE_API|GROQ|MISTRAL|DEEPSEEK|TELEGRAM|OANDA|TWELVE|SESSION_SECRET|JWT|EXPO_|PRIVATE|_AUTH|WEBHOOK|SIGNING|SMTP|SENTRY|REDIS_URL)/i;
+
+/**
+ * Build an environment for agent-executed shell commands that contains the
+ * essentials (PATH, HOME, NODE_ENV, locale…) but NONE of the platform secrets.
+ * This is the core RCE mitigation: secrets simply do not exist in the child
+ * process, so they cannot be exfiltrated even if command filtering is bypassed.
+ */
+function buildSafeEnv(): NodeJS.ProcessEnv {
+  const safe: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if (SECRET_ENV_PATTERN.test(k)) continue;
+    safe[k] = v;
+  }
+  return safe;
+}
 
 export function executeBashInProject(
   command: string,
   timeoutMs: number = 60_000,
 ): { stdout: string; stderr: string; exitCode: number } {
   const cmdLower = command.toLowerCase().trim();
-  if (DENIED_BASH_PATTERNS.some(p => cmdLower.includes(p))) {
+  if (
+    DENIED_BASH_PATTERNS.some(p => cmdLower.includes(p)) ||
+    DENIED_BASH_REGEX.some(re => re.test(command))
+  ) {
     return { stdout: "", stderr: `[BLOCKED] Command denied by safety policy: ${command}`, exitCode: 1 };
   }
   try {
@@ -313,6 +352,7 @@ export function executeBashInProject(
       timeout: timeoutMs,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
+      env: buildSafeEnv(),
     }) as unknown as string;
     return { stdout: String(stdout).slice(0, 8000), stderr: "", exitCode: 0 };
   } catch (e: any) {
@@ -536,9 +576,12 @@ export async function* executeAgentCommandStreaming(
           yield { type: "tool_call", node: "coder", content: `🔍 بحث: "${action.pattern}"` };
           // Simple grep across project
           try {
+            // Escape the user-supplied pattern so it cannot break out of the
+            // double-quoted grep argument and inject a second command.
+            const safePattern = String(action.pattern || "").replace(/(["\\$`])/g, "\\$1");
             const grepResult = execSync(
-              `grep -r --include="*.ts" --include="*.tsx" --include="*.js" -n "${action.pattern}" artifacts/ 2>/dev/null | head -40`,
-              { cwd: PROJECT_ROOT, encoding: "utf-8", timeout: 10_000 },
+              `grep -r --include="*.ts" --include="*.tsx" --include="*.js" -n "${safePattern}" artifacts/ 2>/dev/null | head -40`,
+              { cwd: PROJECT_ROOT, encoding: "utf-8", timeout: 10_000, env: buildSafeEnv() },
             ) as unknown as string;
             yield { type: "tool_result", node: "coder", content: String(grepResult).slice(0, 2000) };
             agentMessages.push({ role: "user", content: `[search result]\n${String(grepResult).slice(0, 3000)}` });

@@ -108,13 +108,19 @@ export async function getConversation(id: number, userId: number): Promise<Conve
   return result[0];
 }
 
-export async function updateConversationTitle(id: number, title: string): Promise<void> {
-  await db.update(conversations).set({ title, updatedAt: new Date() }).where(eq(conversations.id, id));
+export async function updateConversationTitle(id: number, userId: number, title: string): Promise<void> {
+  // Scope by userId so a user can only rename their OWN conversations (prevents IDOR).
+  await db.update(conversations).set({ title, updatedAt: new Date() })
+    .where(and(eq(conversations.id, id), eq(conversations.userId, userId)));
 }
 
-export async function deleteConversation(id: number): Promise<void> {
+export async function deleteConversation(id: number, userId: number): Promise<void> {
+  // Verify ownership before deleting anything (prevents IDOR deletion of others' data).
+  const owned = await db.select({ id: conversations.id }).from(conversations)
+    .where(and(eq(conversations.id, id), eq(conversations.userId, userId))).limit(1);
+  if (!owned[0]) return;
   await db.delete(messages).where(eq(messages.conversationId, id));
-  await db.delete(conversations).where(eq(conversations.id, id));
+  await db.delete(conversations).where(and(eq(conversations.id, id), eq(conversations.userId, userId)));
 }
 
 // ==================== Messages ====================
@@ -302,8 +308,19 @@ export async function seedOwnerAccount(): Promise<void> {
       }
       return;
     }
-    // Create owner account on first startup
-    const ownerPassword = OWNER_PASSWORD_ENV || "6088amhA+";
+    // Create owner account on first startup.
+    // The owner password must come from the OWNER_PASSWORD env var — it is NEVER
+    // hard-coded (a hard-coded password committed to the repo is a full account
+    // takeover). If it is not set we skip seeding; the owner can simply register
+    // through the normal sign-up flow (OWNER_EMAIL is auto-granted admin role).
+    if (!OWNER_PASSWORD_ENV || OWNER_PASSWORD_ENV.trim().length === 0) {
+      console.warn(
+        "[DB] OWNER_PASSWORD not set — skipping owner seed. " +
+          "Register with the owner email to get the admin account, or set OWNER_PASSWORD.",
+      );
+      return;
+    }
+    const ownerPassword = OWNER_PASSWORD_ENV;
     const openId = `local_${randomBytes(16).toString("hex")}`;
     await db.insert(users).values({
       openId,
