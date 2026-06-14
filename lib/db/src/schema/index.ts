@@ -86,6 +86,12 @@ export const subscriptionPlans = pgTable("subscriptionPlans", {
   canUseImageGen: boolean("canUseImageGen").default(false).notNull(),
   canUseFileCreation: boolean("canUseFileCreation").default(false).notNull(),
   canUseSandbox: boolean("canUseSandbox").default(false).notNull(),
+  // ── Feature gates per plan (tier-based access control) ──
+  canUseReverse: boolean("canUseReverse").default(false).notNull(),       // الهندسة العكسية
+  canUseAppBuilder: boolean("canUseAppBuilder").default(false).notNull(), // منشئ التطبيقات / EA Factory
+  canUseCodeAgent: boolean("canUseCodeAgent").default(false).notNull(),   // وكيل الكود / BYOC
+  canUseTrading: boolean("canUseTrading").default(false).notNull(),       // التداول الحقيقي
+  canUseOsint: boolean("canUseOsint").default(false).notNull(),           // أدوات OSINT
   prioritySupport: boolean("prioritySupport").default(false).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   sortOrder: integer("sortOrder").default(0).notNull(),

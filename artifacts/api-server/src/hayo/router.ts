@@ -47,7 +47,7 @@ import {
   addMessage, getConversationMessages,
   saveUploadedFile, getUserFiles, getFileById,
   getActivePlans, getPlanById, seedDefaultPlans, seedOwnerAccount,
-  getUserActiveSubscription, createSubscription,
+  getUserActiveSubscription, createSubscription, getEffectivePlan,
   getOrCreateDailyUsage, incrementUsage,
   checkCredits, deductCredits, CREDIT_COSTS,
   getUserIntegrations, connectIntegration, disconnectIntegration, deleteFile,
@@ -2484,9 +2484,16 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         }
 
         const expiresAt = new Date(now.getTime() + entry.code.durationDays * 24 * 60 * 60 * 1000);
-        await db.update(subscriptionCodes)
+        // Atomic claim: only succeeds while the code is STILL unredeemed. Closes
+        // the race where two concurrent requests both pass the SELECT above and
+        // would otherwise each redeem the same code.
+        const claimed = await db.update(subscriptionCodes)
           .set({ usedBy: ctx.user.id, usedAt: now, expiresAt, isActive: false })
-          .where(eq(subscriptionCodes.id, entry.code.id));
+          .where(and(eq(subscriptionCodes.id, entry.code.id), isNull(subscriptionCodes.usedBy)))
+          .returning({ id: subscriptionCodes.id });
+        if (!claimed[0]) {
+          throw new TRPCError({ code: "CONFLICT", message: "الكود استُخدم للتو من جلسة أخرى" });
+        }
 
         return { success: true, plan: entry.plan, expiresAt };
       }),
@@ -2498,19 +2505,13 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         return { todayCount: 0, dailyLimit: -1, planName: "owner", isLimited: false, hasActiveSub: true };
       }
       const { db } = await import("@workspace/db");
-      const { subscriptionCodes, subscriptionPlans, usageRecords } = await import("@workspace/db/schema");
-      const { eq, and, gt, isNotNull } = await import("drizzle-orm");
+      const { usageRecords } = await import("@workspace/db/schema");
+      const { eq, and } = await import("drizzle-orm");
       const now = new Date();
       const todayStr = now.toISOString().slice(0, 10); // "YYYY-MM-DD"
 
-      // Check active subscription code
-      const activeSub = await db.select({ plan: subscriptionPlans })
-        .from(subscriptionCodes)
-        .innerJoin(subscriptionPlans, eq(subscriptionCodes.planId, subscriptionPlans.id))
-        .where(and(eq(subscriptionCodes.usedBy, ctx.user.id), isNotNull(subscriptionCodes.usedAt), gt(subscriptionCodes.expiresAt, now)))
-        .limit(1);
-
-      const plan = activeSub[0]?.plan || { dailyMessageLimit: 10, monthlyMessageLimit: 100, name: "free" };
+      // Resolve the effective plan from BOTH subscriptions and codes (unified).
+      const { plan, source } = await getEffectivePlan(ctx.user.id);
 
       const usage = await db.select().from(usageRecords)
         .where(and(eq(usageRecords.userId, ctx.user.id), eq(usageRecords.date, todayStr)))
@@ -2525,7 +2526,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         dailyLimit: plan.dailyMessageLimit,
         planName: plan.name,
         isLimited,
-        hasActiveSub: activeSub.length > 0,
+        hasActiveSub: source !== "free",
       };
     }),
 
@@ -2602,11 +2603,21 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
 
         const { db } = await import("@workspace/db");
         const { subscriptionCodes, subscriptionPlans } = await import("@workspace/db/schema");
-        const { eq } = await import("drizzle-orm");
+        const { eq, like } = await import("drizzle-orm");
         const { randomBytes } = await import("crypto");
 
         const planRows = await db.select().from(subscriptionPlans).where(eq(subscriptionPlans.name, planName)).limit(1);
         if (!planRows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "الخطة غير موجودة" });
+
+        // Idempotency: a paid checkout session may only ever grant ONE entitlement.
+        // If this session was already processed, return the existing record instead
+        // of minting another code (prevents replaying a single payment for many codes).
+        const existing = await db.select().from(subscriptionCodes)
+          .where(like(subscriptionCodes.note, `Stripe: ${session.id}%`))
+          .limit(1);
+        if (existing[0]) {
+          return { success: true, plan: planRows[0], expiresAt: existing[0].expiresAt, code: existing[0].code, alreadyProcessed: true };
+        }
 
         const code = `STRIPE-${randomBytes(4).toString("hex").toUpperCase()}`;
         const now = new Date();
