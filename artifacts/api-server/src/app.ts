@@ -43,9 +43,39 @@ app.use(
   }),
 );
 
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "600mb" }));
-app.use(express.urlencoded({ limit: "600mb", extended: true }));
+// ─── CORS allow-list ─────────────────────────────────────────────
+// Reflect credentials only for known origins instead of any site. The SPA is
+// served from this same origin (APP_URL); add extra front-ends via ALLOWED_ORIGINS.
+const allowedOrigins = new Set<string>(
+  [
+    process.env.APP_URL,
+    ...(process.env.ALLOWED_ORIGINS?.split(",") ?? []),
+    ...(process.env.REPLIT_DOMAINS?.split(",").map((d) => `https://${d.trim()}`) ?? []),
+    process.env.REPLIT_DEV_DOMAIN ? `https://${process.env.REPLIT_DEV_DOMAIN}` : undefined,
+    "http://localhost:5173",
+    "http://localhost:3000",
+  ]
+    .filter((o): o is string => !!o)
+    .map((o) => o.replace(/\/$/, "")),
+);
+const corsAllowAll = allowedOrigins.size <= 2; // only the localhost defaults → not configured
+if (corsAllowAll) {
+  logger.warn("[CORS] No APP_URL/ALLOWED_ORIGINS set — reflecting all origins. Set APP_URL to lock this down.");
+}
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true); // same-origin / non-browser clients
+      if (corsAllowAll || allowedOrigins.has(origin.replace(/\/$/, ""))) return cb(null, true);
+      return cb(null, false);
+    },
+    credentials: true,
+  }),
+);
+// Body limits: generous enough for base64 build payloads, far below the old 600mb
+// to shrink the memory-exhaustion surface. (Large binary uploads use multer, not JSON.)
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ limit: "100mb", extended: true }));
 app.use(cookieParser() as unknown as RequestHandler);
 
 // ─── Security Middleware ─────────────────────────────────────────

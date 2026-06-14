@@ -9,7 +9,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, and, sql, gte, lte, count, isNotNull, gt } from "drizzle-orm";
 import { createHash, randomBytes } from "crypto";
-import { hashPassword } from "./auth";
+import { hashPassword, verifyPassword, isLegacyHash } from "./auth";
 
 export type { User, Conversation, MessageRow, UploadedFile, SubscriptionPlan, Subscription, ApiKey, UsageRecord, Integration };
 
@@ -76,10 +76,16 @@ export async function loginUser(email: string, password: string): Promise<User> 
   if (!user) throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
   if (!user.passwordHash) throw new Error("يرجى استخدام طريقة تسجيل الدخول الصحيحة");
 
-  const hash = hashPassword(password);
-  if (hash !== user.passwordHash) throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
+  if (!verifyPassword(password, user.passwordHash)) {
+    throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
+  }
 
-  await db.update(users).set({ lastSignedIn: new Date(), updatedAt: new Date() }).where(eq(users.id, user.id));
+  // Transparently upgrade legacy sha256 hashes to scrypt on successful login.
+  const patch: Record<string, unknown> = { lastSignedIn: new Date(), updatedAt: new Date() };
+  if (isLegacyHash(user.passwordHash)) {
+    patch.passwordHash = hashPassword(password);
+  }
+  await db.update(users).set(patch).where(eq(users.id, user.id));
   return user;
 }
 

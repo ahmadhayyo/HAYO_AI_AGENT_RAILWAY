@@ -112,7 +112,9 @@ export function securityHeaders(req: any, res: any, next: any) {
 // ─── API Rate Limit Middleware ───────────────────────────────────
 export function apiRateLimiter(maxPerMinute: number = 60) {
   return (req: any, res: any, next: any) => {
-    const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+    // req.ip is derived from X-Forwarded-For via the configured `trust proxy`
+    // setting; using it (instead of the raw header) prevents trivial spoofing.
+    const ip = req.ip || "unknown";
     const key = `api:${ip}`;
     const result = rateLimit(key, maxPerMinute);
 
@@ -134,7 +136,7 @@ export function apiRateLimiter(maxPerMinute: number = 60) {
 // ─── Auth Rate Limit (stricter for login) ───────────────────────
 export function authRateLimiter() {
   return (req: any, res: any, next: any) => {
-    const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+    const ip = req.ip || "unknown";
 
     // Bot check
     const ua = req.headers["user-agent"] || "";
