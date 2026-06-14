@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { authenticateRequest } from "../hayo/auth";
+import { getEffectivePlan } from "../hayo/db";
 
 /**
  * Express middleware that rejects unauthenticated requests.
@@ -21,4 +22,33 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   } catch {
     res.status(401).json({ error: "فشل التحقق من الجلسة (401)" });
   }
+}
+
+/**
+ * Gate a REST router behind a plan feature flag. Must be mounted AFTER
+ * `requireAuth` (it reads `req.user`). Admins/owner bypass. Returns 403 with an
+ * upgrade hint when the user's effective plan does not unlock the feature.
+ */
+export function requireFeature(gate: string) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const user = (req as any).user as { id: number; role: string } | undefined;
+    if (!user) {
+      res.status(401).json({ error: "يجب تسجيل الدخول (401)" });
+      return;
+    }
+    if (user.role === "admin") {
+      next();
+      return;
+    }
+    try {
+      const { plan } = await getEffectivePlan(user.id);
+      if (!plan || !(plan as Record<string, unknown>)[gate]) {
+        res.status(403).json({ error: "هذه الميزة تتطلب ترقية خطتك للوصول إليها." });
+        return;
+      }
+      next();
+    } catch {
+      res.status(403).json({ error: "تعذّر التحقق من صلاحية الخطة." });
+    }
+  };
 }

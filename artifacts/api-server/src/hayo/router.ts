@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import { router, publicProcedure, protectedProcedure, adminProcedure } from "./trpc";
+import { router, publicProcedure, protectedProcedure, adminProcedure, tradingProcedure, osintProcedure, appBuilderProcedure } from "./trpc";
 import { reverseEngineerRouter } from "./reverse-engineer-router";
 import { aiAgentRouter } from "./ai-agent-router";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
@@ -53,6 +53,7 @@ import {
   getUserIntegrations, connectIntegration, disconnectIntegration, deleteFile,
 } from "./db";
 import { createSessionToken, setCookie, clearCookie, COOKIE_NAME } from "./auth";
+import { assertCredits } from "./access";
 import { invokeLLM, type Message } from "./llm";
 import { callProvider, getAvailableProviders, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "./providers";
 
@@ -1244,19 +1245,19 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
   // ==================== EA Factory (MQ4/MQ5) ====================
   eaFactory: router({
     // Analyze uploaded MQ4/MQ5 files with user notes
-    analyze: protectedProcedure
+    analyze: appBuilderProcedure
       .input(z.object({
         files: z.array(z.object({ name: z.string(), content: z.string() })).min(1).max(100),
         userNotes: z.string().max(5000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await incrementUsage(ctx.user.id);
+        await assertCredits(ctx.user, "ea_analyze");
         const { analyzeFiles } = await import("./services/ea-factory.js");
         return analyzeFiles(input.files, input.userNotes || "");
       }),
 
     // Generate code from MULTIPLE strategies combined + user notes
-    generate: protectedProcedure
+    generate: appBuilderProcedure
       .input(z.object({
         strategies: z.array(z.object({
           id: z.string(), name: z.string(), description: z.string(), category: z.string().optional(),
@@ -1271,13 +1272,13 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         userNotes: z.string().max(5000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await incrementUsage(ctx.user.id);
+        await assertCredits(ctx.user, "ea_generate");
         const { generateCode } = await import("./services/ea-factory.js");
         return generateCode(input.strategies, input.sourceFiles, input.platform, input.outputType, input.userNotes || "");
       }),
 
     // Generate custom code from free-text + user notes
-    generateCustom: protectedProcedure
+    generateCustom: appBuilderProcedure
       .input(z.object({
         prompt: z.string().min(10).max(5000),
         sourceFiles: z.array(z.object({ name: z.string(), content: z.string() })),
@@ -1286,13 +1287,13 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         userNotes: z.string().max(5000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await incrementUsage(ctx.user.id);
+        await assertCredits(ctx.user, "ea_generate");
         const { generateCustomCode } = await import("./services/ea-factory.js");
         return generateCustomCode(input.prompt, input.sourceFiles, input.platform, input.outputType, input.userNotes || "");
       }),
 
     // Fix compile errors from MetaEditor
-    fixErrors: protectedProcedure
+    fixErrors: appBuilderProcedure
       .input(z.object({
         code: z.string().min(50),
         errors: z.string().min(5),
@@ -1301,7 +1302,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         userNotes: z.string().max(5000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await incrementUsage(ctx.user.id);
+        await assertCredits(ctx.user, "ea_fix");
         const { fixCompileErrors } = await import("./services/ea-factory.js");
         return fixCompileErrors(input.code, input.errors, input.platform, input.outputType, input.userNotes || "");
       }),
@@ -1310,7 +1311,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
   // ==================== Trading (OANDA Forex) ====================
   trading: router({
     // Test OANDA connection
-    testOanda: protectedProcedure
+    testOanda: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1322,7 +1323,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Get account summary
-    accountInfo: protectedProcedure
+    accountInfo: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1334,7 +1335,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Get live prices
-    prices: protectedProcedure
+    prices: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1347,7 +1348,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Place order
-    placeOrder: protectedProcedure
+    placeOrder: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1368,7 +1369,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Get open positions
-    positions: protectedProcedure
+    positions: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1380,7 +1381,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Get open trades
-    trades: protectedProcedure
+    trades: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1392,7 +1393,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Close trade
-    closeTrade: protectedProcedure
+    closeTrade: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1405,7 +1406,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Auto-execute signal from TradingAnalysis page
-    autoExecute: protectedProcedure
+    autoExecute: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1426,7 +1427,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         );
       }),
 
-    getCandles: protectedProcedure
+    getCandles: tradingProcedure
       .input(z.object({
         pair: z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
         interval: z.enum(["1min", "5min", "15min", "30min", "1h"]).default("1h"),
@@ -2684,61 +2685,61 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
 
   // ==================== OSINT Intelligence Tools ====================
   osint: router({
-    ipLookup: protectedProcedure
+    ipLookup: osintProcedure
       .input(z.object({ ip: z.string().min(4).max(50) }))
       .mutation(async ({ input }) => {
         const { ipLookup } = await import("./services/osint.js");
         return ipLookup(input.ip);
       }),
-    whoisLookup: protectedProcedure
+    whoisLookup: osintProcedure
       .input(z.object({ domain: z.string().min(3).max(200) }))
       .mutation(async ({ input }) => {
         const { whoisLookup } = await import("./services/osint.js");
         return whoisLookup(input.domain);
       }),
-    dnsLookup: protectedProcedure
+    dnsLookup: osintProcedure
       .input(z.object({ domain: z.string().min(3).max(200), type: z.string().default("A") }))
       .mutation(async ({ input }) => {
         const { dnsLookup } = await import("./services/osint.js");
         return dnsLookup(input.domain, input.type);
       }),
-    emailBreachCheck: protectedProcedure
+    emailBreachCheck: osintProcedure
       .input(z.object({ email: z.string().email() }))
       .mutation(async ({ input }) => {
         const { emailBreachCheck } = await import("./services/osint.js");
         return emailBreachCheck(input.email);
       }),
-    usernameSearch: protectedProcedure
+    usernameSearch: osintProcedure
       .input(z.object({ username: z.string().min(2).max(50) }))
       .mutation(async ({ input }) => {
         const { usernameSearch } = await import("./services/osint.js");
         return usernameSearch(input.username);
       }),
-    phoneLookup: protectedProcedure
+    phoneLookup: osintProcedure
       .input(z.object({ phone: z.string().min(5).max(20) }))
       .mutation(async ({ input }) => {
         const { phoneLookup } = await import("./services/osint.js");
         return phoneLookup(input.phone);
       }),
-    techLookup: protectedProcedure
+    techLookup: osintProcedure
       .input(z.object({ url: z.string().min(3).max(200) }))
       .mutation(async ({ input }) => {
         const { techLookup } = await import("./services/osint.js");
         return techLookup(input.url);
       }),
-    sslLookup: protectedProcedure
+    sslLookup: osintProcedure
       .input(z.object({ domain: z.string().min(3).max(200) }))
       .mutation(async ({ input }) => {
         const { sslLookup } = await import("./services/osint.js");
         return sslLookup(input.domain);
       }),
-    subdomainSearch: protectedProcedure
+    subdomainSearch: osintProcedure
       .input(z.object({ domain: z.string().min(3).max(200) }))
       .mutation(async ({ input }) => {
         const { subdomainSearch } = await import("./services/osint.js");
         return subdomainSearch(input.domain);
       }),
-    phoneLocalLookup: protectedProcedure
+    phoneLocalLookup: osintProcedure
       .input(z.object({ phone: z.string().min(6).max(20) }))
       .mutation(async ({ input, ctx }) => {
         const { phoneLocalLookup, logOsintSearch } = await import("./services/osint.js");
@@ -2746,52 +2747,52 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         await logOsintSearch(ctx.user.id, "phone_local", input.phone, result.totalResults);
         return result;
       }),
-    coverageStats: protectedProcedure
+    coverageStats: osintProcedure
       .query(async () => {
         const { getCoverageStats } = await import("./services/osint.js");
         return getCoverageStats();
       }),
 
-    importStats: protectedProcedure
+    importStats: osintProcedure
       .query(async () => {
         const { getImportStats } = await import("./services/osint-import.js");
         return getImportStats();
       }),
 
-    importFromCSV: protectedProcedure
+    importFromCSV: osintProcedure
       .input(z.object({ csvContent: z.string().min(10), sourceName: z.string().min(1).max(100) }))
       .mutation(async ({ input }) => {
         const { importFromCSVContent } = await import("./services/osint-import.js");
         return importFromCSVContent(input.csvContent, input.sourceName);
       }),
 
-    importFromGoogleDrive: protectedProcedure
+    importFromGoogleDrive: osintProcedure
       .input(z.object({ fileId: z.string().min(1), sourceName: z.string().optional() }))
       .mutation(async ({ input }) => {
         const { importFromGoogleDrive } = await import("./services/osint-import.js");
         return importFromGoogleDrive(input.fileId, input.sourceName || "");
       }),
 
-    listGoogleDriveFiles: protectedProcedure
+    listGoogleDriveFiles: osintProcedure
       .query(async () => {
         const { listGoogleDriveFiles } = await import("./services/osint-import.js");
         return listGoogleDriveFiles();
       }),
 
-    importFromObjectStorage: protectedProcedure
+    importFromObjectStorage: osintProcedure
       .input(z.object({ filePath: z.string().min(1), sourceName: z.string().optional() }))
       .mutation(async ({ input }) => {
         const { importFromObjectStorage } = await import("./services/osint-import.js");
         return importFromObjectStorage(input.filePath, input.sourceName || "");
       }),
 
-    listObjectStorageFiles: protectedProcedure
+    listObjectStorageFiles: osintProcedure
       .query(async () => {
         const { listObjectStorageFiles } = await import("./services/osint-import.js");
         return listObjectStorageFiles();
       }),
 
-    importFromSupabase: protectedProcedure
+    importFromSupabase: osintProcedure
       .input(z.object({
         connectionUrl: z.string().min(10),
         tableName: z.string().min(1),
@@ -2802,21 +2803,21 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         return importFromSupabase(input.connectionUrl, input.tableName, input.sourceName || "");
       }),
 
-    listSupabaseTables: protectedProcedure
+    listSupabaseTables: osintProcedure
       .input(z.object({ connectionUrl: z.string().min(10) }))
       .mutation(async ({ input }) => {
         const { listSupabaseTables } = await import("./services/osint-import.js");
         return listSupabaseTables(input.connectionUrl);
       }),
 
-    deleteBySource: protectedProcedure
+    deleteBySource: osintProcedure
       .input(z.object({ source: z.string().min(1) }))
       .mutation(async ({ input }) => {
         const { deleteContactsBySource } = await import("./services/osint-import.js");
         return deleteContactsBySource(input.source);
       }),
 
-    clearAllContacts: protectedProcedure
+    clearAllContacts: osintProcedure
       .mutation(async () => {
         const { clearAllContacts } = await import("./services/osint-import.js");
         return clearAllContacts();
@@ -3019,7 +3020,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
   // ==================== App Builds (EAS) ====================
   builds: router({
     // Create a new APK build
-    create: protectedProcedure
+    create: appBuilderProcedure
       .input(z.object({
         appName: z.string().min(2).max(60),
         description: z.string().min(10).max(3000),
@@ -3031,6 +3032,8 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         customKeystoreBase64: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        // Charge build credits up front (admins bypass). Throws if out of credits.
+        await assertCredits(ctx.user, "app_build");
         const { db } = await import("@workspace/db");
         const { appBuilds } = await import("@workspace/db/schema");
 

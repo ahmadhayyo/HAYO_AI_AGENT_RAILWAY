@@ -8,7 +8,7 @@ import reverseRouter from "./reverse";
 import telegramRouter from "./telegram";
 import extractArchiveRouter from "./extract-archive";
 import agentRouter from "./agent";
-import { requireAuth } from "../middlewares/requireAuth";
+import { requireAuth, requireFeature } from "../middlewares/requireAuth";
 
 const router: IRouter = Router();
 
@@ -22,10 +22,12 @@ router.use(telegramRouter);
 // ── Authenticated feature routes ─────────────────────────────────
 // These power expensive tools (LLM calls, decompilation, builds) and must not
 // be reachable anonymously.
+// office / studies / prompt-factory: available to all signed-in tiers (credit-metered).
 router.use(requireAuth, officeRouter);
 router.use(requireAuth, studiesRouter);
 router.use(requireAuth, promptFactoryRouter);
-router.use("/reverse", requireAuth, reverseRouter);
 router.use(requireAuth, extractArchiveRouter);
-router.use(requireAuth, agentRouter);
+// reverse engineering & code agent: higher-tier features → gated by plan flag.
+router.use("/reverse", requireAuth, requireFeature("canUseReverse"), reverseRouter);
+router.use(requireAuth, requireFeature("canUseCodeAgent"), agentRouter);
 export default router;
