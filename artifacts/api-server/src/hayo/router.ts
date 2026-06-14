@@ -646,6 +646,9 @@ export const appRouter = router({
         const conv = await getConversation(input.conversationId, ctx.user.id);
         if (!conv) throw new TRPCError({ code: "NOT_FOUND", message: "المحادثة غير موجودة" });
 
+        // Charge chat credits up front (admins bypass; throws if out of credits).
+        await assertCredits(ctx.user, "chat");
+
         const userMsgId = await addMessage({
           conversationId: input.conversationId,
           role: "user",
@@ -666,7 +669,9 @@ export const appRouter = router({
           content: aiResponse,
         });
 
-        await incrementUsage(ctx.user.id);
+        // Credit already charged via assertCredits above (which also bumps the
+        // message count for non-admins); record admin messages for stats only.
+        if (ctx.user.role === "admin") await incrementUsage(ctx.user.id);
 
         return {
           userMessageId: userMsgId,

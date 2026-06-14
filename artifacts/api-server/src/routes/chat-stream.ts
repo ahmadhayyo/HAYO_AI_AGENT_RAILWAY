@@ -12,6 +12,8 @@ import {
   getConversationMessages,
   addMessage,
   incrementUsage,
+  checkCredits,
+  deductCredits,
 } from "../hayo/db.js";
 
 const router = Router();
@@ -43,6 +45,16 @@ router.post("/chat/stream", async (req, res) => {
   let userId: number | null = null;
 
   const user = await authenticateRequest(req);
+
+  // Fail fast if an authenticated, non-admin user is out of daily credits.
+  // (Cost is charged on successful completion below.)
+  if (user && user.role !== "admin") {
+    const credit = await checkCredits(user.id, "chat", undefined, user.role);
+    if (!credit.allowed) {
+      res.status(402).json({ error: credit.message || "وصلت إلى حد النقاط اليومي. يرجى الترقية." });
+      return;
+    }
+  }
 
   if (rawMessages && Array.isArray(rawMessages) && rawMessages.length > 0) {
     llmMessages = rawMessages;
@@ -249,7 +261,10 @@ router.post("/chat/stream", async (req, res) => {
       });
     }
     if (userId) {
-      await incrementUsage(userId);
+      // Non-admins are charged chat credits (also bumps message count);
+      // admins are unlimited so we only record the message for stats.
+      if (user?.role === "admin") await incrementUsage(userId);
+      else await deductCredits(userId, "chat");
     }
 
     send({ type: "done", messageId: aiMsgId, fullText });
