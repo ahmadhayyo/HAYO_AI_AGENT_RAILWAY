@@ -3096,6 +3096,32 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         const { runWalletScan } = await import("./pentest/walletEngine.js");
         return runWalletScan(input.address, input.chain);
       }),
+
+    // ── Hybrid dynamic analysis (local Frida companion agent) ──────────
+    // Pair a local agent run to a decompiled session; returns the run command.
+    startDynamic: appBuilderProcedure
+      .input(z.object({ sessionId: z.string().min(3).max(200), package: z.string().min(1).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        const { issueDynamicToken } = await import("./pentest/dynamic.js");
+        const { token, expiresAt } = issueDynamicToken(ctx.user.id, input.sessionId);
+        const server = (process.env.APP_URL || "").replace(/\/$/, "") || "https://<your-app-url>";
+        return {
+          token,
+          expiresAt,
+          command: `python agent.py --server ${server} --token ${token} --package ${input.package}`,
+          note: "شغّل هذا الأمر على جهازك مع محاكي أندرويد يعمل و frida-server نشط. النتائج تُدمج تلقائياً.",
+        };
+      }),
+
+    // Fetch the dynamic findings the agent has posted for a session.
+    getDynamicResults: appBuilderProcedure
+      .input(z.object({ sessionId: z.string().min(3).max(200) }))
+      .query(async ({ input }) => {
+        const { getDynamicFindings } = await import("./pentest/dynamic.js");
+        const { summarizeThreat } = await import("./pentest/types.js");
+        const findings = getDynamicFindings(input.sessionId);
+        return { findings, summary: summarizeThreat(findings) };
+      }),
   }),
 
   // ==================== App Builds (EAS) ====================

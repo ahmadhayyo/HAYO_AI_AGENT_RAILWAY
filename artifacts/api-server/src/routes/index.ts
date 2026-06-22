@@ -8,6 +8,7 @@ import reverseRouter from "./reverse";
 import telegramRouter from "./telegram";
 import extractArchiveRouter from "./extract-archive";
 import agentRouter from "./agent";
+import pentestRouter from "./pentest";
 import { requireAuth, requireFeature } from "../middlewares/requireAuth";
 
 const router: IRouter = Router();
@@ -18,6 +19,8 @@ const router: IRouter = Router();
 router.use(healthRouter);
 router.use(chatStreamRouter);
 router.use(telegramRouter);
+// Dynamic-agent ingestion: authenticated by a pairing token in the path, not a cookie.
+router.use(pentestRouter);
 
 // ── Authenticated feature routes ─────────────────────────────────
 // These power expensive tools (LLM calls, decompilation, builds) and must not
