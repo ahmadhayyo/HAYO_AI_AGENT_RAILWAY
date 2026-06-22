@@ -3061,6 +3061,41 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         const { runWebScan } = await import("./pentest/webEngine.js");
         return runWebScan(input.target);
       }),
+
+    // Authorized Android (APK) scan over a decompiled session.
+    scanAndroid: appBuilderProcedure
+      .input(z.object({
+        sessionId: z.string().min(3).max(200),
+        authorized: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized, userId: ctx.user.id, target: "android", subject: input.sessionId, ip: ctx.req.ip,
+        });
+        if (!auth.allowed) throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح" });
+        const { runAndroidScan } = await import("./pentest/androidEngine.js");
+        return runAndroidScan(input.sessionId);
+      }),
+
+    // Authorized wallet scan (public on-chain data only).
+    scanWallet: appBuilderProcedure
+      .input(z.object({
+        address: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "عنوان EVM غير صالح"),
+        chain: z.enum(["ETH", "BSC"]).default("ETH"),
+        authorized: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized, userId: ctx.user.id, target: "wallet", subject: input.address, ip: ctx.req.ip,
+        });
+        if (!auth.allowed) throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح" });
+        const { runWalletScan } = await import("./pentest/walletEngine.js");
+        return runWalletScan(input.address, input.chain);
+      }),
   }),
 
   // ==================== App Builds (EAS) ====================
