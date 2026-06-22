@@ -3022,6 +3022,47 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
   }),
 
+  // ==================== Ethical Pentest Engine ====================
+  pentest: router({
+    // Return the per-host ownership token + how to publish it (web active scans).
+    getOwnershipToken: appBuilderProcedure
+      .input(z.object({ target: z.string().min(3).max(300) }))
+      .query(async ({ input, ctx }) => {
+        const { ownershipToken, normalizeHost, VERIFY_FILE_PATH, VERIFY_DNS_PREFIX } = await import("./pentest/authorization.js");
+        const host = normalizeHost(input.target);
+        const token = ownershipToken(ctx.user.id, host);
+        return {
+          host,
+          token,
+          file: { path: VERIFY_FILE_PATH, content: token },
+          dns: { type: "TXT", value: `${VERIFY_DNS_PREFIX}${token}` },
+        };
+      }),
+
+    // Authorized active web scan → unified, evidence-backed findings.
+    scanWeb: appBuilderProcedure
+      .input(z.object({
+        target: z.string().min(3).max(300),
+        authorized: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized,
+          userId: ctx.user.id,
+          target: "web",
+          subject: input.target,
+          ip: ctx.req.ip,
+        });
+        if (!auth.allowed) {
+          throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح بفحص هذا الهدف", cause: { token: auth.token } });
+        }
+        const { runWebScan } = await import("./pentest/webEngine.js");
+        return runWebScan(input.target);
+      }),
+  }),
+
   // ==================== App Builds (EAS) ====================
   builds: router({
     // Create a new APK build
