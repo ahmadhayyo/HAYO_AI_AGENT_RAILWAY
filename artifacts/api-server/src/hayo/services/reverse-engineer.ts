@@ -161,6 +161,9 @@ export function getToolStatus(): Record<string, { available: boolean; version?: 
     aapt2:     check("aapt2", "version"),
     dex2jar:   check("d2j-dex2jar.sh"),
     r2:        check("r2", "-v"),
+    // ── Pentest-engine tools ──
+    apkid:     check("apkid", "--version"),
+    nuclei:    check("nuclei", "-version"),
   };
 }
 
@@ -208,6 +211,8 @@ export function getToolStatusFlat(): Record<string, boolean | string | null> {
     aapt2Available: check("aapt2 version"),
     dex2jarAvailable: check("d2j-dex2jar.sh --help"),
     r2Available: check("r2 -v"),
+    apkidAvailable: check("apkid --version"),
+    nucleiAvailable: check("nuclei -version"),
   };
 }
 
