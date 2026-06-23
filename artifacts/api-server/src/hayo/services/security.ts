@@ -101,6 +101,29 @@ export function securityHeaders(req: any, res: any, next: any) {
   // Permissions policy
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
 
+  // Content Security Policy — tuned for the React/Vite SPA:
+  //  - script-src allows 'unsafe-eval' (Monaco editor) + 'unsafe-inline' + blob: (workers)
+  //  - style-src 'unsafe-inline' for Radix/emotion runtime styles + Google Fonts
+  //  - connect/img/font kept permissive enough not to break the app, while the
+  //    real hardening comes from frame-ancestors (clickjacking), object-src 'none',
+  //    base-uri 'self' and form-action 'self'.
+  res.setHeader(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' data: https://fonts.gstatic.com",
+      "img-src 'self' data: blob: https:",
+      "connect-src 'self' https: wss:",
+      "worker-src 'self' blob:",
+      "frame-ancestors 'self'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+    ].join("; "),
+  );
+
   // Strict transport (HTTPS only)
   if (process.env.NODE_ENV === "production") {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
