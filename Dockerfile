@@ -52,7 +52,8 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # ── Install Python dependencies ───────────────────────────────────
-RUN pip3 install --no-cache-dir --break-system-packages colorama
+# apkid: packer/obfuscator/anti-analysis fingerprinting for the pentest engine.
+RUN pip3 install --no-cache-dir --break-system-packages colorama apkid
 
 # Create directory structure for reverse-engineering tools
 RUN mkdir -p /home/runner/jadx/bin /home/runner/apktool
