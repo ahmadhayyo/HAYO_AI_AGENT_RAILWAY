@@ -9,7 +9,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, and, sql, gte, lte, count, isNotNull, gt } from "drizzle-orm";
 import { createHash, randomBytes } from "crypto";
-import { hashPassword } from "./auth";
+import { hashPassword, verifyPassword, isLegacyHash } from "./auth";
 
 export type { User, Conversation, MessageRow, UploadedFile, SubscriptionPlan, Subscription, ApiKey, UsageRecord, Integration };
 
@@ -76,10 +76,16 @@ export async function loginUser(email: string, password: string): Promise<User> 
   if (!user) throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
   if (!user.passwordHash) throw new Error("يرجى استخدام طريقة تسجيل الدخول الصحيحة");
 
-  const hash = hashPassword(password);
-  if (hash !== user.passwordHash) throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
+  if (!verifyPassword(password, user.passwordHash)) {
+    throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
+  }
 
-  await db.update(users).set({ lastSignedIn: new Date(), updatedAt: new Date() }).where(eq(users.id, user.id));
+  // Transparently upgrade legacy sha256 hashes to scrypt on successful login.
+  const patch: Record<string, unknown> = { lastSignedIn: new Date(), updatedAt: new Date() };
+  if (isLegacyHash(user.passwordHash)) {
+    patch.passwordHash = hashPassword(password);
+  }
+  await db.update(users).set(patch).where(eq(users.id, user.id));
   return user;
 }
 
@@ -108,13 +114,19 @@ export async function getConversation(id: number, userId: number): Promise<Conve
   return result[0];
 }
 
-export async function updateConversationTitle(id: number, title: string): Promise<void> {
-  await db.update(conversations).set({ title, updatedAt: new Date() }).where(eq(conversations.id, id));
+export async function updateConversationTitle(id: number, userId: number, title: string): Promise<void> {
+  // Scope by userId so a user can only rename their OWN conversations (prevents IDOR).
+  await db.update(conversations).set({ title, updatedAt: new Date() })
+    .where(and(eq(conversations.id, id), eq(conversations.userId, userId)));
 }
 
-export async function deleteConversation(id: number): Promise<void> {
+export async function deleteConversation(id: number, userId: number): Promise<void> {
+  // Verify ownership before deleting anything (prevents IDOR deletion of others' data).
+  const owned = await db.select({ id: conversations.id }).from(conversations)
+    .where(and(eq(conversations.id, id), eq(conversations.userId, userId))).limit(1);
+  if (!owned[0]) return;
   await db.delete(messages).where(eq(messages.conversationId, id));
-  await db.delete(conversations).where(eq(conversations.id, id));
+  await db.delete(conversations).where(and(eq(conversations.id, id), eq(conversations.userId, userId)));
 }
 
 // ==================== Messages ====================
@@ -173,53 +185,63 @@ export async function seedDefaultPlans(): Promise<void> {
   try {
     const existing = await db.select({ c: count() }).from(subscriptionPlans);
   if ((existing[0]?.c ?? 0) > 0) {
-    // Update existing plans with accurate pricing and limits
+    // Update existing plans with accurate pricing and limits (investment tiers).
+    // Prices are in cents. Credit allotments / daily caps are tuned so the
+    // effective $/1000-credits declines with tier (volume discount) while
+    // staying above the blended provider cost basis.
     await db.update(subscriptionPlans).set({
       displayName: "تجريبي",
-      description: "تجربة لمرة واحدة — 3 أيام فقط",
+      description: "تجربة مجانية — 3 أيام",
       priceMonthly: 0, priceYearly: 0,
-      monthlyCredits: 30, dailyCreditLimit: 10,
-      dailyMessageLimit: 10, monthlyMessageLimit: 30,
+      monthlyCredits: 60, dailyCreditLimit: 20,
+      dailyMessageLimit: 20, monthlyMessageLimit: 60,
       allowedModels: "haiku",
       maxAgentPipelines: 1, maxWarRoomBattles: 1,
       maxFileUploadMB: 5,
       canUseSandbox: false, canUseWebSearch: false, canUseImageGen: false, canUseFileCreation: false,
+      canUseReverse: false, canUseAppBuilder: false, canUseCodeAgent: false, canUseTrading: false, canUseOsint: false,
+      prioritySupport: false,
     }).where(eq(subscriptionPlans.name, "free"));
 
     await db.update(subscriptionPlans).set({
       displayName: "المبتدئ",
       description: "للاستخدام الشخصي والطلاب",
-      priceMonthly: 999, priceYearly: 9588,
-      monthlyCredits: 500, dailyCreditLimit: 25,
-      dailyMessageLimit: 25, monthlyMessageLimit: 500,
+      priceMonthly: 1200, priceYearly: 12000,
+      monthlyCredits: 700, dailyCreditLimit: 50,
+      dailyMessageLimit: 50, monthlyMessageLimit: 700,
       allowedModels: "haiku,sonnet",
-      maxAgentPipelines: 3, maxWarRoomBattles: 5,
-      maxFileUploadMB: 15,
+      maxAgentPipelines: 5, maxWarRoomBattles: 5,
+      maxFileUploadMB: 20,
       canUseSandbox: false, canUseWebSearch: true, canUseImageGen: false, canUseFileCreation: true,
+      canUseReverse: false, canUseAppBuilder: false, canUseCodeAgent: false, canUseTrading: false, canUseOsint: false,
+      prioritySupport: false,
     }).where(eq(subscriptionPlans.name, "starter"));
 
     await db.update(subscriptionPlans).set({
       displayName: "الاحترافي",
       description: "للمحترفين والمستقلين",
-      priceMonthly: 2999, priceYearly: 28788,
-      monthlyCredits: 2000, dailyCreditLimit: 100,
-      dailyMessageLimit: 100, monthlyMessageLimit: 2000,
+      priceMonthly: 3900, priceYearly: 39000,
+      monthlyCredits: 2500, dailyCreditLimit: 150,
+      dailyMessageLimit: 150, monthlyMessageLimit: 2500,
       allowedModels: "haiku,sonnet,opus",
-      maxAgentPipelines: 30, maxWarRoomBattles: 30,
-      maxFileUploadMB: 50,
+      maxAgentPipelines: 40, maxWarRoomBattles: 40,
+      maxFileUploadMB: 75,
       canUseSandbox: true, canUseWebSearch: true, canUseImageGen: true, canUseFileCreation: true,
+      canUseReverse: true, canUseAppBuilder: true, canUseCodeAgent: true, canUseTrading: false, canUseOsint: false,
+      prioritySupport: false,
     }).where(eq(subscriptionPlans.name, "pro"));
 
     await db.update(subscriptionPlans).set({
       displayName: "الأعمال",
       description: "للشركات والفرق الكبيرة",
-      priceMonthly: 7999, priceYearly: 76788,
-      monthlyCredits: 8000, dailyCreditLimit: 400,
+      priceMonthly: 9900, priceYearly: 99000,
+      monthlyCredits: 7000, dailyCreditLimit: 400,
       dailyMessageLimit: 500, monthlyMessageLimit: 10000,
       allowedModels: "haiku,sonnet,opus",
       maxAgentPipelines: 200, maxWarRoomBattles: -1,
-      maxFileUploadMB: 100,
+      maxFileUploadMB: 200,
       canUseSandbox: true, canUseWebSearch: true, canUseImageGen: true, canUseFileCreation: true,
+      canUseReverse: true, canUseAppBuilder: true, canUseCodeAgent: true, canUseTrading: true, canUseOsint: true,
       prioritySupport: true,
     }).where(eq(subscriptionPlans.name, "business"));
 
@@ -230,49 +252,54 @@ export async function seedDefaultPlans(): Promise<void> {
     {
       name: "free",
       displayName: "تجريبي",
-      description: "تجربة لمرة واحدة — 3 أيام فقط",
+      description: "تجربة مجانية — 3 أيام",
       priceMonthly: 0, priceYearly: 0,
-      monthlyCredits: 30, dailyCreditLimit: 10,
-      dailyMessageLimit: 10, monthlyMessageLimit: 30,
+      monthlyCredits: 60, dailyCreditLimit: 20,
+      dailyMessageLimit: 20, monthlyMessageLimit: 60,
       allowedModels: "haiku",
       maxAgentPipelines: 1, maxWarRoomBattles: 1,
       maxFileUploadMB: 5, canUseSandbox: false, canUseWebSearch: false, canUseImageGen: false, canUseFileCreation: false,
+      canUseReverse: false, canUseAppBuilder: false, canUseCodeAgent: false, canUseTrading: false, canUseOsint: false,
       sortOrder: 0,
     },
     {
       name: "starter",
       displayName: "المبتدئ",
       description: "للاستخدام الشخصي والطلاب",
-      priceMonthly: 999, priceYearly: 9588,
-      monthlyCredits: 500, dailyCreditLimit: 25,
-      dailyMessageLimit: 25, monthlyMessageLimit: 500,
+      priceMonthly: 1200, priceYearly: 12000,
+      monthlyCredits: 700, dailyCreditLimit: 50,
+      dailyMessageLimit: 50, monthlyMessageLimit: 700,
       allowedModels: "haiku,sonnet",
-      maxAgentPipelines: 3, maxWarRoomBattles: 5,
-      maxFileUploadMB: 15, canUseSandbox: false, canUseWebSearch: true, canUseImageGen: false, canUseFileCreation: true,
+      maxAgentPipelines: 5, maxWarRoomBattles: 5,
+      maxFileUploadMB: 20, canUseSandbox: false, canUseWebSearch: true, canUseImageGen: false, canUseFileCreation: true,
+      canUseReverse: false, canUseAppBuilder: false, canUseCodeAgent: false, canUseTrading: false, canUseOsint: false,
       sortOrder: 1,
     },
     {
       name: "pro",
       displayName: "الاحترافي",
       description: "للمحترفين والمستقلين",
-      priceMonthly: 2999, priceYearly: 28788,
-      monthlyCredits: 2000, dailyCreditLimit: 100,
-      dailyMessageLimit: 100, monthlyMessageLimit: 2000,
+      priceMonthly: 3900, priceYearly: 39000,
+      monthlyCredits: 2500, dailyCreditLimit: 150,
+      dailyMessageLimit: 150, monthlyMessageLimit: 2500,
       allowedModels: "haiku,sonnet,opus",
-      maxAgentPipelines: 30, maxWarRoomBattles: 30,
-      maxFileUploadMB: 50, canUseSandbox: true, canUseWebSearch: true, canUseImageGen: true, canUseFileCreation: true,
+      maxAgentPipelines: 40, maxWarRoomBattles: 40,
+      maxFileUploadMB: 75, canUseSandbox: true, canUseWebSearch: true, canUseImageGen: true, canUseFileCreation: true,
+      canUseReverse: true, canUseAppBuilder: true, canUseCodeAgent: true, canUseTrading: false, canUseOsint: false,
       sortOrder: 2,
     },
     {
       name: "business",
       displayName: "الأعمال",
       description: "للشركات والفرق الكبيرة",
-      priceMonthly: 7999, priceYearly: 76788,
-      monthlyCredits: 8000, dailyCreditLimit: 400,
+      priceMonthly: 9900, priceYearly: 99000,
+      monthlyCredits: 7000, dailyCreditLimit: 400,
       dailyMessageLimit: 500, monthlyMessageLimit: 10000,
       allowedModels: "haiku,sonnet,opus",
       maxAgentPipelines: 200, maxWarRoomBattles: -1,
-      maxFileUploadMB: 100, canUseSandbox: true, canUseWebSearch: true, canUseImageGen: true, canUseFileCreation: true, prioritySupport: true,
+      maxFileUploadMB: 200, canUseSandbox: true, canUseWebSearch: true, canUseImageGen: true, canUseFileCreation: true,
+      canUseReverse: true, canUseAppBuilder: true, canUseCodeAgent: true, canUseTrading: true, canUseOsint: true,
+      prioritySupport: true,
       sortOrder: 3,
     },
   ]);
@@ -302,8 +329,19 @@ export async function seedOwnerAccount(): Promise<void> {
       }
       return;
     }
-    // Create owner account on first startup
-    const ownerPassword = OWNER_PASSWORD_ENV || "6088amhA+";
+    // Create owner account on first startup.
+    // The owner password must come from the OWNER_PASSWORD env var — it is NEVER
+    // hard-coded (a hard-coded password committed to the repo is a full account
+    // takeover). If it is not set we skip seeding; the owner can simply register
+    // through the normal sign-up flow (OWNER_EMAIL is auto-granted admin role).
+    if (!OWNER_PASSWORD_ENV || OWNER_PASSWORD_ENV.trim().length === 0) {
+      console.warn(
+        "[DB] OWNER_PASSWORD not set — skipping owner seed. " +
+          "Register with the owner email to get the admin account, or set OWNER_PASSWORD.",
+      );
+      return;
+    }
+    const ownerPassword = OWNER_PASSWORD_ENV;
     const openId = `local_${randomBytes(16).toString("hex")}`;
     await db.insert(users).values({
       openId,
@@ -337,6 +375,58 @@ export async function getUserActiveSubscription(userId: number): Promise<Subscri
 export async function createSubscription(data: InsertSubscription): Promise<number> {
   const result = await db.insert(subscriptions).values(data).returning({ id: subscriptions.id });
   return result[0].id;
+}
+
+/**
+ * SINGLE SOURCE OF TRUTH for a user's active plan.
+ *
+ * Historically the platform had two disconnected mechanisms:
+ *   1. `subscriptions` table  — written by admin (manual activation after payment)
+ *   2. `subscriptionCodes`    — written by code redemption + Stripe checkout
+ * …but enforcement only ever read mechanism #2, so an admin-activated paying
+ * subscriber silently fell back to the free plan. This helper reads BOTH (no
+ * feature removed) and returns the effective plan, with the `subscriptions`
+ * table taking precedence, then an active code, then the free plan.
+ */
+export async function getEffectivePlan(
+  userId: number,
+): Promise<{ plan: SubscriptionPlan; source: "subscription" | "code" | "free" }> {
+  const now = new Date();
+
+  // (1) Admin / payment-activated subscription (authoritative).
+  const subRows = await db
+    .select({ plan: subscriptionPlans })
+    .from(subscriptions)
+    .innerJoin(subscriptionPlans, eq(subscriptions.planId, subscriptionPlans.id))
+    .where(and(
+      eq(subscriptions.userId, userId),
+      eq(subscriptions.status, "active"),
+      gte(subscriptions.endDate, now),
+    ))
+    .orderBy(desc(subscriptions.endDate))
+    .limit(1);
+  if (subRows[0]?.plan) return { plan: subRows[0].plan, source: "subscription" };
+
+  // (2) Active redeemed code / Stripe-issued code.
+  const codeRows = await db
+    .select({ plan: subscriptionPlans })
+    .from(subscriptionCodes)
+    .innerJoin(subscriptionPlans, eq(subscriptionCodes.planId, subscriptionPlans.id))
+    .where(and(
+      eq(subscriptionCodes.usedBy, userId),
+      isNotNull(subscriptionCodes.usedAt),
+      gt(subscriptionCodes.expiresAt, now),
+    ))
+    .orderBy(desc(subscriptionCodes.expiresAt))
+    .limit(1);
+  if (codeRows[0]?.plan) return { plan: codeRows[0].plan, source: "code" };
+
+  // (3) Fall back to the free plan.
+  const freeRows = await db
+    .select().from(subscriptionPlans)
+    .where(eq(subscriptionPlans.name, "free"))
+    .limit(1);
+  return { plan: freeRows[0], source: "free" };
 }
 
 // ==================== Usage ====================
@@ -438,21 +528,11 @@ export async function checkCredits(
   const usage = await getOrCreateDailyUsage(userId);
   const todayCredits = usage.creditsUsed ?? 0;
 
-  // احصل على الحد من الـ plan إذا لم يُعطَ
+  // احصل على الحد من الـ plan إذا لم يُعطَ — عبر المصدر الموحّد (اشتراك + كود).
   let dailyLimit = userPlan?.dailyCreditLimit ?? 50;
   if (!userPlan) {
-    const now = new Date();
-    const activeSub = await db
-      .select({ dailyCreditLimit: subscriptionPlans.dailyCreditLimit })
-      .from(subscriptionCodes)
-      .innerJoin(subscriptionPlans, eq(subscriptionCodes.planId, subscriptionPlans.id))
-      .where(and(
-        eq(subscriptionCodes.usedBy, userId),
-        isNotNull(subscriptionCodes.usedAt),
-        gt(subscriptionCodes.expiresAt, now)
-      ))
-      .limit(1);
-    dailyLimit = activeSub[0]?.dailyCreditLimit ?? 50;
+    const effective = await getEffectivePlan(userId);
+    dailyLimit = effective.plan?.dailyCreditLimit ?? 50;
   }
 
   const realLimit = dailyLimit === -1 ? Infinity : dailyLimit;

@@ -52,7 +52,13 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # ── Install Python dependencies ───────────────────────────────────
-RUN pip3 install --no-cache-dir --break-system-packages colorama
+# apkid: packer/obfuscator/anti-analysis fingerprinting for the pentest engine.
+RUN pip3 install --no-cache-dir --break-system-packages colorama apkid
+
+# ── nuclei: web vulnerability templates for the pentest engine ─────
+RUN wget -q --timeout=120 https://github.com/projectdiscovery/nuclei/releases/download/v3.3.7/nuclei_3.3.7_linux_amd64.zip -O /tmp/nuclei.zip \
+    && unzip -o /tmp/nuclei.zip -d /usr/local/bin/ nuclei && rm /tmp/nuclei.zip \
+    && (nuclei -update-templates -silent || true)
 
 # Create directory structure for reverse-engineering tools
 RUN mkdir -p /home/runner/jadx/bin /home/runner/apktool

@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import { router, publicProcedure, protectedProcedure, adminProcedure } from "./trpc";
+import { router, publicProcedure, protectedProcedure, adminProcedure, tradingProcedure, osintProcedure, appBuilderProcedure } from "./trpc";
 import { reverseEngineerRouter } from "./reverse-engineer-router";
 import { aiAgentRouter } from "./ai-agent-router";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
@@ -47,12 +47,13 @@ import {
   addMessage, getConversationMessages,
   saveUploadedFile, getUserFiles, getFileById,
   getActivePlans, getPlanById, seedDefaultPlans, seedOwnerAccount,
-  getUserActiveSubscription, createSubscription,
+  getUserActiveSubscription, createSubscription, getEffectivePlan,
   getOrCreateDailyUsage, incrementUsage,
   checkCredits, deductCredits, CREDIT_COSTS,
   getUserIntegrations, connectIntegration, disconnectIntegration, deleteFile,
 } from "./db";
 import { createSessionToken, setCookie, clearCookie, COOKIE_NAME } from "./auth";
+import { assertCredits } from "./access";
 import { invokeLLM, type Message } from "./llm";
 import { callProvider, getAvailableProviders, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "./providers";
 
@@ -618,15 +619,15 @@ export const appRouter = router({
 
     updateTitle: protectedProcedure
       .input(z.object({ id: z.number(), title: z.string() }))
-      .mutation(async ({ input }) => {
-        await updateConversationTitle(input.id, input.title);
+      .mutation(async ({ input, ctx }) => {
+        await updateConversationTitle(input.id, ctx.user.id, input.title);
         return { success: true };
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await deleteConversation(input.id);
+      .mutation(async ({ input, ctx }) => {
+        await deleteConversation(input.id, ctx.user.id);
         return { success: true };
       }),
   }),
@@ -644,6 +645,9 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         const conv = await getConversation(input.conversationId, ctx.user.id);
         if (!conv) throw new TRPCError({ code: "NOT_FOUND", message: "المحادثة غير موجودة" });
+
+        // Charge chat credits up front (admins bypass; throws if out of credits).
+        await assertCredits(ctx.user, "chat");
 
         const userMsgId = await addMessage({
           conversationId: input.conversationId,
@@ -665,7 +669,9 @@ export const appRouter = router({
           content: aiResponse,
         });
 
-        await incrementUsage(ctx.user.id);
+        // Credit already charged via assertCredits above (which also bumps the
+        // message count for non-admins); record admin messages for stats only.
+        if (ctx.user.role === "admin") await incrementUsage(ctx.user.id);
 
         return {
           userMessageId: userMsgId,
@@ -1244,19 +1250,19 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
   // ==================== EA Factory (MQ4/MQ5) ====================
   eaFactory: router({
     // Analyze uploaded MQ4/MQ5 files with user notes
-    analyze: protectedProcedure
+    analyze: appBuilderProcedure
       .input(z.object({
         files: z.array(z.object({ name: z.string(), content: z.string() })).min(1).max(100),
         userNotes: z.string().max(5000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await incrementUsage(ctx.user.id);
+        await assertCredits(ctx.user, "ea_analyze");
         const { analyzeFiles } = await import("./services/ea-factory.js");
         return analyzeFiles(input.files, input.userNotes || "");
       }),
 
     // Generate code from MULTIPLE strategies combined + user notes
-    generate: protectedProcedure
+    generate: appBuilderProcedure
       .input(z.object({
         strategies: z.array(z.object({
           id: z.string(), name: z.string(), description: z.string(), category: z.string().optional(),
@@ -1271,13 +1277,13 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         userNotes: z.string().max(5000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await incrementUsage(ctx.user.id);
+        await assertCredits(ctx.user, "ea_generate");
         const { generateCode } = await import("./services/ea-factory.js");
         return generateCode(input.strategies, input.sourceFiles, input.platform, input.outputType, input.userNotes || "");
       }),
 
     // Generate custom code from free-text + user notes
-    generateCustom: protectedProcedure
+    generateCustom: appBuilderProcedure
       .input(z.object({
         prompt: z.string().min(10).max(5000),
         sourceFiles: z.array(z.object({ name: z.string(), content: z.string() })),
@@ -1286,13 +1292,13 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         userNotes: z.string().max(5000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await incrementUsage(ctx.user.id);
+        await assertCredits(ctx.user, "ea_generate");
         const { generateCustomCode } = await import("./services/ea-factory.js");
         return generateCustomCode(input.prompt, input.sourceFiles, input.platform, input.outputType, input.userNotes || "");
       }),
 
     // Fix compile errors from MetaEditor
-    fixErrors: protectedProcedure
+    fixErrors: appBuilderProcedure
       .input(z.object({
         code: z.string().min(50),
         errors: z.string().min(5),
@@ -1301,7 +1307,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         userNotes: z.string().max(5000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await incrementUsage(ctx.user.id);
+        await assertCredits(ctx.user, "ea_fix");
         const { fixCompileErrors } = await import("./services/ea-factory.js");
         return fixCompileErrors(input.code, input.errors, input.platform, input.outputType, input.userNotes || "");
       }),
@@ -1310,7 +1316,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
   // ==================== Trading (OANDA Forex) ====================
   trading: router({
     // Test OANDA connection
-    testOanda: protectedProcedure
+    testOanda: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1322,7 +1328,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Get account summary
-    accountInfo: protectedProcedure
+    accountInfo: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1334,7 +1340,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Get live prices
-    prices: protectedProcedure
+    prices: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1347,7 +1353,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Place order
-    placeOrder: protectedProcedure
+    placeOrder: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1368,7 +1374,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Get open positions
-    positions: protectedProcedure
+    positions: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1380,7 +1386,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Get open trades
-    trades: protectedProcedure
+    trades: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1392,7 +1398,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Close trade
-    closeTrade: protectedProcedure
+    closeTrade: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1405,7 +1411,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
 
     // Auto-execute signal from TradingAnalysis page
-    autoExecute: protectedProcedure
+    autoExecute: tradingProcedure
       .input(z.object({
         apiToken: z.string(),
         accountId: z.string(),
@@ -1426,7 +1432,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         );
       }),
 
-    getCandles: protectedProcedure
+    getCandles: tradingProcedure
       .input(z.object({
         pair: z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
         interval: z.enum(["1min", "5min", "15min", "30min", "1h"]).default("1h"),
@@ -2484,9 +2490,16 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         }
 
         const expiresAt = new Date(now.getTime() + entry.code.durationDays * 24 * 60 * 60 * 1000);
-        await db.update(subscriptionCodes)
+        // Atomic claim: only succeeds while the code is STILL unredeemed. Closes
+        // the race where two concurrent requests both pass the SELECT above and
+        // would otherwise each redeem the same code.
+        const claimed = await db.update(subscriptionCodes)
           .set({ usedBy: ctx.user.id, usedAt: now, expiresAt, isActive: false })
-          .where(eq(subscriptionCodes.id, entry.code.id));
+          .where(and(eq(subscriptionCodes.id, entry.code.id), isNull(subscriptionCodes.usedBy)))
+          .returning({ id: subscriptionCodes.id });
+        if (!claimed[0]) {
+          throw new TRPCError({ code: "CONFLICT", message: "الكود استُخدم للتو من جلسة أخرى" });
+        }
 
         return { success: true, plan: entry.plan, expiresAt };
       }),
@@ -2498,19 +2511,13 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         return { todayCount: 0, dailyLimit: -1, planName: "owner", isLimited: false, hasActiveSub: true };
       }
       const { db } = await import("@workspace/db");
-      const { subscriptionCodes, subscriptionPlans, usageRecords } = await import("@workspace/db/schema");
-      const { eq, and, gt, isNotNull } = await import("drizzle-orm");
+      const { usageRecords } = await import("@workspace/db/schema");
+      const { eq, and } = await import("drizzle-orm");
       const now = new Date();
       const todayStr = now.toISOString().slice(0, 10); // "YYYY-MM-DD"
 
-      // Check active subscription code
-      const activeSub = await db.select({ plan: subscriptionPlans })
-        .from(subscriptionCodes)
-        .innerJoin(subscriptionPlans, eq(subscriptionCodes.planId, subscriptionPlans.id))
-        .where(and(eq(subscriptionCodes.usedBy, ctx.user.id), isNotNull(subscriptionCodes.usedAt), gt(subscriptionCodes.expiresAt, now)))
-        .limit(1);
-
-      const plan = activeSub[0]?.plan || { dailyMessageLimit: 10, monthlyMessageLimit: 100, name: "free" };
+      // Resolve the effective plan from BOTH subscriptions and codes (unified).
+      const { plan, source } = await getEffectivePlan(ctx.user.id);
 
       const usage = await db.select().from(usageRecords)
         .where(and(eq(usageRecords.userId, ctx.user.id), eq(usageRecords.date, todayStr)))
@@ -2525,7 +2532,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         dailyLimit: plan.dailyMessageLimit,
         planName: plan.name,
         isLimited,
-        hasActiveSub: activeSub.length > 0,
+        hasActiveSub: source !== "free",
       };
     }),
 
@@ -2602,11 +2609,21 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
 
         const { db } = await import("@workspace/db");
         const { subscriptionCodes, subscriptionPlans } = await import("@workspace/db/schema");
-        const { eq } = await import("drizzle-orm");
+        const { eq, like } = await import("drizzle-orm");
         const { randomBytes } = await import("crypto");
 
         const planRows = await db.select().from(subscriptionPlans).where(eq(subscriptionPlans.name, planName)).limit(1);
         if (!planRows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "الخطة غير موجودة" });
+
+        // Idempotency: a paid checkout session may only ever grant ONE entitlement.
+        // If this session was already processed, return the existing record instead
+        // of minting another code (prevents replaying a single payment for many codes).
+        const existing = await db.select().from(subscriptionCodes)
+          .where(like(subscriptionCodes.note, `Stripe: ${session.id}%`))
+          .limit(1);
+        if (existing[0]) {
+          return { success: true, plan: planRows[0], expiresAt: existing[0].expiresAt, code: existing[0].code, alreadyProcessed: true };
+        }
 
         const code = `STRIPE-${randomBytes(4).toString("hex").toUpperCase()}`;
         const now = new Date();
@@ -2673,61 +2690,61 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
 
   // ==================== OSINT Intelligence Tools ====================
   osint: router({
-    ipLookup: protectedProcedure
+    ipLookup: osintProcedure
       .input(z.object({ ip: z.string().min(4).max(50) }))
       .mutation(async ({ input }) => {
         const { ipLookup } = await import("./services/osint.js");
         return ipLookup(input.ip);
       }),
-    whoisLookup: protectedProcedure
+    whoisLookup: osintProcedure
       .input(z.object({ domain: z.string().min(3).max(200) }))
       .mutation(async ({ input }) => {
         const { whoisLookup } = await import("./services/osint.js");
         return whoisLookup(input.domain);
       }),
-    dnsLookup: protectedProcedure
+    dnsLookup: osintProcedure
       .input(z.object({ domain: z.string().min(3).max(200), type: z.string().default("A") }))
       .mutation(async ({ input }) => {
         const { dnsLookup } = await import("./services/osint.js");
         return dnsLookup(input.domain, input.type);
       }),
-    emailBreachCheck: protectedProcedure
+    emailBreachCheck: osintProcedure
       .input(z.object({ email: z.string().email() }))
       .mutation(async ({ input }) => {
         const { emailBreachCheck } = await import("./services/osint.js");
         return emailBreachCheck(input.email);
       }),
-    usernameSearch: protectedProcedure
+    usernameSearch: osintProcedure
       .input(z.object({ username: z.string().min(2).max(50) }))
       .mutation(async ({ input }) => {
         const { usernameSearch } = await import("./services/osint.js");
         return usernameSearch(input.username);
       }),
-    phoneLookup: protectedProcedure
+    phoneLookup: osintProcedure
       .input(z.object({ phone: z.string().min(5).max(20) }))
       .mutation(async ({ input }) => {
         const { phoneLookup } = await import("./services/osint.js");
         return phoneLookup(input.phone);
       }),
-    techLookup: protectedProcedure
+    techLookup: osintProcedure
       .input(z.object({ url: z.string().min(3).max(200) }))
       .mutation(async ({ input }) => {
         const { techLookup } = await import("./services/osint.js");
         return techLookup(input.url);
       }),
-    sslLookup: protectedProcedure
+    sslLookup: osintProcedure
       .input(z.object({ domain: z.string().min(3).max(200) }))
       .mutation(async ({ input }) => {
         const { sslLookup } = await import("./services/osint.js");
         return sslLookup(input.domain);
       }),
-    subdomainSearch: protectedProcedure
+    subdomainSearch: osintProcedure
       .input(z.object({ domain: z.string().min(3).max(200) }))
       .mutation(async ({ input }) => {
         const { subdomainSearch } = await import("./services/osint.js");
         return subdomainSearch(input.domain);
       }),
-    phoneLocalLookup: protectedProcedure
+    phoneLocalLookup: osintProcedure
       .input(z.object({ phone: z.string().min(6).max(20) }))
       .mutation(async ({ input, ctx }) => {
         const { phoneLocalLookup, logOsintSearch } = await import("./services/osint.js");
@@ -2735,52 +2752,52 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         await logOsintSearch(ctx.user.id, "phone_local", input.phone, result.totalResults);
         return result;
       }),
-    coverageStats: protectedProcedure
+    coverageStats: osintProcedure
       .query(async () => {
         const { getCoverageStats } = await import("./services/osint.js");
         return getCoverageStats();
       }),
 
-    importStats: protectedProcedure
+    importStats: osintProcedure
       .query(async () => {
         const { getImportStats } = await import("./services/osint-import.js");
         return getImportStats();
       }),
 
-    importFromCSV: protectedProcedure
+    importFromCSV: osintProcedure
       .input(z.object({ csvContent: z.string().min(10), sourceName: z.string().min(1).max(100) }))
       .mutation(async ({ input }) => {
         const { importFromCSVContent } = await import("./services/osint-import.js");
         return importFromCSVContent(input.csvContent, input.sourceName);
       }),
 
-    importFromGoogleDrive: protectedProcedure
+    importFromGoogleDrive: osintProcedure
       .input(z.object({ fileId: z.string().min(1), sourceName: z.string().optional() }))
       .mutation(async ({ input }) => {
         const { importFromGoogleDrive } = await import("./services/osint-import.js");
         return importFromGoogleDrive(input.fileId, input.sourceName || "");
       }),
 
-    listGoogleDriveFiles: protectedProcedure
+    listGoogleDriveFiles: osintProcedure
       .query(async () => {
         const { listGoogleDriveFiles } = await import("./services/osint-import.js");
         return listGoogleDriveFiles();
       }),
 
-    importFromObjectStorage: protectedProcedure
+    importFromObjectStorage: osintProcedure
       .input(z.object({ filePath: z.string().min(1), sourceName: z.string().optional() }))
       .mutation(async ({ input }) => {
         const { importFromObjectStorage } = await import("./services/osint-import.js");
         return importFromObjectStorage(input.filePath, input.sourceName || "");
       }),
 
-    listObjectStorageFiles: protectedProcedure
+    listObjectStorageFiles: osintProcedure
       .query(async () => {
         const { listObjectStorageFiles } = await import("./services/osint-import.js");
         return listObjectStorageFiles();
       }),
 
-    importFromSupabase: protectedProcedure
+    importFromSupabase: osintProcedure
       .input(z.object({
         connectionUrl: z.string().min(10),
         tableName: z.string().min(1),
@@ -2791,21 +2808,21 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         return importFromSupabase(input.connectionUrl, input.tableName, input.sourceName || "");
       }),
 
-    listSupabaseTables: protectedProcedure
+    listSupabaseTables: osintProcedure
       .input(z.object({ connectionUrl: z.string().min(10) }))
       .mutation(async ({ input }) => {
         const { listSupabaseTables } = await import("./services/osint-import.js");
         return listSupabaseTables(input.connectionUrl);
       }),
 
-    deleteBySource: protectedProcedure
+    deleteBySource: osintProcedure
       .input(z.object({ source: z.string().min(1) }))
       .mutation(async ({ input }) => {
         const { deleteContactsBySource } = await import("./services/osint-import.js");
         return deleteContactsBySource(input.source);
       }),
 
-    clearAllContacts: protectedProcedure
+    clearAllContacts: osintProcedure
       .mutation(async () => {
         const { clearAllContacts } = await import("./services/osint-import.js");
         return clearAllContacts();
@@ -3005,10 +3022,112 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }),
   }),
 
+  // ==================== Ethical Pentest Engine ====================
+  pentest: router({
+    // Return the per-host ownership token + how to publish it (web active scans).
+    getOwnershipToken: appBuilderProcedure
+      .input(z.object({ target: z.string().min(3).max(300) }))
+      .query(async ({ input, ctx }) => {
+        const { ownershipToken, normalizeHost, VERIFY_FILE_PATH, VERIFY_DNS_PREFIX } = await import("./pentest/authorization.js");
+        const host = normalizeHost(input.target);
+        const token = ownershipToken(ctx.user.id, host);
+        return {
+          host,
+          token,
+          file: { path: VERIFY_FILE_PATH, content: token },
+          dns: { type: "TXT", value: `${VERIFY_DNS_PREFIX}${token}` },
+        };
+      }),
+
+    // Authorized active web scan → unified, evidence-backed findings.
+    scanWeb: appBuilderProcedure
+      .input(z.object({
+        target: z.string().min(3).max(300),
+        authorized: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized,
+          userId: ctx.user.id,
+          target: "web",
+          subject: input.target,
+          ip: ctx.req.ip,
+        });
+        if (!auth.allowed) {
+          throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح بفحص هذا الهدف", cause: { token: auth.token } });
+        }
+        const { runWebScan } = await import("./pentest/webEngine.js");
+        return runWebScan(input.target);
+      }),
+
+    // Authorized Android (APK) scan over a decompiled session.
+    scanAndroid: appBuilderProcedure
+      .input(z.object({
+        sessionId: z.string().min(3).max(200),
+        authorized: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized, userId: ctx.user.id, target: "android", subject: input.sessionId, ip: ctx.req.ip,
+        });
+        if (!auth.allowed) throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح" });
+        const { runAndroidScan } = await import("./pentest/androidEngine.js");
+        return runAndroidScan(input.sessionId);
+      }),
+
+    // Authorized wallet scan (public on-chain data only).
+    scanWallet: appBuilderProcedure
+      .input(z.object({
+        address: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "عنوان EVM غير صالح"),
+        chain: z.enum(["ETH", "BSC"]).default("ETH"),
+        authorized: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized, userId: ctx.user.id, target: "wallet", subject: input.address, ip: ctx.req.ip,
+        });
+        if (!auth.allowed) throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح" });
+        const { runWalletScan } = await import("./pentest/walletEngine.js");
+        return runWalletScan(input.address, input.chain);
+      }),
+
+    // ── Hybrid dynamic analysis (local Frida companion agent) ──────────
+    // Pair a local agent run to a decompiled session; returns the run command.
+    startDynamic: appBuilderProcedure
+      .input(z.object({ sessionId: z.string().min(3).max(200), package: z.string().min(1).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        const { issueDynamicToken } = await import("./pentest/dynamic.js");
+        const { token, expiresAt } = issueDynamicToken(ctx.user.id, input.sessionId);
+        const server = (process.env.APP_URL || "").replace(/\/$/, "") || "https://<your-app-url>";
+        return {
+          token,
+          expiresAt,
+          command: `python agent.py --server ${server} --token ${token} --package ${input.package}`,
+          note: "شغّل هذا الأمر على جهازك مع محاكي أندرويد يعمل و frida-server نشط. النتائج تُدمج تلقائياً.",
+        };
+      }),
+
+    // Fetch the dynamic findings the agent has posted for a session.
+    getDynamicResults: appBuilderProcedure
+      .input(z.object({ sessionId: z.string().min(3).max(200) }))
+      .query(async ({ input }) => {
+        const { getDynamicFindings } = await import("./pentest/dynamic.js");
+        const { summarizeThreat } = await import("./pentest/types.js");
+        const findings = getDynamicFindings(input.sessionId);
+        return { findings, summary: summarizeThreat(findings) };
+      }),
+  }),
+
   // ==================== App Builds (EAS) ====================
   builds: router({
     // Create a new APK build
-    create: protectedProcedure
+    create: appBuilderProcedure
       .input(z.object({
         appName: z.string().min(2).max(60),
         description: z.string().min(10).max(3000),
@@ -3020,6 +3139,8 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         customKeystoreBase64: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        // Charge build credits up front (admins bypass). Throws if out of credits.
+        await assertCredits(ctx.user, "app_build");
         const { db } = await import("@workspace/db");
         const { appBuilds } = await import("@workspace/db/schema");
 

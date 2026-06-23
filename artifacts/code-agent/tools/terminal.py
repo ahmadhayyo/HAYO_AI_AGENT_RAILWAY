@@ -21,11 +21,28 @@ Design decisions
 from __future__ import annotations
 
 import subprocess
+import os
+import re
 import shlex
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from langchain_core.tools import tool
+
+# Environment keys matching this pattern are stripped before any command runs,
+# so a denylist bypass still cannot read platform secrets (API keys, DB creds…).
+_SECRET_ENV_PATTERN = re.compile(
+    r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|DATABASE_URL|DB_URL|STRIPE|"
+    r"ANTHROPIC|OPENAI|GEMINI|GOOGLE_API|GROQ|MISTRAL|DEEPSEEK|TELEGRAM|OANDA|"
+    r"TWELVE|SESSION_SECRET|JWT|EXPO_|PRIVATE|_AUTH|WEBHOOK|SIGNING|SMTP|SENTRY|"
+    r"REDIS_URL)",
+    re.IGNORECASE,
+)
+
+
+def _safe_env() -> Dict[str, str]:
+    """Return os.environ minus every secret-looking key (primary RCE defence)."""
+    return {k: v for k, v in os.environ.items() if not _SECRET_ENV_PATTERN.search(k)}
 
 # ---------------------------------------------------------------------------
 # Safety denylist — commands that must never be executed
@@ -139,6 +156,7 @@ def execute_bash_command(
             timeout=effective_timeout,
             encoding="utf-8",
             errors="replace",
+            env=_safe_env(),
         )
     except subprocess.TimeoutExpired:
         return (

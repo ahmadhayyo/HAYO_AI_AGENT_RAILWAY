@@ -8,15 +8,29 @@ import reverseRouter from "./reverse";
 import telegramRouter from "./telegram";
 import extractArchiveRouter from "./extract-archive";
 import agentRouter from "./agent";
+import pentestRouter from "./pentest";
+import { requireAuth, requireFeature } from "../middlewares/requireAuth";
 
 const router: IRouter = Router();
+
+// ── Public routes ────────────────────────────────────────────────
+// health: liveness probe. chat-stream: performs its own auth internally.
+// telegram: inbound webhooks (verified by Telegram secret token, not a session).
 router.use(healthRouter);
 router.use(chatStreamRouter);
-router.use(officeRouter);
-router.use(studiesRouter);
-router.use(promptFactoryRouter);
-router.use("/reverse", reverseRouter);
 router.use(telegramRouter);
-router.use(extractArchiveRouter);
-router.use(agentRouter);
+// Dynamic-agent ingestion: authenticated by a pairing token in the path, not a cookie.
+router.use(pentestRouter);
+
+// ── Authenticated feature routes ─────────────────────────────────
+// These power expensive tools (LLM calls, decompilation, builds) and must not
+// be reachable anonymously.
+// office / studies / prompt-factory: available to all signed-in tiers (credit-metered).
+router.use(requireAuth, officeRouter);
+router.use(requireAuth, studiesRouter);
+router.use(requireAuth, promptFactoryRouter);
+router.use(requireAuth, extractArchiveRouter);
+// reverse engineering & code agent: higher-tier features → gated by plan flag.
+router.use("/reverse", requireAuth, requireFeature("canUseReverse"), reverseRouter);
+router.use(requireAuth, requireFeature("canUseCodeAgent"), agentRouter);
 export default router;
