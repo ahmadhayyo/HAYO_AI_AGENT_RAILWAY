@@ -111,8 +111,12 @@ export async function authenticateRequest(req: Request): Promise<User | null> {
     }
     return user;
   } catch (err: any) {
-    console.warn("[Auth] Failed to fetch user from database:", err.message);
-    return null;
+    // A VALID token means the request is authenticated; a transient DB read
+    // failure must NOT blank the session — doing so downgraded the owner to a
+    // "free" account view mid-session. Fall back to the identity carried in the
+    // token (which preserves the role, e.g. admin) instead of returning null.
+    console.warn("[Auth] DB fetch failed — falling back to token identity:", err.message);
+    return { id: payload.userId, role: payload.role } as unknown as User;
   }
 }
 
