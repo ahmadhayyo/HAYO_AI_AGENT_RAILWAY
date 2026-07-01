@@ -88,6 +88,42 @@ app.get("/api/healthz", (req, res) => {
   res.sendStatus(200);
 });
 
+// ─── TEMP diagnostic: what does the server resolve from THIS session? ──
+// Read-only, shows only the caller's own session. Used to debug the owner
+// account flip. Visit /api/whoami in the browser in both states.
+app.get("/api/whoami", async (req, res) => {
+  try {
+    const { authenticateRequest, isOwnerEmail, OWNER_EMAIL } = await import("./hayo/auth.js");
+    const user = await authenticateRequest(req);
+
+    // If the caller is the owner, also dump every row sharing the owner email
+    // (exact email string in brackets to expose stray whitespace) so we can see
+    // the duplicate account(s) and their roles.
+    let ownerEmailAccounts: any[] = [];
+    if (user && isOwnerEmail(user.email)) {
+      const { db } = await import("@workspace/db");
+      const { users } = await import("@workspace/db/schema");
+      const { sql } = await import("drizzle-orm");
+      const rows = await db.select().from(users)
+        .where(sql`lower(trim(${users.email})) = ${OWNER_EMAIL.toLowerCase()}`);
+      ownerEmailAccounts = rows.map((r: any) => ({ id: r.id, email: `[${r.email}]`, role: r.role, loginMethod: r.loginMethod }));
+    }
+
+    res.json({
+      hasCookie: !!(req as any).cookies?.["app_session_id"],
+      userId: user?.id ?? null,
+      email: user?.email ? `[${user.email}]` : null,
+      role: user?.role ?? null,
+      matchesOwnerEmail: user ? isOwnerEmail(user.email) : false,
+      ownerEmailConfigured: OWNER_EMAIL,
+      ownerEmailAccounts,
+      serverTime: new Date().toISOString(),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message });
+  }
+});
+
 app.use(
   "/api/trpc",
   createExpressMiddleware({
