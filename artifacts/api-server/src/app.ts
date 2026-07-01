@@ -428,17 +428,23 @@ async function initTelegramBots() {
   if (tradingToken || bridgeToken) {
     let watchdogRunning = false;
 
+    // Watchdog: verify the webhook still points at us and re-register ONLY if it
+    // drifted (ensureWebhook does a getWebhookInfo check first). The previous
+    // version called setWebhook unconditionally every 3s (~20 calls/min), which
+    // hit Telegram's setWebhook rate limit (429) and could get the webhook
+    // temporarily deactivated — making the bot appear to "stop". A 2-minute
+    // check-then-register is ample to recover from any real drift.
     setInterval(async () => {
       if (watchdogRunning) return;
       watchdogRunning = true;
       try {
-        if (tradingToken) await registerWebhook(tradingToken, webhookTrading, "[TelegramBot-1]", true);
-        await new Promise(r => setTimeout(r, 200));
-        if (bridgeToken) await registerWebhook(bridgeToken, webhookBridge, "[TelegramBot-2]", true);
+        if (tradingToken) await ensureWebhook(tradingToken, webhookTrading, "[TelegramBot-1]");
+        await new Promise(r => setTimeout(r, 500));
+        if (bridgeToken) await ensureWebhook(bridgeToken, webhookBridge, "[TelegramBot-2]");
       } finally {
         watchdogRunning = false;
       }
-    }, 3_000);
+    }, 120_000);
   }
 }
 
