@@ -642,8 +642,8 @@ router.post("/cloud-pentest", async (req: Request, res: Response) => {
   const { sessionId } = req.body as { sessionId: string };
   if (!sessionId) { res.status(400).json({ error: "sessionId مطلوب" }); return; }
   try {
-    const { runCloudPentest } = await import("../hayo/services/reverse-engineer.js");
-    const result = await runCloudPentest(sessionId);
+    const { runLegacyAndroidScan } = await import("../hayo/pentest/legacyAndroid.js");
+    const result = await runLegacyAndroidScan(sessionId);
     res.json(result);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -669,9 +669,10 @@ router.post("/cloud-pentest-full", upload.single("file"), async (req: Request, r
   extendTimeout(req, res, 600_000);
   if (!req.file) { res.status(400).json({ error: "ارفع ملف APK أولاً" }); return; }
   try {
-    const { decompileFileForEdit, runCloudPentest } = await import("../hayo/services/reverse-engineer.js");
+    const { decompileFileForEdit } = await import("../hayo/services/reverse-engineer.js");
+    const { runLegacyAndroidScan } = await import("../hayo/pentest/legacyAndroid.js");
     const editResult = await decompileFileForEdit(readUploadedFile(req.file), req.file.originalname);
-    const pentestResult = await runCloudPentest(editResult.sessionId);
+    const pentestResult = await runLegacyAndroidScan(editResult.sessionId);
     const result = {
       ...pentestResult,
       sessionId: editResult.sessionId,
@@ -1405,13 +1406,13 @@ router.get("/stream/sequential-pipeline", async (req: Request, res: Response) =>
       sessionId = editResult.sessionId;
     }
 
-    const { runCloudPentest } = await import("../hayo/services/reverse-engineer.js");
+    const { runLegacyAndroidScan } = await import("../hayo/pentest/legacyAndroid.js");
     const stepNames = ["تفكيك APK", "استخراج التوكن", "المفاتيح", "IDOR", "استغلال", "سحب DB", "Telegram", "سكريبت + تقرير"];
     for (let i = 0; i < stepNames.length; i++) {
       sseSend(res, `[PHASE B] الخطوة ${i + 1}/8: ${stepNames[i]}...`);
     }
 
-    cpResultData = await runCloudPentest(sessionId);
+    cpResultData = await runLegacyAndroidScan(sessionId);
     const riskScore = cpResultData?.summary?.riskScore || 0;
     const secretCount = cpResultData?.steps?.reduce((acc: number, s: any) => acc + (s?.findings?.length || 0), 0) || 0;
     sseSend(res, `[PHASE B] اكتمل — درجة الخطورة: ${riskScore}/100 — ${secretCount} نتائج`);
