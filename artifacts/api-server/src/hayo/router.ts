@@ -46,7 +46,7 @@ import {
   updateConversationTitle, deleteConversation,
   addMessage, getConversationMessages,
   saveUploadedFile, getUserFiles, getFileById,
-  getActivePlans, getPlanById, seedDefaultPlans, seedOwnerAccount,
+  getActivePlans, getPlanById, seedDefaultPlans, seedOwnerAccount, ensureSubscriptionSchema,
   getUserActiveSubscription, createSubscription, getEffectivePlan,
   getOrCreateDailyUsage, incrementUsage,
   checkCredits, deductCredits, CREDIT_COSTS,
@@ -57,8 +57,16 @@ import { assertCredits } from "./access";
 import { invokeLLM, type Message } from "./llm";
 import { callProvider, getAvailableProviders, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "./providers";
 
-// Delay seeding to allow healthcheck to pass first
-setTimeout(() => {
+// Delay seeding to allow healthcheck to pass first. Ensure the schema is in
+// sync FIRST (adds any columns the production DB is missing) — otherwise seeds
+// and plans.list throw "column does not exist" and the whole subscription UI
+// (plan dropdown, code generation) breaks.
+setTimeout(async () => {
+  try {
+    await ensureSubscriptionSchema();
+  } catch (err) {
+    console.error("[Schema] ensureSubscriptionSchema failed:", err);
+  }
   seedDefaultPlans().catch(err => console.error("[Seed] Failed to seed plans:", err));
   seedOwnerAccount().catch(err => console.error("[Seed] Failed to seed owner:", err));
 }, 5000);

@@ -207,6 +207,71 @@ export async function getPlanById(id: number): Promise<SubscriptionPlan | undefi
   return result[0];
 }
 
+/**
+ * Idempotently ensure the subscription tables have every column the current
+ * schema expects. Root cause of the broken plan dropdown + code generation: the
+ * production DB drifted out of sync (Railway's boot `drizzle-kit push` step was
+ * failing silently — its error is swallowed by `|| echo "warning"`), so
+ * plans.list / getEffectivePlan threw "column ... does not exist" 500s.
+ * `ADD COLUMN IF NOT EXISTS` is a no-op when the column already exists, so this
+ * is safe to run on every boot and needs no drizzle-kit.
+ */
+export async function ensureSubscriptionSchema(): Promise<void> {
+  if (!db) return;
+  const ddl: string[] = [
+    // ── subscriptionPlans ──
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "displayName" varchar(128) NOT NULL DEFAULT ''`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "description" text`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "priceMonthly" integer NOT NULL DEFAULT 0`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "priceYearly" integer NOT NULL DEFAULT 0`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "dailyMessageLimit" integer NOT NULL DEFAULT 10`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "monthlyMessageLimit" integer NOT NULL DEFAULT 100`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "monthlyCredits" integer NOT NULL DEFAULT 50`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "dailyCreditLimit" integer NOT NULL DEFAULT 10`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "allowedModels" varchar(128) NOT NULL DEFAULT 'haiku'`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "maxAgentPipelines" integer NOT NULL DEFAULT 0`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "maxWarRoomBattles" integer NOT NULL DEFAULT 0`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "maxFileUploadMB" integer NOT NULL DEFAULT 5`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "maxCodeExecutionSec" integer NOT NULL DEFAULT 30`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseWebSearch" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseImageGen" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseFileCreation" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseSandbox" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseReverse" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseAppBuilder" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseCodeAgent" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseTrading" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "canUseOsint" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "prioritySupport" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "isActive" boolean NOT NULL DEFAULT true`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "sortOrder" integer NOT NULL DEFAULT 0`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "createdAt" timestamp NOT NULL DEFAULT now()`,
+    `ALTER TABLE "subscriptionPlans" ADD COLUMN IF NOT EXISTS "updatedAt" timestamp NOT NULL DEFAULT now()`,
+    // ── subscriptionCodes (FK/NOT-NULL columns added nullable to avoid failing on existing rows) ──
+    `ALTER TABLE "subscriptionCodes" ADD COLUMN IF NOT EXISTS "durationDays" integer NOT NULL DEFAULT 30`,
+    `ALTER TABLE "subscriptionCodes" ADD COLUMN IF NOT EXISTS "createdBy" integer`,
+    `ALTER TABLE "subscriptionCodes" ADD COLUMN IF NOT EXISTS "usedBy" integer`,
+    `ALTER TABLE "subscriptionCodes" ADD COLUMN IF NOT EXISTS "usedAt" timestamp`,
+    `ALTER TABLE "subscriptionCodes" ADD COLUMN IF NOT EXISTS "expiresAt" timestamp`,
+    `ALTER TABLE "subscriptionCodes" ADD COLUMN IF NOT EXISTS "note" text`,
+    `ALTER TABLE "subscriptionCodes" ADD COLUMN IF NOT EXISTS "isActive" boolean NOT NULL DEFAULT true`,
+    `ALTER TABLE "subscriptionCodes" ADD COLUMN IF NOT EXISTS "createdAt" timestamp NOT NULL DEFAULT now()`,
+    // ── subscriptions ──
+    `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "amountPaid" integer NOT NULL DEFAULT 0`,
+    `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "paymentInfo" text`,
+    `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "startDate" timestamp`,
+    `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "endDate" timestamp`,
+    `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "createdAt" timestamp NOT NULL DEFAULT now()`,
+    `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "updatedAt" timestamp NOT NULL DEFAULT now()`,
+  ];
+  let ok = 0;
+  for (const stmt of ddl) {
+    try { await db.execute(sql.raw(stmt)); ok++; }
+    catch (e: any) { console.warn("[Schema] ensure failed:", stmt.slice(0, 70), "—", e?.message); }
+  }
+  console.log(`[Schema] ensureSubscriptionSchema: ${ok}/${ddl.length} statements applied`);
+}
+
 export async function seedDefaultPlans(): Promise<void> {
   if (!db) {
     console.warn("[Seed] Database not available — skipping default plans seed");
