@@ -9,7 +9,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, and, sql, gte, lte, count, isNotNull, gt } from "drizzle-orm";
 import { createHash, randomBytes } from "crypto";
-import { hashPassword, verifyPassword, isLegacyHash, OWNER_EMAIL } from "./auth";
+import { hashPassword, verifyPassword, isLegacyHash, OWNER_EMAIL, isOwnerEmail } from "./auth";
 
 export type { User, Conversation, MessageRow, UploadedFile, SubscriptionPlan, Subscription, ApiKey, UsageRecord, Integration };
 
@@ -71,22 +71,36 @@ export async function createUser(data: { name: string; email: string; password: 
 
 export async function loginUser(email: string, password: string): Promise<User> {
   const normalizedEmail = email.toLowerCase().trim();
-  const result = await db.select().from(users).where(sql`lower(${users.email}) = ${normalizedEmail}`).limit(1);
-  const user = result[0];
-  if (!user) throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
-  if (!user.passwordHash) throw new Error("يرجى استخدام طريقة تسجيل الدخول الصحيحة");
+  // Fetch ALL rows for this email. There can legitimately be duplicates (e.g. an
+  // account created via password + one seeded/created by another path); without
+  // an explicit choice, `LIMIT 1` returns an arbitrary row, which is why the
+  // owner sometimes logged into the admin account and sometimes a "free" one.
+  const rows = await db.select().from(users).where(sql`lower(${users.email}) = ${normalizedEmail}`);
+  if (rows.length === 0) throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
 
-  if (!verifyPassword(password, user.passwordHash)) {
-    throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
+  // Authenticate against whichever duplicate actually holds the correct password.
+  const matched = rows.find((u: User) => u.passwordHash && verifyPassword(password, u.passwordHash));
+  if (!matched) throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة");
+
+  // Resolve the account to log into. For the OWNER email we always collapse onto
+  // ONE canonical owner account (an existing admin row, else the oldest) and
+  // guarantee it is admin — so the owner can never land on a duplicate free
+  // account regardless of which row their password matched.
+  let account = matched;
+  if (isOwnerEmail(normalizedEmail)) {
+    account = rows.find((u: User) => u.role === "admin") ?? [...rows].sort((a: User, b: User) => a.id - b.id)[0];
+    if (account.role !== "admin") {
+      await db.update(users).set({ role: "admin", updatedAt: new Date() }).where(eq(users.id, account.id));
+      account.role = "admin";
+    }
   }
 
-  // Transparently upgrade legacy sha256 hashes to scrypt on successful login.
-  const patch: Record<string, unknown> = { lastSignedIn: new Date(), updatedAt: new Date() };
-  if (isLegacyHash(user.passwordHash)) {
-    patch.passwordHash = hashPassword(password);
+  // Transparently upgrade the legacy sha256 hash on the row that verified.
+  if (isLegacyHash(matched.passwordHash)) {
+    await db.update(users).set({ passwordHash: hashPassword(password), updatedAt: new Date() }).where(eq(users.id, matched.id));
   }
-  await db.update(users).set(patch).where(eq(users.id, user.id));
-  return user;
+  await db.update(users).set({ lastSignedIn: new Date(), updatedAt: new Date() }).where(eq(users.id, account.id));
+  return account;
 }
 
 export async function getUserById(id: number): Promise<User | undefined> {
