@@ -761,9 +761,9 @@ router.post("/unified-web-scan", async (req: Request, res: Response) => {
   try {
     const targetUrl = url.trim();
 
-    // Phase 1: Cipher-7 Web Pentest (25 stages)
-    const { runWebPentest } = await import("../hayo/services/reverse-engineer.js");
-    const pentestResult = await runWebPentest(targetUrl);
+    // Phase 1: precise engine (payload-confirmed findings, no false positives)
+    const { runLegacyWebScan } = await import("../hayo/pentest/legacyWeb.js");
+    const pentestResult = await runLegacyWebScan(targetUrl);
 
     // Phase 2: Headless Browser Analysis (Puppeteer)
     let headlessResult: any = null;
@@ -800,8 +800,8 @@ router.post("/web-pentest-full", async (req: Request, res: Response) => {
     return;
   }
   try {
-    const { runWebPentest } = await import("../hayo/services/reverse-engineer.js");
-    const pentestResult = await runWebPentest(url.trim());
+    const { runLegacyWebScan } = await import("../hayo/pentest/legacyWeb.js");
+    const pentestResult = await runLegacyWebScan(url.trim());
 
     try {
       await sendPentestToTelegram(pentestResult);
