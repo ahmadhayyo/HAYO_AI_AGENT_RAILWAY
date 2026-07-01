@@ -88,42 +88,6 @@ app.get("/api/healthz", (req, res) => {
   res.sendStatus(200);
 });
 
-// ─── TEMP diagnostic: what does the server resolve from THIS session? ──
-// Read-only, shows only the caller's own session. Used to debug the owner
-// account flip. Visit /api/whoami in the browser in both states.
-app.get("/api/whoami", async (req, res) => {
-  try {
-    const { authenticateRequest, isOwnerEmail, OWNER_EMAIL } = await import("./hayo/auth.js");
-    const user = await authenticateRequest(req);
-
-    // If the caller is the owner, also dump every row sharing the owner email
-    // (exact email string in brackets to expose stray whitespace) so we can see
-    // the duplicate account(s) and their roles.
-    let ownerEmailAccounts: any[] = [];
-    if (user && isOwnerEmail(user.email)) {
-      const { db } = await import("@workspace/db");
-      const { users } = await import("@workspace/db/schema");
-      const { sql } = await import("drizzle-orm");
-      const rows = await db.select().from(users)
-        .where(sql`lower(trim(${users.email})) = ${OWNER_EMAIL.toLowerCase()}`);
-      ownerEmailAccounts = rows.map((r: any) => ({ id: r.id, email: `[${r.email}]`, role: r.role, loginMethod: r.loginMethod }));
-    }
-
-    res.json({
-      hasCookie: !!(req as any).cookies?.["app_session_id"],
-      userId: user?.id ?? null,
-      email: user?.email ? `[${user.email}]` : null,
-      role: user?.role ?? null,
-      matchesOwnerEmail: user ? isOwnerEmail(user.email) : false,
-      ownerEmailConfigured: OWNER_EMAIL,
-      ownerEmailAccounts,
-      serverTime: new Date().toISOString(),
-    });
-  } catch (e: any) {
-    res.status(500).json({ error: e?.message });
-  }
-});
-
 app.use(
   "/api/trpc",
   createExpressMiddleware({
@@ -135,7 +99,10 @@ app.use(
   }) as unknown as RequestHandler,
 );
 
-app.use("/api", router);
+// NOTE: the main `/api` REST router is mounted LATER (after the Telegram webhook
+// receivers below). routes/index applies requireAuth globally, so mounting it
+// here would make Telegram's cookieless webhook POSTs hit requireAuth → 401,
+// silently killing the bots.
 
 // ─── Reverse Engineer + Fixer REST Routes (authenticated) ────────
 // NOTE: `/api/reverse` is already mounted (auth-protected) inside the `/api`
@@ -340,6 +307,14 @@ app.post("/api/telegram/webhook/:userId", async (req, res) => {
     logger.error({ err: err.message }, "[UserBot] Webhook handler error");
   }
 });
+
+// ─── Main /api REST router — mounted AFTER the Telegram webhook receivers ─────
+// routes/index applies requireAuth globally (router.use(requireAuth, …)). The
+// Telegram webhook POSTs above carry no session cookie, so if `/api` were mounted
+// before them those requests would hit requireAuth and return 401 Unauthorized —
+// which is exactly what silently broke the bots. The secret-verified receivers
+// above now match first; everything else falls through to this router.
+app.use("/api", router);
 
 /** Derive a stable secret token from the bot token (sha256 hex, first 64 chars) */
 function webhookSecret(botToken: string): string {
