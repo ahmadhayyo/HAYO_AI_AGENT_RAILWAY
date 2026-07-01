@@ -9,7 +9,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, and, sql, gte, lte, count, isNotNull, gt } from "drizzle-orm";
 import { createHash, randomBytes } from "crypto";
-import { hashPassword, verifyPassword, isLegacyHash } from "./auth";
+import { hashPassword, verifyPassword, isLegacyHash, OWNER_EMAIL } from "./auth";
 
 export type { User, Conversation, MessageRow, UploadedFile, SubscriptionPlan, Subscription, ApiKey, UsageRecord, Integration };
 
@@ -38,7 +38,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     });
 }
 
-const OWNER_EMAIL = "Fmf0038@gmail.com";
+// OWNER_EMAIL is defined in ./auth (env-overridable, single source of truth).
 
 export async function createUser(data: { name: string; email: string; password: string }): Promise<User> {
   const normalizedEmail = data.email.toLowerCase().trim();

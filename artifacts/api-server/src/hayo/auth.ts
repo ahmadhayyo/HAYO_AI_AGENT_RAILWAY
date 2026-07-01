@@ -13,6 +13,17 @@ const SESSION_TTL = "30d"; // shorter-lived sessions reduce stolen-token exposur
 
 export { COOKIE_NAME };
 
+/**
+ * Platform owner email. The owner ALWAYS has admin privileges — this is the
+ * single source of truth (env-overridable). Enforced on every request in
+ * authenticateRequest so the owner can never be silently downgraded to a
+ * regular/trial account by any DB drift, reseed, or race.
+ */
+export const OWNER_EMAIL = (process.env.OWNER_EMAIL || "Fmf0038@gmail.com").trim();
+export function isOwnerEmail(email: string | null | undefined): boolean {
+  return !!email && email.toLowerCase() === OWNER_EMAIL.toLowerCase();
+}
+
 const SCRYPT_PREFIX = "scrypt$";
 
 /**
@@ -85,7 +96,19 @@ export async function authenticateRequest(req: Request): Promise<User | null> {
 
   try {
     const result = await db.select().from(users).where(eq(users.id, payload.userId)).limit(1);
-    return result[0] ?? null;
+    const user = result[0] ?? null;
+    if (!user) return null;
+
+    // The owner ALWAYS resolves as admin, on every request. This makes owner
+    // privileges immune to any DB role drift/reseed/race that previously caused
+    // the account to appear as a regular "trial" user after a refresh/navigation.
+    if (isOwnerEmail(user.email) && user.role !== "admin") {
+      user.role = "admin";
+      // Self-heal the stored role in the background (best-effort, non-blocking).
+      db.update(users).set({ role: "admin" }).where(eq(users.id, user.id))
+        .catch((e: any) => console.warn("[Auth] owner role self-heal failed:", e?.message));
+    }
+    return user;
   } catch (err: any) {
     console.warn("[Auth] Failed to fetch user from database:", err.message);
     return null;
