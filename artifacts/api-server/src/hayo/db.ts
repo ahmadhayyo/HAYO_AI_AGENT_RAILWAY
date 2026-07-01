@@ -407,6 +407,16 @@ export async function getEffectivePlan(
 ): Promise<{ plan: SubscriptionPlan; source: "subscription" | "code" | "free" }> {
   const now = new Date();
 
+  // (0) Owner / admin ALWAYS get the top (unlimited) plan — never fall back to
+  // "free". This keeps the owner's plan consistent everywhere (account page,
+  // credit checks, middleware) regardless of whether a subscription row exists.
+  const ownerRows = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  const u = ownerRows[0];
+  if (u && (u.role === "admin" || isOwnerEmail(u.email))) {
+    const topRows = await db.select().from(subscriptionPlans).orderBy(desc(subscriptionPlans.sortOrder)).limit(1);
+    if (topRows[0]) return { plan: topRows[0], source: "subscription" };
+  }
+
   // (1) Admin / payment-activated subscription (authoritative).
   const subRows = await db
     .select({ plan: subscriptionPlans })
