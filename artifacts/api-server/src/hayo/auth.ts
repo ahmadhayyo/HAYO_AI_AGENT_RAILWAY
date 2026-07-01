@@ -21,7 +21,8 @@ export { COOKIE_NAME };
  */
 export const OWNER_EMAIL = (process.env.OWNER_EMAIL || "Fmf0038@gmail.com").trim();
 export function isOwnerEmail(email: string | null | undefined): boolean {
-  return !!email && email.toLowerCase() === OWNER_EMAIL.toLowerCase();
+  // trim() guards against a duplicate row whose email has stray whitespace.
+  return !!email && email.trim().toLowerCase() === OWNER_EMAIL.toLowerCase();
 }
 
 const SCRYPT_PREFIX = "scrypt$";

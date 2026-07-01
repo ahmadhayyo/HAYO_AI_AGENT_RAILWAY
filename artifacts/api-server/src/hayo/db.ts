@@ -180,9 +180,26 @@ export async function deleteFile(id: number, userId: number): Promise<void> {
 
 // ==================== Plans ====================
 export async function getActivePlans(): Promise<SubscriptionPlan[]> {
-  return db.select().from(subscriptionPlans)
+  let plans = await db.select().from(subscriptionPlans)
     .where(eq(subscriptionPlans.isActive, true))
     .orderBy(subscriptionPlans.sortOrder);
+
+  // Self-heal: if there are NO active plans the admin code-generation dropdown
+  // (and pricing page) would be empty. This happens if the boot seed failed or
+  // every plan got deactivated. Reactivate any existing plans and seed the
+  // defaults, then re-read. Only triggers in the already-broken empty state.
+  if (plans.length === 0) {
+    try {
+      await db.update(subscriptionPlans).set({ isActive: true });
+      await seedDefaultPlans();
+    } catch (e: any) {
+      console.warn("[Plans] self-heal failed:", e?.message);
+    }
+    plans = await db.select().from(subscriptionPlans)
+      .where(eq(subscriptionPlans.isActive, true))
+      .orderBy(subscriptionPlans.sortOrder);
+  }
+  return plans;
 }
 
 export async function getPlanById(id: number): Promise<SubscriptionPlan | undefined> {
