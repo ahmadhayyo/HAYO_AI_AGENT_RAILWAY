@@ -27,6 +27,7 @@ import AppBuilder from "./pages/AppBuilder";
 import TradingAnalysis from "./pages/TradingAnalysis";
 import TradingBrokers from "./pages/TradingBrokers";
 import ReverseEngineer from "./pages/ReverseEngineer";
+import PentestEngine from "./pages/PentestEngine";
 import SmartFixer from "./pages/SmartFixer";
 import EAFactory from "./pages/EAFactory";
 import SystemMaintenance from "./pages/SystemMaintenance";
@@ -80,6 +81,9 @@ function Router() {
         </Route>
         <Route path="/reverse">
           <ProtectedRoute><ReverseEngineer /></ProtectedRoute>
+        </Route>
+        <Route path="/pentest">
+          <ProtectedRoute><PentestEngine /></ProtectedRoute>
         </Route>
         <Route path="/smart-fixer">
           <ProtectedRoute><SmartFixer /></ProtectedRoute>
