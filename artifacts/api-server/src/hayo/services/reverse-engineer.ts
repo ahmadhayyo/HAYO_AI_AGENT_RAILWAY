@@ -4643,6 +4643,11 @@ export async function runUnifiedAPKScan(
         supabaseUrls: new Set(allEndpoints.filter((u) => /\.supabase\.co/i.test(u)).map(toHost).filter(Boolean)),
         awsKeys: new Set(allSecrets.filter((s) => /AWS Access/i.test(s.type)).map((s) => s.value)),
         jwts: new Set(allSecrets.filter((s) => /JWT/i.test(s.type)).map((s) => s.value)),
+        stripeKeys: new Set(allSecrets.filter((s) => /Stripe Secret/i.test(s.type)).map((s) => s.value)),
+        twilioSids: new Set(allSecrets.filter((s) => /Twilio/i.test(s.type)).map((s) => s.value)),
+        hex32: new Set(allSecrets.map((s) => s.value).filter((v) => /^[0-9a-f]{32}$/.test(v))),
+        gcpServiceAccounts: new Set(allSecrets.filter((s) => /service.?account|GCP/i.test(s.type)).map((s) => s.value)),
+        azureConns: new Set(allSecrets.filter((s) => /Azure/i.test(s.type)).map((s) => s.value)),
       };
       deepCloudFindings = await exploitCloud(cloudIds);
     } catch { /* network-restricted or nothing to exploit */ }
