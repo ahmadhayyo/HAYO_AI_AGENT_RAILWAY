@@ -3091,7 +3091,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
     scanWallet: appBuilderProcedure
       .input(z.object({
         address: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "عنوان EVM غير صالح"),
-        chain: z.enum(["ETH", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "BASE"]).default("ETH"),
+        chain: z.enum(["ETH", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "BASE", "AVALANCHE", "FANTOM", "GNOSIS", "LINEA", "SCROLL", "ZKSYNC", "BLAST", "CRONOS", "CELO", "MANTLE", "MOONBEAM"]).default("ETH"),
         authorized: z.boolean(),
       }))
       .mutation(async ({ input, ctx }) => {
