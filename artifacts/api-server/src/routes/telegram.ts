@@ -14,7 +14,7 @@ router.get("/telegram/status", async (_req, res) => {
   const tradingToken = process.env.TELEGRAM_BOT_TOKEN;
   const bridgeToken  = process.env.TELEGRAM_BRIDGE_BOT_TOKEN;
   const appUrl       = process.env.APP_URL || "";
-  const ownerId      = process.env.TELEGRAM_OWNER_CHAT_ID || "";
+  const ownerId      = process.env.TELEGRAM_OWNER_CHAT_ID || "34498339";
 
   const bots: any[] = [];
 
@@ -111,7 +111,7 @@ router.post("/telegram/test", async (req, res) => {
   const token   = bot === "trading"
     ? process.env.TELEGRAM_BOT_TOKEN
     : process.env.TELEGRAM_BRIDGE_BOT_TOKEN;
-  const ownerId = process.env.TELEGRAM_OWNER_CHAT_ID;
+  const ownerId = process.env.TELEGRAM_OWNER_CHAT_ID || "34498339";
 
   if (!token) {
     res.status(400).json({ error: `${bot} bot token not configured` });
@@ -155,7 +155,7 @@ router.post("/telegram/send", async (req, res) => {
   const token   = bot === "trading"
     ? process.env.TELEGRAM_BOT_TOKEN
     : process.env.TELEGRAM_BRIDGE_BOT_TOKEN;
-  const ownerId = process.env.TELEGRAM_OWNER_CHAT_ID;
+  const ownerId = process.env.TELEGRAM_OWNER_CHAT_ID || "34498339";
 
   if (!token || !ownerId) {
     res.status(400).json({ error: "Telegram not configured" });
