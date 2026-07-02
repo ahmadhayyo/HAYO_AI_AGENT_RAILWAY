@@ -12,6 +12,8 @@ import crypto from "crypto";
 import { callPowerAI, callFastAI } from "../providers.js";
 import { generateReport } from "../pentest/report.js";
 import { buildFinding } from "../pentest/knowledge.js";
+import { exploitCloud } from "../pentest/cloudExploit.js";
+import type { CloudIdentifiers } from "../pentest/secretsDeep.js";
 import type { Finding, Evidence } from "../pentest/types.js";
 
 // ═══ HEADLESS BROWSER ENGINE — Puppeteer (lazy-loaded) ═══
@@ -4627,7 +4629,27 @@ export async function runUnifiedAPKScan(
     // ONE consistent APK report (keys shown in full + exploitation + remediation),
     // derived from the real APK findings — NOT the web pentest of a third-party
     // endpoint (which produced a mismatched SSRF/LFI report with an inflated score).
-    const apkFindings = buildApkFindings(allSecrets, cloudExploits, secretValidations);
+    // Deep cloud exploitation via the precise engine (Firebase write/scope +
+    // AWS S3 + Supabase) over every harvested identifier — merged into the report.
+    let deepCloudFindings: Finding[] = [];
+    try {
+      const toHost = (u: string) => { try { const x = new URL(u); return `${x.protocol}//${x.host}`; } catch { return ""; } };
+      const cloudIds: CloudIdentifiers = {
+        apiKeys: new Set(allApiKeys),
+        dbUrls: new Set(allDbUrls),
+        buckets: new Set((firebaseConfigs || []).map((c: any) => c.storageBucket).filter(Boolean)),
+        projectIds: new Set(allProjectIds),
+        s3Buckets: new Set(allEndpoints.filter((u) => /[.\-]s3[.\-][^/]*amazonaws\.com/i.test(u)).map((u) => { try { return new URL(u).hostname.split(".")[0]; } catch { return ""; } }).filter(Boolean)),
+        supabaseUrls: new Set(allEndpoints.filter((u) => /\.supabase\.co/i.test(u)).map(toHost).filter(Boolean)),
+        awsKeys: new Set(allSecrets.filter((s) => /AWS Access/i.test(s.type)).map((s) => s.value)),
+        jwts: new Set(allSecrets.filter((s) => /JWT/i.test(s.type)).map((s) => s.value)),
+      };
+      deepCloudFindings = await exploitCloud(cloudIds);
+    } catch { /* network-restricted or nothing to exploit */ }
+
+    const seenF = new Set<string>();
+    const apkFindings = [...buildApkFindings(allSecrets, cloudExploits, secretValidations), ...deepCloudFindings]
+      .filter((f) => { const k = `${f.id}|${f.title}|${f.evidence?.[0]?.value || ""}`; if (seenF.has(k)) return false; seenF.add(k); return true; });
     const apkReport = generateReport(packageName || fileName || "APK", apkFindings);
     // Make the headline risk agree with the actual findings.
     summaryObj.riskScore = apkReport.summary.riskScore;
