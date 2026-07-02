@@ -4463,38 +4463,96 @@ ${scanSummary}
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: tdData.message || "فشل جلب بيانات السوق من TwelveData" });
         }
 
-        // Extract economic news for relevant currencies
+        // Extract economic news for relevant currencies + LIVE proximity filter
         let newsContext = "";
         let economicNewsItems: any[] = [];
+        // newsRisk: deterministic real-time gate around high-impact releases.
+        let newsRisk: {
+          nextHighImpact: any | null;
+          minutesUntil: number | null;
+          dangerZone: boolean;      // within ±15min of a high-impact release
+          cautionZone: boolean;     // within ±60min of a high-impact release
+          label: string;
+        } = { nextHighImpact: null, minutesUntil: null, dangerZone: false, cautionZone: false, label: "لا أخبار عالية التأثير وشيكة" };
         if (newsRes.status === "fulfilled" && Array.isArray(newsRes.value)) {
           const now = new Date();
+          const parseWhen = (e: any): number => {
+            // faireconomy JSON gives an ISO `date` (with tz). Fall back to date+time.
+            const t = Date.parse(e.date);
+            if (!Number.isNaN(t)) return t;
+            const t2 = Date.parse(`${e.date} ${e.time || ""}`);
+            return Number.isNaN(t2) ? NaN : t2;
+          };
           const relevantNews = (newsRes.value as any[])
             .filter((e: any) =>
               (e.impact === "High" || e.impact === "Medium") &&
               relatedCurrencies.includes(e.country)
             )
-            .map((e: any) => ({
-              date: e.date, time: e.time,
-              currency: e.country,
-              title: e.title,
-              impact: e.impact,
-              forecast: e.forecast || "—",
-              previous: e.previous || "—",
-              actual: e.actual || "لم يُعلن",
-            }))
+            .map((e: any) => {
+              const whenMs = parseWhen(e);
+              const minsUntil = Number.isNaN(whenMs) ? null : Math.round((whenMs - now.getTime()) / 60000);
+              return {
+                date: e.date, time: e.time,
+                currency: e.country,
+                title: e.title,
+                impact: e.impact,
+                forecast: e.forecast || "—",
+                previous: e.previous || "—",
+                actual: e.actual || "لم يُعلن",
+                minutesUntil: minsUntil,               // <0 = passed, >0 = upcoming
+              };
+            })
             .sort((a: any, b: any) =>
               new Date(a.date).getTime() - new Date(b.date).getTime()
             )
-            .slice(0, 10);
+            .slice(0, 12);
 
           economicNewsItems = relevantNews;
 
+          // ── LIVE news gate: nearest HIGH-impact event within a trading-relevant window ──
+          const highSoon = relevantNews
+            .filter((e: any) => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 720)
+            .sort((a: any, b: any) => Math.abs(a.minutesUntil) - Math.abs(b.minutesUntil));
+          if (highSoon.length > 0) {
+            const nx = highSoon[0];
+            const m = nx.minutesUntil as number;
+            newsRisk.nextHighImpact = nx;
+            newsRisk.minutesUntil = m;
+            newsRisk.dangerZone = Math.abs(m) <= 15;
+            newsRisk.cautionZone = Math.abs(m) <= 60;
+            const fmtIn = (mins: number) => {
+              const a = Math.abs(mins);
+              const h = Math.floor(a / 60), mm = a % 60;
+              const dur = h > 0 ? `${h}س ${mm}د` : `${mm}د`;
+              return mins >= 0 ? `بعد ${dur}` : `منذ ${dur}`;
+            };
+            if (newsRisk.dangerZone) {
+              newsRisk.label = `🚫 منطقة خطر: ${nx.currency} ${nx.title} ${fmtIn(m)} — تجنّب فتح صفقات (تقلّب/سبريد عالٍ)`;
+            } else if (newsRisk.cautionZone) {
+              newsRisk.label = `⚠️ حذر: ${nx.currency} ${nx.title} ${fmtIn(m)} — قلّل المخاطرة أو انتظر`;
+            } else {
+              newsRisk.label = `🟢 أقرب خبر عالي التأثير: ${nx.currency} ${nx.title} ${fmtIn(m)}`;
+            }
+          }
+
           if (relevantNews.length > 0) {
-            newsContext = `\n\n📰 الأخبار الاقتصادية هذا الأسبوع (${relatedCurrencies.join("/")} — تأثير عالي/متوسط):\n` +
+            const fmtCount = (e: any) => {
+              if (e.minutesUntil === null) return "";
+              const a = Math.abs(e.minutesUntil);
+              const h = Math.floor(a / 60), mm = a % 60;
+              const dur = h > 0 ? `${h}h${mm}m` : `${mm}m`;
+              return e.minutesUntil >= 0 ? ` ⏳(بعد ${dur})` : ` ✅(صدر منذ ${dur})`;
+            };
+            newsContext = `\n\n📰 الأخبار الاقتصادية (${relatedCurrencies.join("/")} — تأثير عالي/متوسط):\n` +
               relevantNews.map((e: any) =>
-                `• ${e.impact === "High" ? "🔴" : "🟡"} ${e.currency} | ${e.title} | التوقعات: ${e.forecast} | السابق: ${e.previous} | الفعلي: ${e.actual}`
+                `• ${e.impact === "High" ? "🔴" : "🟡"} ${e.currency} | ${e.title}${fmtCount(e)} | التوقعات: ${e.forecast} | السابق: ${e.previous} | الفعلي: ${e.actual}`
               ).join("\n") +
-              "\n⚠️ مهم: راعِ هذه الأخبار عند تحديد مستوى المخاطرة والتوقيت.";
+              `\n\n🕒 فلتر الأخبار الحي: ${newsRisk.label}\n` +
+              (newsRisk.dangerZone
+                ? "⛔ تعليمات: بسبب قرب خبر عالي التأثير، الإشارة يجب أن تكون HOLD (انتظار) ما لم يكن هناك تأكيد قوي جداً بعد صدور الخبر."
+                : newsRisk.cautionZone
+                ? "⚠️ تعليمات: خفّض الثقة ومستوى المخاطرة، ووسّع وقف الخسارة قليلاً لاحتساب تقلّب الخبر."
+                : "✅ لا خبر عالي التأثير وشيك — التوقيت مناسب من ناحية الأخبار.");
           }
         }
 
@@ -4648,6 +4706,7 @@ ${newsContext}
           strategySignals,
           filterResults,
           economicNews: economicNewsItems,
+          newsRisk,
           results: settled.map((r, i) => {
             if (r.status === "fulfilled") return r.value;
             return {

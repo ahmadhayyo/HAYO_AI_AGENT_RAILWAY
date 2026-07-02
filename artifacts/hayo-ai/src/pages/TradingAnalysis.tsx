@@ -90,6 +90,13 @@ interface TradingData {
   strategySignals: StrategySignal[];
   filterResults: FilterResult[];
   economicNews?: EconomicNewsItem[];
+  newsRisk?: {
+    nextHighImpact: EconomicNewsItem | null;
+    minutesUntil: number | null;
+    dangerZone: boolean;
+    cautionZone: boolean;
+    label: string;
+  };
   results: AnalysisResult[];
 }
 
@@ -1406,6 +1413,37 @@ export default function TradingAnalysis() {
             >
               {tradingData && !analyzeMutation.isPending && (
                 <ConsensusBanner results={tradingData.results} news={analysisNews} />
+              )}
+
+              {/* Live news filter banner — deterministic real-time countdown gate */}
+              {tradingData && !analyzeMutation.isPending && tradingData.newsRisk && (
+                <div
+                  className={`rounded-xl border px-4 py-3 flex items-center gap-3 ${
+                    tradingData.newsRisk.dangerZone
+                      ? "bg-red-500/10 border-red-500/40 text-red-300"
+                      : tradingData.newsRisk.cautionZone
+                      ? "bg-amber-500/10 border-amber-500/40 text-amber-300"
+                      : "bg-emerald-500/5 border-emerald-500/25 text-emerald-300"
+                  }`}
+                >
+                  <span className="text-lg shrink-0">🕒</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[11px] uppercase tracking-wide opacity-70">فلتر الأخبار الحي (Live)</div>
+                    <div className="text-sm font-semibold leading-snug">{tradingData.newsRisk.label}</div>
+                  </div>
+                  {tradingData.newsRisk.minutesUntil !== null && (
+                    <div className="text-center shrink-0">
+                      <div className="text-lg font-bold tabular-nums">
+                        {Math.abs(tradingData.newsRisk.minutesUntil) >= 60
+                          ? `${Math.floor(Math.abs(tradingData.newsRisk.minutesUntil) / 60)}h${Math.abs(tradingData.newsRisk.minutesUntil) % 60}m`
+                          : `${Math.abs(tradingData.newsRisk.minutesUntil)}m`}
+                      </div>
+                      <div className="text-[10px] opacity-70">
+                        {tradingData.newsRisk.minutesUntil >= 0 ? "حتى الخبر" : "منذ الخبر"}
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
 
               {tradingData && !analyzeMutation.isPending && tradingData.strategySignals?.length > 0 && (
