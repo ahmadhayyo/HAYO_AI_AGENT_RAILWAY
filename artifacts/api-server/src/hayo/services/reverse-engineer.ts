@@ -10,6 +10,9 @@ import path from "path";
 import os from "os";
 import crypto from "crypto";
 import { callPowerAI, callFastAI } from "../providers.js";
+import { generateReport } from "../pentest/report.js";
+import { buildFinding } from "../pentest/knowledge.js";
+import type { Finding, Evidence } from "../pentest/types.js";
 
 // ═══ HEADLESS BROWSER ENGINE — Puppeteer (lazy-loaded) ═══
 let puppeteerCore: typeof import("puppeteer-core") | null = null;
@@ -3909,6 +3912,7 @@ export interface UnifiedAPKScanResult {
   backendExposures?: any;
   auditReport?: AuditReport;
   report?: string;
+  reportData?: any;
   error?: string;
   generatedAt: string;
 }
@@ -4363,7 +4367,7 @@ export async function runUnifiedAPKScan(
     // ╚══════════════════════════════════════════════════════════════╝
 
     // Blocklist: CDN, SDK, analytics, ad networks, third-party services — NOT the app's own backend
-    const thirdPartyHosts = /\b(googleapis\.com|google\.com|gstatic\.com|googleusercontent\.com|googlesyndication\.com|googleadservices\.com|google-analytics\.com|googletagmanager\.com|android\.com|schemas\.android|w3\.org|apache\.org|xml\.org|jsdelivr\.(com|net)|cdnjs\.cloudflare\.com|cloudflare\.com|unpkg\.com|cdn\.jsdelivr\.net|fastly\.net|akamaized\.net|akamai\.com|cloudfront\.net|amazonaws\.com\/sdk|facebook\.(com|net)|fbcdn\.net|fb\.com|fbsbx\.com|instagram\.com|twitter\.com|x\.com|twimg\.com|linkedin\.com|github\.com|github\.io|githubusercontent\.com|gitlab\.com|bitbucket\.org|npmjs\.org|npmjs\.com|yarnpkg\.com|maven\.org|gradle\.org|jitpack\.io|bintray\.com|crashlytics\.com|fabric\.io|sentry\.io|bugsnag\.com|appsflyer\.com|adjust\.com|branch\.io|onesignal\.com|mixpanel\.com|amplitude\.com|segment\.(io|com)|intercom\.io|zendesk\.com|freshdesk\.com|hotjar\.com|mouseflow\.com|fullstory\.com|heap\.io|pendo\.io|appcenter\.ms|codepush\.com|expo\.(io|dev)|reactnative\.dev|flutter\.(dev|io)|dart\.dev|kotlinlang\.org|swift\.org|apple\.com|microsoft\.com|windows\.net|azure\.com|heroku\.com|netlify\.(com|app)|vercel\.(com|app)|render\.com|digitalocean\.com|linode\.com|vultr\.com|fontawesome\.com|fonts\.googleapis\.com|fonts\.gstatic\.com|bootstrapcdn\.com|jquery\.com|maxcdn\.com|rawgit\.com|statically\.io|polyfill\.io|recaptcha\.net|hcaptcha\.com|stripe\.com\/v3|js\.stripe\.com|paypal\.com\/sdk|braintreegateway\.com|admob\.(com|google)|unity3d\.com|unityads\.unity3d\.com|applovin\.com|chartboost\.com|ironsrc\.com|mopub\.com|vungle\.com|tapjoy\.com|adcolony\.com|inmobi\.com)\b/i;
+    const thirdPartyHosts = /\b(googleapis\.com|google\.com|gstatic\.com|googleusercontent\.com|googlesyndication\.com|googleadservices\.com|google-analytics\.com|googletagmanager\.com|android\.com|schemas\.android|w3\.org|apache\.org|xml\.org|jsdelivr\.(com|net)|cdnjs\.cloudflare\.com|cloudflare\.com|unpkg\.com|cdn\.jsdelivr\.net|fastly\.net|akamaized\.net|akamai\.com|cloudfront\.net|amazonaws\.com\/sdk|facebook\.(com|net)|fbcdn\.net|fb\.com|fbsbx\.com|instagram\.com|twitter\.com|x\.com|twimg\.com|linkedin\.com|github\.com|github\.io|githubusercontent\.com|gitlab\.com|bitbucket\.org|npmjs\.org|npmjs\.com|yarnpkg\.com|maven\.org|gradle\.org|jitpack\.io|bintray\.com|crashlytics\.com|fabric\.io|sentry\.io|bugsnag\.com|appsflyer\.com|adjust\.com|branch\.io|onesignal\.com|mixpanel\.com|amplitude\.com|segment\.(io|com)|intercom\.io|zendesk\.com|freshdesk\.com|hotjar\.com|mouseflow\.com|fullstory\.com|heap\.io|pendo\.io|appcenter\.ms|codepush\.com|expo\.(io|dev)|reactnative\.dev|flutter\.(dev|io)|dart\.dev|kotlinlang\.org|swift\.org|apple\.com|microsoft\.com|windows\.net|azure\.com|heroku\.com|netlify\.(com|app)|vercel\.(com|app)|render\.com|digitalocean\.com|linode\.com|vultr\.com|fontawesome\.com|fonts\.googleapis\.com|fonts\.gstatic\.com|bootstrapcdn\.com|jquery\.com|maxcdn\.com|rawgit\.com|statically\.io|polyfill\.io|recaptcha\.net|hcaptcha\.com|stripe\.com\/v3|js\.stripe\.com|paypal\.com\/sdk|braintreegateway\.com|admob\.(com|google)|unity3d\.com|unity3dusercontent\.com|unity3dgames\.com|unityads\.unity3d\.com|applovin\.com|chartboost\.com|ironsrc\.com|mopub\.com|vungle\.com|tapjoy\.com|adcolony\.com|inmobi\.com)\b/i;
 
     const isAppBackend = (url: string): boolean => {
       try {
@@ -4620,6 +4624,15 @@ export async function runUnifiedAPKScan(
     // ── Build final return object ──
     const apkBuffer = fs.readFileSync(finalApk);
     const summaryObj = buildSummary(allSecrets, allEndpoints, webPentestResult, firebaseConfigs);
+    // ONE consistent APK report (keys shown in full + exploitation + remediation),
+    // derived from the real APK findings — NOT the web pentest of a third-party
+    // endpoint (which produced a mismatched SSRF/LFI report with an inflated score).
+    const apkFindings = buildApkFindings(allSecrets, cloudExploits, secretValidations);
+    const apkReport = generateReport(packageName || fileName || "APK", apkFindings);
+    // Make the headline risk agree with the actual findings.
+    summaryObj.riskScore = apkReport.summary.riskScore;
+    summaryObj.criticalCount = apkReport.summary.counts.critical;
+    summaryObj.highCount = apkReport.summary.counts.high;
     const stepsArr = phases.map((p, i) => ({ id: i + 1, title: p.name, details: p.details.join(" — "), status: p.status === "success" ? "success" : p.status === "warning" ? "warning" : p.status === "failed" ? "critical" : "info", findings: p.details }));
 
     const auditReport: AuditReport = {
@@ -4636,7 +4649,7 @@ export async function runUnifiedAPKScan(
       secretValidations, cloudExploits,
       cloneReport: { packageName, premiumMethodsPatched: premiumCount, loginBypassed, pointsUnlocked: coinsCount > 0, tamperNeutralized, adsRemoved: true, fridaInjected, signatureVerified, zipIntegrity, modifications },
       webPentest: webPentestResult, headlessBrowser: headlessResult, backendExposures: webPentestResult?.backendExposures,
-      auditReport, report: webPentestResult?.report, generatedAt: new Date().toISOString(),
+      auditReport, report: apkReport.markdown, reportData: apkReport, generatedAt: new Date().toISOString(),
     };
   } catch (e: any) {
     const errSummary = buildSummary(allSecrets, allEndpoints, webPentestResult, firebaseConfigs);
@@ -4658,14 +4671,73 @@ export async function runUnifiedAPKScan(
 function buildSummary(allSecrets: ExtractedSecret[], allEndpoints: string[], webPentestResult: any, firebaseConfigs: any[]) {
   const criticalCount = allSecrets.filter(s => s.type.includes("AWS") || s.type.includes("Private Key") || s.type.includes("Stripe Secret") || s.type.includes("JWT")).length;
   const highCount = allSecrets.filter(s => s.type.includes("Firebase") || s.type.includes("GitHub") || s.type.includes("Bearer")).length;
-  let riskScore = criticalCount * 20 + highCount * 10 + allSecrets.length * 2 + allEndpoints.length;
-  if (webPentestResult?.summary?.riskScore) riskScore = Math.max(riskScore, webPentestResult.summary.riskScore);
+  // Risk must reflect real severity — NOT the raw endpoint count (which inflated
+  // the score to 100 with zero critical findings) nor a web pentest of a
+  // third-party endpoint found in the app.
+  let riskScore = criticalCount * 25 + highCount * 12 + Math.min(20, allSecrets.length * 2);
   riskScore = Math.min(100, riskScore);
   const cloudProviders: string[] = [];
   if (firebaseConfigs.length > 0) cloudProviders.push(...firebaseConfigs.map((c: any) => `Firebase Project: ${c.projectId || "unknown"}`));
   if (allSecrets.some(s => s.type.includes("AWS"))) cloudProviders.push("AWS");
   if (allSecrets.some(s => s.type.includes("GCP"))) cloudProviders.push("Google Cloud");
   return { riskScore, criticalCount, highCount, extractedKeys: allSecrets, extractedEndpoints: allEndpoints, cloudProviders: [...new Set(cloudProviders)] };
+}
+
+/**
+ * Build ONE self-consistent APK report from the scan's real findings (embedded
+ * secrets shown IN FULL, confirmed cloud exploits, validated secrets) — so the
+ * report, its risk score and its counts all agree and describe the APK (not a
+ * web pentest of some third-party endpoint that happened to be in the app).
+ */
+function buildApkFindings(
+  secrets: ExtractedSecret[],
+  cloudExploits: any[],
+  secretValidations: any[],
+): Finding[] {
+  const findings: Finding[] = [];
+
+  // Embedded secrets/keys — shown UNREDACTED in the report's extracted-secrets table.
+  const secEv: Evidence[] = secrets.slice(0, 60).map((s) => ({
+    label: s.type, value: s.value, location: `${s.file}${s.line ? ":" + s.line : ""}`, sensitive: true,
+  }));
+  if (secEv.length) {
+    findings.push(buildFinding("hardcoded-secret", {
+      targetOverride: "android", confidence: "confirmed",
+      titleSuffix: `${secEv.length} سر/مفتاح مضمّن في التطبيق`,
+      evidence: secEv,
+    }));
+  }
+
+  // Confirmed cloud exploitation.
+  for (const ce of (cloudExploits || []).filter((e) => e && e.accessible)) {
+    const svc = String(ce.service || "");
+    const id = /Firestore/i.test(svc) ? "exposed-firestore"
+      : /Storage/i.test(svc) ? "exposed-storage-bucket"
+      : /Auth/i.test(svc) ? "firebase-signup-open"
+      : "exposed-firebase-db";
+    try {
+      findings.push(buildFinding(id, {
+        confidence: "confirmed", location: String(ce.url || ""),
+        titleSuffix: svc,
+        evidence: [{ label: svc, value: String(ce.details || "متاح دون مصادقة"), location: String(ce.url || ""), sensitive: true }],
+      }));
+    } catch { /* unknown id */ }
+  }
+
+  // Live-validated secrets (valid = exploited, partial = valid but limited).
+  for (const v of (secretValidations || []).filter((x) => x && (x.status === "valid" || x.status === "partial"))) {
+    findings.push(buildFinding("hardcoded-secret", {
+      targetOverride: "android", confidence: v.status === "valid" ? "confirmed" : "firm",
+      location: String(v.source || "APK"),
+      titleSuffix: `${v.type || "سر"} — ${v.status === "valid" ? "صالح ومُتحقَّق منه حيّاً" : "صالح (وصول محدود)"}`,
+      evidence: [
+        { label: v.type || "سر", value: String(v.value || ""), location: String(v.source || "APK"), sensitive: true },
+        { label: "إثبات حيّ", value: String(v.liveProof || v.responseSnippet || "").slice(0, 200), location: String(v.service || "") },
+      ],
+    }));
+  }
+
+  return findings;
 }
 
 // ═══════════════════════════════════════════════════════════════
