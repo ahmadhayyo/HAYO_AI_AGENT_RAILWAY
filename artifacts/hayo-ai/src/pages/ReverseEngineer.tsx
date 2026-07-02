@@ -1541,6 +1541,8 @@ export default function ReverseEngineer(){
                   ["removeTracking","إزالة التتبع","حذف Analytics/Firebase","text-violet-300 border-violet-500/30 bg-violet-500/5 hover:bg-violet-500/15"],
                   ["bypassIntegrity","تجاوز Integrity","تعطيل SafetyNet/tamper","text-pink-300 border-pink-500/30 bg-pink-500/5 hover:bg-pink-500/15"],
                   ["modifyAPI","تعديل API","استبدال URL مخصص","text-cyan-300 border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/15"],
+                  ["makeDebuggable","تفعيل التنقيح","debuggable=true → استخراج الذاكرة","text-amber-300 border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/15"],
+                  ["injectKeyLogger","حقن مُسجّل المفاتيح","طبع مفاتيح SecretKeySpec في logcat","text-red-400 border-red-500/40 bg-red-500/10 hover:bg-red-500/20"],
                 ] as [string,string,string,string][]).map(([tmpl,label,desc,cls])=>(
                   <button key={tmpl} onClick={()=>doApplyPatch(tmpl)} disabled={patching} className={`text-[10px] font-medium px-2 py-1.5 rounded-lg border transition-all hover:scale-[1.02] text-right ${cls} ${patching?"opacity-50":""}`} title={desc}>
                     {patching?<Loader2 className="w-3 h-3 animate-spin inline mr-1"/>:null}{label}

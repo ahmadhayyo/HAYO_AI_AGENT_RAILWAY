@@ -1401,7 +1401,7 @@ export function verifyAPK(apkPath: string, workDir: string): VerificationResult 
 // ═══════════════════════════════════════════════════════════════
 // TEMPLATE PATCHES — Real Smali-level modifications for Edit tab
 // ═══════════════════════════════════════════════════════════════
-export type PatchTemplate = "removeAds" | "bypassRoot" | "bypassSSL" | "removeLicense" | "unlockPremium" | "modifyAPI" | "removeTracking" | "bypassIntegrity";
+export type PatchTemplate = "removeAds" | "bypassRoot" | "bypassSSL" | "removeLicense" | "unlockPremium" | "modifyAPI" | "removeTracking" | "bypassIntegrity" | "makeDebuggable" | "injectKeyLogger";
 
 export async function applyPatchTemplate(
   sessionId: string, template: PatchTemplate, options?: { apiUrl?: string; apiReplace?: string }
@@ -1560,6 +1560,66 @@ export async function applyPatchTemplate(
     case "bypassIntegrity": {
       const r = await patchTamperDetection(sess.decompDir);
       mods.push(...r);
+      break;
+    }
+    case "makeDebuggable": {
+      // Inject android:debuggable="true" so the repackaged app can be attached
+      // to a debugger (jdb / Android Studio / Frida) on a non-rooted device —
+      // enabling runtime memory + key extraction. Core of "reaching the app root".
+      const mp = path.join(sess.decompDir, "AndroidManifest.xml");
+      if (!fs.existsSync(mp)) { mods.push("ℹ لا يوجد AndroidManifest.xml (أعد الفك بـ apktool)"); break; }
+      let m = fs.readFileSync(mp, "utf-8");
+      if (/android:debuggable\s*=\s*"true"/.test(m)) { mods.push("ℹ التطبيق قابل للتنقيح مسبقاً"); break; }
+      if (!sess.fileBackups.has("AndroidManifest.xml")) sess.fileBackups.set("AndroidManifest.xml", m);
+      if (/android:debuggable\s*=\s*"false"/.test(m)) m = m.replace(/android:debuggable\s*=\s*"false"/, 'android:debuggable="true"');
+      else m = m.replace(/<application\b/, '<application android:debuggable="true"');
+      fs.writeFileSync(mp, m, "utf-8");
+      mods.push('🐞 حُقن android:debuggable="true" — يسمح بإرفاق مُنقّح واستخراج الذاكرة والمفاتيح وقت التشغيل دون روت');
+      break;
+    }
+    case "injectKeyLogger": {
+      // Inject a tiny logger and hook every SecretKeySpec construction so the
+      // REPACKAGED app prints its own AES/HMAC key material (Base64) to logcat
+      // under tag HAYO_KEYLOG at runtime — demonstrating extraction of the REAL
+      // keys by modifying the app (committee focus #1). Read `adb logcat -s HAYO_KEYLOG`.
+      const smaliDirs = fs.readdirSync(sess.decompDir).filter((d) => /^smali(_classes\d+)?$/.test(d));
+      if (smaliDirs.length === 0) { mods.push("ℹ لا توجد أدلة smali — أعد الفك بـ apktool"); break; }
+      const KL_SMALI =
+        ".class public Lcom/hayo/KL;\n.super Ljava/lang/Object;\n\n" +
+        ".method public static k([B)V\n    .locals 3\n    if-eqz p0, :d\n" +
+        "    const/4 v0, 0x2\n" +
+        "    invoke-static {p0, v0}, Landroid/util/Base64;->encodeToString([BI)Ljava/lang/String;\n" +
+        "    move-result-object v0\n" +
+        '    const-string v1, "HAYO_KEYLOG"\n' +
+        "    invoke-static {v1, v0}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I\n" +
+        "    :d\n    return-void\n.end method\n";
+      const klDir = path.join(sess.decompDir, smaliDirs[0], "com", "hayo");
+      fs.mkdirSync(klDir, { recursive: true });
+      fs.writeFileSync(path.join(klDir, "KL.smali"), KL_SMALI, "utf-8");
+
+      const smaliFiles = readDirRecursive(sess.decompDir).filter((f) => f.endsWith(".smali")).slice(0, 4000);
+      const sink = /invoke-direct \{([vp0-9,\s]+)\}, Ljavax\/crypto\/spec\/SecretKeySpec;-><init>\(\[BLjava\/lang\/String;\)V/g;
+      let injected = 0;
+      for (const fp of smaliFiles) {
+        try {
+          const original = fs.readFileSync(fp, "utf-8");
+          if (original.includes("Lcom/hayo/KL;")) continue;
+          let changed = false;
+          const updated = original.replace(sink, (match, regs: string) => {
+            const list = regs.split(",").map((s) => s.trim()).filter(Boolean);
+            if (list.length < 2) return match;         // {objectref, keyBytes, algorithm}
+            injected++; changed = true;
+            return `invoke-static {${list[1]}}, Lcom/hayo/KL;->k([B)V\n    ${match}`;
+          });
+          if (changed) {
+            const rel = path.relative(sess.decompDir, fp);
+            if (!sess.fileBackups.has(rel)) sess.fileBackups.set(rel, original);
+            fs.writeFileSync(fp, updated, "utf-8");
+          }
+        } catch { /* skip unreadable smali */ }
+      }
+      if (injected > 0) mods.push(`🔑 حُقن مُسجّل مفاتيح عند ${injected} موضع بناء SecretKeySpec — التطبيق المُعاد بناؤه يطبع المفاتيح الحقيقية في logcat (adb logcat -s HAYO_KEYLOG)`);
+      else mods.push("ℹ لم يُعثر على بناء SecretKeySpec مباشر (قد يستخدم التطبيق KeyStore/native — استخدم الوكيل الديناميكي Frida)");
       break;
     }
   }
