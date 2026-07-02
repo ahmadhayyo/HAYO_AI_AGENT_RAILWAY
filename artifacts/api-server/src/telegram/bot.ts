@@ -2197,12 +2197,22 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     console.log(`[TelegramBot] ✅ Bot started in POLLING mode — owner only (ID: ${ownerChatId})`);
   }
 
-  if (botRole === "trading") {
+  // Host the auto-signal scanners on the trading bot; but if no trading bot is
+  // configured (TELEGRAM_BOT_TOKEN unset), fall back to the bridge bot so the
+  // owner's existing bot still delivers automatic signals. Without this, _botRef
+  // stayed null for a bridge-only setup, so neither startup nor the web-UI toggle
+  // (setConvergenceConfig) could ever start the scanner → no auto signals.
+  const tradingConfigured = !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN.trim());
+  if (botRole === "trading" || (botRole === "bridge" && !tradingConfigured)) {
     _botRef = bot;
     _ownerRef = ownerChatId;
     if (convergenceConfig.enabled) {
-      console.log(`[Convergence] Auto-starting convergence scanner (interval: ${convergenceConfig.intervalMinutes}min)`);
+      console.log(`[Convergence] Auto-starting convergence scanner on ${botRole} bot (interval: ${convergenceConfig.intervalMinutes}min)`);
       restartConvergenceScanner(bot, ownerChatId);
+    }
+    if (autoConfig.enabled) {
+      console.log(`[AutoSignal] Auto-starting signal scanner on ${botRole} bot`);
+      restartAutoScanner(bot, ownerChatId, lastSignalTimeLocal);
     }
   }
 
