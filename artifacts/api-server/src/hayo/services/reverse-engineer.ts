@@ -13,6 +13,7 @@ import { callPowerAI, callFastAI } from "../providers.js";
 import { generateReport } from "../pentest/report.js";
 import { buildFinding } from "../pentest/knowledge.js";
 import { exploitCloud } from "../pentest/cloudExploit.js";
+import { traceKeyFlows } from "../pentest/taint.js";
 import type { CloudIdentifiers } from "../pentest/secretsDeep.js";
 import type { Finding, Evidence } from "../pentest/types.js";
 
@@ -4652,8 +4653,15 @@ export async function runUnifiedAPKScan(
       deepCloudFindings = await exploitCloud(cloudIds);
     } catch { /* network-restricted or nothing to exploit */ }
 
+    // Data-flow: trace hardcoded keys from source → crypto/network sink.
+    let flowFindings: Finding[] = [];
+    try {
+      const smaliFiles = readDirRecursive(decompDir).filter((f) => f.endsWith(".smali"));
+      flowFindings = traceKeyFlows(smaliFiles, decompDir, (fp) => { try { return fs.readFileSync(fp, "utf-8"); } catch { return ""; } });
+    } catch { /* no smali */ }
+
     const seenF = new Set<string>();
-    const apkFindings = [...buildApkFindings(allSecrets, cloudExploits, secretValidations), ...deepCloudFindings]
+    const apkFindings = [...buildApkFindings(allSecrets, cloudExploits, secretValidations), ...deepCloudFindings, ...flowFindings]
       .filter((f) => { const k = `${f.id}|${f.title}|${f.evidence?.[0]?.value || ""}`; if (seenF.has(k)) return false; seenF.add(k); return true; });
     const apkReport = generateReport(packageName || fileName || "APK", apkFindings);
     // Make the headline risk agree with the actual findings.
