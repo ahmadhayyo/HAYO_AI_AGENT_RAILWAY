@@ -11,7 +11,12 @@ import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, 
 
 // ─── Config ───────────────────────────────────────────────────────────
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const OWNER_ID  = process.env.TELEGRAM_OWNER_CHAT_ID;
+// Owner Telegram chat id. The env var takes precedence; the fallback is the
+// platform owner's own chat id so the bot still starts and replies even when
+// TELEGRAM_OWNER_CHAT_ID isn't set in the environment (a chat id is not a
+// secret). startTelegramBot early-returns when this is empty, which is what
+// left the bot receiving webhooks but never processing them.
+const OWNER_ID  = process.env.TELEGRAM_OWNER_CHAT_ID || "34498339";
 
 interface PairInfo { tdSymbol: string; label: string; flag: string; decimals: number }
 const PAIRS: Record<string, PairInfo> = {
