@@ -1543,6 +1543,7 @@ export default function ReverseEngineer(){
                   ["modifyAPI","تعديل API","استبدال URL مخصص","text-cyan-300 border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/15"],
                   ["makeDebuggable","تفعيل التنقيح","debuggable=true → استخراج الذاكرة","text-amber-300 border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/15"],
                   ["injectKeyLogger","حقن مُسجّل المفاتيح","طبع مفاتيح SecretKeySpec في logcat","text-red-400 border-red-500/40 bg-red-500/10 hover:bg-red-500/20"],
+                  ["injectFrida","حقن Frida Gadget","تحليل ديناميكي دون روت → مفاتيح KeyStore/native","text-fuchsia-300 border-fuchsia-500/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/20"],
                 ] as [string,string,string,string][]).map(([tmpl,label,desc,cls])=>(
                   <button key={tmpl} onClick={()=>doApplyPatch(tmpl)} disabled={patching} className={`text-[10px] font-medium px-2 py-1.5 rounded-lg border transition-all hover:scale-[1.02] text-right ${cls} ${patching?"opacity-50":""}`} title={desc}>
                     {patching?<Loader2 className="w-3 h-3 animate-spin inline mr-1"/>:null}{label}

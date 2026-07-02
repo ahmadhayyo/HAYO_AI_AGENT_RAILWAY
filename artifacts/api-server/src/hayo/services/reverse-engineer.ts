@@ -1407,7 +1407,7 @@ export function verifyAPK(apkPath: string, workDir: string): VerificationResult 
 // ═══════════════════════════════════════════════════════════════
 // TEMPLATE PATCHES — Real Smali-level modifications for Edit tab
 // ═══════════════════════════════════════════════════════════════
-export type PatchTemplate = "removeAds" | "bypassRoot" | "bypassSSL" | "removeLicense" | "unlockPremium" | "modifyAPI" | "removeTracking" | "bypassIntegrity" | "makeDebuggable" | "injectKeyLogger";
+export type PatchTemplate = "removeAds" | "bypassRoot" | "bypassSSL" | "removeLicense" | "unlockPremium" | "modifyAPI" | "removeTracking" | "bypassIntegrity" | "makeDebuggable" | "injectKeyLogger" | "injectFrida";
 
 export async function applyPatchTemplate(
   sessionId: string, template: PatchTemplate, options?: { apiUrl?: string; apiReplace?: string }
@@ -1626,6 +1626,65 @@ export async function applyPatchTemplate(
       }
       if (injected > 0) mods.push(`🔑 حُقن مُسجّل مفاتيح عند ${injected} موضع بناء SecretKeySpec — التطبيق المُعاد بناؤه يطبع المفاتيح الحقيقية في logcat (adb logcat -s HAYO_KEYLOG)`);
       else mods.push("ℹ لم يُعثر على بناء SecretKeySpec مباشر (قد يستخدم التطبيق KeyStore/native — استخدم الوكيل الديناميكي Frida)");
+      break;
+    }
+    case "injectFrida": {
+      // Bundle frida-gadget into the APK + auto-load it, so the repackaged app is
+      // instrumentable with Frida on a NON-rooted device — capturing KeyStore /
+      // native keys at runtime. Needs `xz` (present in the image).
+      const FRIDA_VER = "16.7.19";
+      const ARCH_MAP: Record<string, string> = { "arm64-v8a": "arm64", "armeabi-v7a": "arm", "x86_64": "x86_64", "x86": "x86" };
+      const libRoot = path.join(sess.decompDir, "lib");
+      let abis = fs.existsSync(libRoot) ? fs.readdirSync(libRoot).filter((a) => ARCH_MAP[a]) : [];
+      if (abis.length === 0) { abis = ["arm64-v8a"]; try { fs.mkdirSync(path.join(libRoot, "arm64-v8a"), { recursive: true }); } catch {} }
+      let placed = 0;
+      for (const abi of abis.slice(0, 4)) {
+        try {
+          const dest = path.join(libRoot, abi, "libfrida-gadget.so");
+          const xzPath = dest + ".xz";
+          const url = `https://github.com/frida/frida/releases/download/${FRIDA_VER}/frida-gadget-${FRIDA_VER}-android-${ARCH_MAP[abi]}.so.xz`;
+          execSync(`wget -q --timeout=180 -O "${xzPath}" "${url}"`, { timeout: 200_000 });
+          execSync(`xz -d -f "${xzPath}"`, { timeout: 60_000 });
+          if (fs.existsSync(dest) && fs.statSync(dest).size > 100_000) { placed++; sess.fileBackups.set(`lib/${abi}/libfrida-gadget.so`, ""); }
+        } catch { /* network/xz failed for this abi */ }
+      }
+      if (placed === 0) { mods.push("⚠ تعذّر تنزيل/فكّ frida-gadget (شبكة) — أعد المحاولة، أو استخدم الوكيل الديناميكي على المحاكي مباشرةً"); break; }
+      mods.push(`📦 وُضع libfrida-gadget.so في ${placed} معمارية`);
+
+      // Auto-load: inject System.loadLibrary("frida-gadget") into an onCreate.
+      const injectLoadLib = (smaliPath: string): boolean => {
+        try {
+          if (!fs.existsSync(smaliPath)) return false;
+          let c = fs.readFileSync(smaliPath, "utf-8");
+          if (c.includes('"frida-gadget"')) return true;
+          const m = c.match(/(\.method[^\n]*\bonCreate\(Landroid\/os\/Bundle;\)V\n\s*\.locals\s+(\d+)\n)/);
+          if (!m) return false;
+          const locals = parseInt(m[2], 10);
+          const reg = `v${locals}`;
+          const rel = path.relative(sess.decompDir, smaliPath);
+          if (!sess.fileBackups.has(rel)) sess.fileBackups.set(rel, c);
+          const replacement = m[1].replace(/\.locals\s+\d+/, `.locals ${locals + 1}`) +
+            `    const-string ${reg}, "frida-gadget"\n    invoke-static {${reg}}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V\n`;
+          c = c.replace(m[1], replacement);
+          fs.writeFileSync(smaliPath, c, "utf-8");
+          return true;
+        } catch { return false; }
+      };
+      const classToSmali = (name: string): string[] => {
+        if (!name) return [];
+        let n = name.trim();
+        if (n.startsWith(".")) n = (manifest.match(/package="([^"]+)"/)?.[1] || "") + n;
+        const relPath = n.replace(/\./g, "/") + ".smali";
+        return fs.readdirSync(sess.decompDir).filter((d) => /^smali(_classes\d+)?$/.test(d)).map((d) => path.join(sess.decompDir, d, relPath));
+      };
+      const appName = manifest.match(/<application[^>]*android:name="([^"]+)"/)?.[1] || "";
+      const launcher = manifest.match(/<activity[^>]*android:name="([^"]+)"[^>]*>[\s\S]*?android\.intent\.category\.LAUNCHER[\s\S]*?<\/activity>/)?.[1] || "";
+      let loaded = false;
+      for (const cand of [...classToSmali(appName), ...classToSmali(launcher)]) {
+        if (injectLoadLib(cand)) { loaded = true; mods.push(`🧬 حُقن تحميل frida-gadget في ${path.relative(sess.decompDir, cand)}`); break; }
+      }
+      if (!loaded) mods.push("ℹ وُضعت المكتبة لكن تعذّر الحقن التلقائي لـ loadLibrary — أضِف System.loadLibrary(\"frida-gadget\") في onCreate يدوياً، ثم أعد البناء");
+      else mods.push("✅ بعد إعادة البناء: شغّل التطبيق ثم `frida -U Gadget` لالتقاط المفاتيح وقت التشغيل دون روت");
       break;
     }
   }
