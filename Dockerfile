@@ -53,7 +53,8 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # ── Install Python dependencies ───────────────────────────────────
 # apkid: packer/obfuscator/anti-analysis fingerprinting for the pentest engine.
-RUN pip3 install --no-cache-dir --break-system-packages colorama apkid
+RUN pip3 install --no-cache-dir --break-system-packages colorama yara-python apkid \
+    && (apkid --help >/dev/null 2>&1 && echo "[build] ✅ apkid works" || echo "[build] ⚠️ apkid --help failed")
 
 # ── nuclei: web vulnerability templates for the pentest engine ─────
 RUN wget -q --timeout=120 https://github.com/projectdiscovery/nuclei/releases/download/v3.3.7/nuclei_3.3.7_linux_amd64.zip -O /tmp/nuclei.zip \

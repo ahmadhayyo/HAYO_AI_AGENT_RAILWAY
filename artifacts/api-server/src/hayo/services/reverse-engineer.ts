@@ -168,7 +168,9 @@ export function getToolStatus(): Record<string, { available: boolean; version?: 
     dex2jar:   check("d2j-dex2jar.sh"),
     r2:        check("r2", "-v"),
     // ── Pentest-engine tools ──
-    apkid:     check("apkid", "--version"),
+    // APKiD has NO --version flag (argparse would reject it and exit non-zero →
+    // false "red"). --help is valid and only succeeds if apkid imports + runs.
+    apkid:     check("apkid", "--help"),
     nuclei:    check("nuclei", "-version"),
   };
 }
@@ -217,7 +219,7 @@ export function getToolStatusFlat(): Record<string, boolean | string | null> {
     aapt2Available: check("aapt2 version"),
     dex2jarAvailable: check("d2j-dex2jar.sh --help"),
     r2Available: check("r2 -v"),
-    apkidAvailable: check("apkid --version"),
+    apkidAvailable: check("apkid --help") || check("python3 -m apkid --help"),
     nucleiAvailable: check("nuclei -version"),
   };
 }
