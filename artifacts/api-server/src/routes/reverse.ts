@@ -867,8 +867,8 @@ router.post("/wallet-pentest-full", async (req: Request, res: Response) => {
     return;
   }
   try {
-    const { runWalletPentest } = await import("../hayo/services/reverse-engineer.js");
-    const pentestResult = await runWalletPentest(address.trim(), chain);
+    const { runLegacyWalletScan } = await import("../hayo/pentest/legacyWallet.js");
+    const pentestResult = await runLegacyWalletScan(address.trim(), chain);
 
     try {
       await sendPentestToTelegram(pentestResult);

@@ -658,7 +658,7 @@ export default function ReverseEngineer(){
   const[hbExpanded,setHbExpanded]=useState<Set<string>>(new Set(["network"]));
   // Wallet Pentest
   const[walAddr,setWalAddr]=useState("");
-  const[walChain,setWalChain]=useState<"ETH"|"BSC"|"BTC">("ETH");
+  const[walChain,setWalChain]=useState<string>("ETH");
   const[walLoading,setWalLoading]=useState(false);
   const[walResult,setWalResult]=useState<any>(null);
   const[walActiveStep,setWalActiveStep]=useState(0);
@@ -3229,10 +3229,16 @@ export default function ReverseEngineer(){
               <input value={walAddr} onChange={e=>setWalAddr(e.target.value)} placeholder="أدخل عنوان المحفظة — مثال: 0x..." className="w-full bg-muted/30 border-2 border-amber-500/30 rounded-2xl px-12 py-4 text-base text-right placeholder:text-muted-foreground/50 focus:outline-none focus:border-amber-500/60 transition-all font-mono" onKeyDown={e=>{if(e.key==="Enter"&&walAddr.trim())doWalletPentest();}}/>
               <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground"/>
             </div>
-            <div className="flex gap-2">
-              {(["ETH","BSC","BTC"] as const).map(c=>(
-                <button key={c} onClick={()=>setWalChain(c)} className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all border-2 ${walChain===c?"bg-gradient-to-r from-amber-600/30 to-orange-600/30 border-amber-500/60 text-amber-300 shadow-lg shadow-amber-900/20":"bg-muted/20 border-border/30 text-muted-foreground hover:border-amber-500/30"}`}>
-                  {c==="ETH"?"Ethereum (ETH)":c==="BSC"?"BNB Chain (BSC)":"Bitcoin (BTC)"}
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+              {([
+                ["ETH","Ethereum"],["BSC","BNB Chain"],["POLYGON","Polygon"],["ARBITRUM","Arbitrum"],
+                ["OPTIMISM","Optimism"],["BASE","Base"],["AVALANCHE","Avalanche"],["FANTOM","Fantom"],
+                ["GNOSIS","Gnosis"],["LINEA","Linea"],["SCROLL","Scroll"],["ZKSYNC","zkSync"],
+                ["BLAST","Blast"],["CRONOS","Cronos"],["CELO","Celo"],["MANTLE","Mantle"],
+                ["MOONBEAM","Moonbeam"],["BTC","Bitcoin"],
+              ] as const).map(([c,label])=>(
+                <button key={c} onClick={()=>setWalChain(c)} className={`py-2 rounded-lg text-xs font-bold transition-all border-2 ${walChain===c?"bg-gradient-to-r from-amber-600/30 to-orange-600/30 border-amber-500/60 text-amber-300 shadow-lg shadow-amber-900/20":"bg-muted/20 border-border/30 text-muted-foreground hover:border-amber-500/30"}`}>
+                  {label}
                 </button>
               ))}
             </div>
