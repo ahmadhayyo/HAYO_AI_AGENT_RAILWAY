@@ -1196,7 +1196,35 @@ export default function ReverseEngineer(){
     {/* Disclaimer */}
     <Dialog open={disc} onOpenChange={()=>{}}><DialogContent className="max-w-md" dir="rtl"><DialogHeader><DialogTitle className="flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-amber-400"/>تنبيه قانوني</DialogTitle><DialogDescription asChild><div className="text-right text-sm space-y-2"><span className="block">للاستخدام المشروع فقط:</span><span className="block text-emerald-400 text-xs">✅ تفكيك تطبيقاتك · استعادة كود · تحليل أمني</span><span className="block text-red-400 text-xs">❌ تطبيقات الآخرين بدون إذن</span></div></DialogDescription></DialogHeader><DialogFooter><Button onClick={acceptDisc} className="w-full">أوافق</Button></DialogFooter></DialogContent></Dialog>
 
-    <div className="flex flex-col h-full p-4 gap-4" dir="rtl">
+    <style>{`
+      .re-cyber{ position:relative; }
+      .re-cyber-bg{ position:absolute; inset:0; z-index:0; pointer-events:none; overflow:hidden;
+        background:
+          radial-gradient(ellipse at 50% -10%, rgba(16,185,129,.12), transparent 55%),
+          radial-gradient(ellipse at 95% 100%, rgba(34,211,238,.10), transparent 50%),
+          linear-gradient(rgba(16,185,129,.05) 1px, transparent 1px) 0 0/34px 34px,
+          linear-gradient(90deg, rgba(16,185,129,.05) 1px, transparent 1px) 0 0/34px 34px;
+        -webkit-mask-image: radial-gradient(ellipse at 50% 25%, #000 55%, transparent 92%);
+        mask-image: radial-gradient(ellipse at 50% 25%, #000 55%, transparent 92%);
+        animation: reGrid 22s linear infinite; }
+      @keyframes reGrid{ from{background-position:0 0,0 0,0 0,0 0} to{background-position:0 0,0 0,0 340px,340px 0} }
+      .re-cyber-bg::after{ content:""; position:absolute; left:0; right:0; height:140px; top:-140px;
+        background:linear-gradient(180deg, transparent, rgba(34,211,238,.07) 45%, rgba(16,185,129,.07) 55%, transparent);
+        animation: reScan 7s linear infinite; }
+      @keyframes reScan{ 0%{top:-140px} 100%{top:110%} }
+      .re-cyber > *:not(.re-cyber-bg){ position:relative; z-index:1; }
+      .re-glow{ text-shadow:0 0 6px currentColor, 0 0 18px currentColor; }
+      /* auto-glow every gradient clip-text heading */
+      .re-cyber [class*="bg-clip-text"]{ filter: drop-shadow(0 0 7px rgba(34,211,238,.35)); }
+      /* neon focus ring on inputs */
+      .re-cyber input:focus, .re-cyber textarea:focus{ box-shadow:0 0 0 1px rgba(16,185,129,.5), 0 0 18px rgba(16,185,129,.25) !important; border-color:rgba(16,185,129,.6) !important; }
+      /* subtle glow lift on the big gradient action buttons */
+      .re-cyber button[class*="from-"][class*="to-"]{ box-shadow:0 0 22px rgba(16,185,129,.18); }
+      .re-cyber button[class*="from-"][class*="to-"]:hover{ box-shadow:0 0 30px rgba(34,211,238,.35); }
+      @media (prefers-reduced-motion: reduce){ .re-cyber-bg, .re-cyber-bg::after{ animation:none; } }
+    `}</style>
+    <div className="re-cyber flex flex-col h-full p-4 gap-4" dir="rtl">
+      <div className="re-cyber-bg" aria-hidden="true" />
       {/* Header */}
       <div className="flex items-center gap-3">
         <div className="relative shrink-0"><div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/30 to-cyan-500/30 flex items-center justify-center border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.25)]"><ScanSearch className="w-5 h-5 text-emerald-400"/></div><span className="absolute -top-1.5 -left-1.5 text-[8px] font-black bg-gradient-to-r from-emerald-400 to-cyan-400 text-black px-1.5 py-0.5 rounded-full shadow-[0_0_6px_rgba(16,185,129,0.6)]">v4</span></div>
