@@ -177,13 +177,21 @@ export function getToolStatus(): Record<string, { available: boolean; version?: 
 
 /** Flat response for frontend /check-tools endpoint */
 export function getToolStatusFlat(): Record<string, boolean | string | null> {
-  const check = (cmd: string): boolean => {
-    try { execSync(`${cmd} 2>&1`, { timeout: 5000, stdio: "pipe" }); return true; } catch { return false; }
-  };
-  // Some tools (zipalign, aapt2) exit non-zero even for --version/help.
   // Use 'which' to reliably detect if the binary exists on PATH.
   const exists = (bin: string): boolean => {
     try { execSync(`which ${bin}`, { timeout: 3000, stdio: "pipe" }); return true; } catch { return false; }
+  };
+  // Run the command; if it exits non-zero, FALL BACK to a PATH-presence check —
+  // many tools (jarsigner, zipalign, aapt2, dex2jar, apkid…) exit non-zero for
+  // --version/--help yet are perfectly installed, which used to show a false
+  // "red" in the tool-status panel. Piped commands don't get the fallback (the
+  // first token isn't the tool being tested).
+  const check = (cmd: string): boolean => {
+    try { execSync(`${cmd} 2>&1`, { timeout: 5000, stdio: "pipe" }); return true; } catch { /* fall through */ }
+    if (/[|&;><]/.test(cmd)) return false;
+    const bin = cmd.trim().split(/\s+/)[0].replace(/["']/g, "");
+    if (bin.includes("/")) { try { return fs.existsSync(bin); } catch { return false; } }
+    return exists(bin);
   };
   const ver = (cmd: string): string | null => {
     try { return execSync(`${cmd} 2>&1`, { timeout: 5000, stdio: "pipe" }).toString().trim().split("\n")[0]; } catch { return null; }
@@ -219,7 +227,7 @@ export function getToolStatusFlat(): Record<string, boolean | string | null> {
     aapt2Available: check("aapt2 version"),
     dex2jarAvailable: check("d2j-dex2jar.sh --help"),
     r2Available: check("r2 -v"),
-    apkidAvailable: check("apkid --help") || check("python3 -m apkid --help"),
+    apkidAvailable: check("apkid --help"),
     nucleiAvailable: check("nuclei -version"),
   };
 }
