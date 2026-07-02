@@ -3090,8 +3090,8 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
     // Authorized wallet scan (public on-chain data only).
     scanWallet: appBuilderProcedure
       .input(z.object({
-        address: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "عنوان EVM غير صالح"),
-        chain: z.enum(["ETH", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "BASE", "AVALANCHE", "FANTOM", "GNOSIS", "LINEA", "SCROLL", "ZKSYNC", "BLAST", "CRONOS", "CELO", "MANTLE", "MOONBEAM"]).default("ETH"),
+        address: z.string().regex(/^(0x[a-fA-F0-9]{40}|T[1-9A-HJ-NP-Za-km-z]{25,})$/, "عنوان محفظة غير صالح (EVM 0x... أو TRON T...)"),
+        chain: z.enum(["ETH", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "BASE", "AVALANCHE", "FANTOM", "GNOSIS", "LINEA", "SCROLL", "ZKSYNC", "BLAST", "CRONOS", "CELO", "MANTLE", "MOONBEAM", "TRON"]).default("ETH"),
         authorized: z.boolean(),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -3101,8 +3101,13 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           authorized: input.authorized, userId: ctx.user.id, target: "wallet", subject: input.address, ip: ctx.req.ip,
         });
         if (!auth.allowed) throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح" });
+        if (input.chain === "TRON" || /^T[1-9A-HJ-NP-Za-km-z]{25,}$/.test(input.address)) {
+          const { runTronScan } = await import("./pentest/tronEngine.js");
+          const tr = await runTronScan(input.address);
+          return { address: input.address, chain: "TRON", ...tr };
+        }
         const { runWalletScan } = await import("./pentest/walletEngine.js");
-        return runWalletScan(input.address, input.chain);
+        return runWalletScan(input.address, input.chain as any);
       }),
 
     // ── Hybrid dynamic analysis (local Frida companion agent) ──────────

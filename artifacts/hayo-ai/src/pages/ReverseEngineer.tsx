@@ -3263,7 +3263,7 @@ export default function ReverseEngineer(){
                 ["OPTIMISM","Optimism"],["BASE","Base"],["AVALANCHE","Avalanche"],["FANTOM","Fantom"],
                 ["GNOSIS","Gnosis"],["LINEA","Linea"],["SCROLL","Scroll"],["ZKSYNC","zkSync"],
                 ["BLAST","Blast"],["CRONOS","Cronos"],["CELO","Celo"],["MANTLE","Mantle"],
-                ["MOONBEAM","Moonbeam"],["BTC","Bitcoin"],
+                ["MOONBEAM","Moonbeam"],["TRON","TRON (USDT)"],["BTC","Bitcoin"],
               ] as const).map(([c,label])=>(
                 <button key={c} onClick={()=>setWalChain(c)} className={`py-2 rounded-lg text-xs font-bold transition-all border-2 ${walChain===c?"bg-gradient-to-r from-amber-600/30 to-orange-600/30 border-amber-500/60 text-amber-300 shadow-lg shadow-amber-900/20":"bg-muted/20 border-border/30 text-muted-foreground hover:border-amber-500/30"}`}>
                   {label}
