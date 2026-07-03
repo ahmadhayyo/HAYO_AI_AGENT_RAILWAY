@@ -19,62 +19,58 @@ const HAYO_LOGO = `${import.meta.env.BASE_URL ?? "/"}logo.png`;
 // Payment methods configuration
 const PAYMENT_METHODS = {
   paypal: {
-    label: "PayPal",
+    label: "PayPal", instrKey: "pm_paypal",
     icon: "💳",
     address: "fmf0038@gmail.com",
     color: "from-blue-500 to-blue-700",
     bgColor: "bg-blue-500/10 border-blue-500/20",
-    instructions: "أرسل المبلغ إلى حساب PayPal أدناه مع ذكر اسم الخطة في ملاحظات الدفع",
   },
   usdt_erc20: {
-    label: "USDT (ERC-20)",
+    label: "USDT (ERC-20)", instrKey: "pm_erc",
     icon: "🟢",
     address: "0x787e6625657cc8f410A3B233a21c0fa9D34664B0",
     color: "from-emerald-500 to-teal-600",
     bgColor: "bg-emerald-500/10 border-emerald-500/20",
-    instructions: "أرسل USDT عبر شبكة Ethereum (ERC-20) إلى العنوان أدناه",
   },
   usdt_trc20: {
-    label: "USDT (TRC-20)",
+    label: "USDT (TRC-20)", instrKey: "pm_trc",
     icon: "🔴",
     address: "TX92pAkYgq2BtSYbjgqrN4nrXfLJ73yFAy",
     color: "from-red-500 to-rose-600",
     bgColor: "bg-red-500/10 border-red-500/20",
-    instructions: "أرسل USDT عبر شبكة TRON (TRC-20) إلى العنوان أدناه - رسوم أقل",
   },
   bitcoin: {
-    label: "Bitcoin (BTC)",
+    label: "Bitcoin (BTC)", instrKey: "pm_btc",
     icon: "₿",
     address: "3DDVW84radoB6xtAiavkC5KEvditSQcRVx",
     color: "from-orange-500 to-amber-600",
     bgColor: "bg-orange-500/10 border-orange-500/20",
-    instructions: "أرسل Bitcoin إلى العنوان أدناه",
   },
   ethereum: {
-    label: "Ethereum (ETH)",
+    label: "Ethereum (ETH)", instrKey: "pm_eth",
     icon: "⟠",
     address: "0x787e6625657cc8f410A3B233a21c0fa9D34664B0",
     color: "from-indigo-500 to-purple-600",
     bgColor: "bg-indigo-500/10 border-indigo-500/20",
-    instructions: "أرسل Ethereum إلى العنوان أدناه",
   },
 };
 
 type PaymentMethodKey = keyof typeof PAYMENT_METHODS;
 
 function CopyButton({ text }: { text: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(text);
     setCopied(true);
-    toast.success("تم النسخ!");
+    toast.success(t("payment.copied"));
     setTimeout(() => setCopied(false), 2000);
-  }, [text]);
+  }, [text, t]);
   return (
     <button
       onClick={handleCopy}
       className="p-2 rounded-lg hover:bg-white/10 transition-colors"
-      title="نسخ"
+      title={t("payment.copy")}
     >
       {copied ? <Check className="size-4 text-emerald-400" /> : <Copy className="size-4 text-gray-400" />}
     </button>
@@ -82,6 +78,7 @@ function CopyButton({ text }: { text: string }) {
 }
 
 export default function Payment() {
+  const { t, i18n } = useTranslation();
   const { user, isAuthenticated } = useAuth();
   const searchString = useSearch();
   const [, navigate] = useLocation();
@@ -91,7 +88,7 @@ export default function Payment() {
 
   const selectedPlan = plans?.find((p: any) => p.name === planName);
   const price = selectedPlan ? (selectedPlan.priceMonthly / 100).toFixed(0) : planName === "pro" ? "49" : "19";
-  const displayName = selectedPlan?.displayName || (planName === "pro" ? "الاحترافي" : "الأساسي");
+  const displayName = selectedPlan?.displayName || (planName === "pro" ? t("payment.planPro") : t("payment.planBasic"));
 
   const planIcons: Record<string, any> = { free: Zap, basic: Crown, starter: Crown, pro: Rocket, business: Building2 };
   const PlanIcon = planIcons[planName] || Crown;
@@ -112,19 +109,19 @@ export default function Payment() {
       if (data.url) {
         window.location.href = data.url;
       } else {
-        toast.error("فشل إنشاء جلسة الدفع");
+        toast.error(t("payment.stripeFail"));
       }
       setStripeLoading(false);
     },
     onError: (err: any) => {
-      toast.error(err.message || "فشل الاتصال بـ Stripe");
+      toast.error(err.message || t("payment.stripeConnFail"));
       setStripeLoading(false);
     },
   });
 
   const handleStripeCheckout = () => {
     if (!["starter", "pro", "business"].includes(planName)) {
-      toast.error("الخطة المجانية لا تحتاج دفع");
+      toast.error(t("payment.freeNoPay"));
       return;
     }
     setStripeLoading(true);
@@ -139,7 +136,7 @@ export default function Payment() {
   const stripeVerifyMut = trpc.subscriptions.verifyStripePayment.useMutation({
     onSuccess: (data: any) => {
       if (data.success) {
-        toast.success(`🎉 تم تفعيل اشتراك ${data.plan.displayName} بنجاح!`, { duration: 8000 });
+        toast.success(t("payment.activatedToast", { plan: data.plan.displayName }), { duration: 8000 });
       }
     },
   });
@@ -149,14 +146,14 @@ export default function Payment() {
 
   const redeemMutation = trpc.subscriptions.redeem.useMutation({
     onSuccess: (data: any) => {
-      toast.success(`🎉 تم تفعيل اشتراك ${data.plan.displayName} بنجاح!`, {
-        description: `ينتهي بتاريخ ${new Date(data.expiresAt).toLocaleDateString("ar-SA")}`,
+      toast.success(t("payment.activatedToast", { plan: data.plan.displayName }), {
+        description: t("payment.expiresOn", { date: new Date(data.expiresAt).toLocaleDateString(i18n.language) }),
         duration: 6000,
       });
       setTimeout(() => navigate("/chat"), 2000);
     },
     onError: (err: any) => {
-      toast.error("خطأ في الكود", { description: err.message });
+      toast.error(t("payment.codeError"), { description: err.message });
     },
   });
 
@@ -165,11 +162,11 @@ export default function Payment() {
       <div className="min-h-screen bg-[#0a0a0f] text-white flex items-center justify-center">
         <div className="text-center space-y-6 max-w-md px-4">
           <img src={HAYO_LOGO} alt="HAYO AI" className="w-16 h-16 rounded-2xl mx-auto shadow-lg shadow-indigo-500/25" />
-          <h1 className="text-2xl font-bold">سجّل دخولك للاشتراك</h1>
-          <p className="text-gray-400">يجب تسجيل الدخول أولاً لإتمام عملية الاشتراك</p>
+          <h1 className="text-2xl font-bold">{t("payment.loginTitle")}</h1>
+          <p className="text-gray-400">{t("payment.loginDesc")}</p>
           <a href={getLoginUrl()}>
             <Button size="lg" className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white">
-              تسجيل الدخول
+              {t("common.login")}
             </Button>
           </a>
         </div>
@@ -178,13 +175,13 @@ export default function Payment() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white" dir="rtl">
+    <div className="min-h-screen bg-[#0a0a0f] text-white" dir={i18n.dir()}>
       {/* Header */}
       <header className="border-b border-white/5 bg-[#0a0a0f]/80 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           <Link href="/pricing" className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors">
             <ArrowLeft className="size-4" />
-            <span className="text-sm">العودة للأسعار</span>
+            <span className="text-sm">{t("payment.backToPricing")}</span>
           </Link>
           <Link href="/" className="flex items-center gap-2">
             <img src={HAYO_LOGO} alt="HAYO AI" className="w-8 h-8 rounded-lg" />
@@ -200,14 +197,14 @@ export default function Payment() {
             <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${planName === "pro" ? "from-amber-500 to-orange-600" : "from-indigo-500 to-purple-600"} flex items-center justify-center`}>
               <PlanIcon className="size-6 text-white" />
             </div>
-            <div className="text-right">
-              <p className="text-sm text-gray-400">الخطة المختارة</p>
-              <p className="text-xl font-bold">{displayName} - ${displayPrice}<span className="text-sm text-gray-400 font-normal">/{billingPeriod === "yearly" ? "سنة" : "شهر"}</span></p>
+            <div className="text-start">
+              <p className="text-sm text-gray-400">{t("payment.selectedPlan")}</p>
+              <p className="text-xl font-bold">{displayName} - ${displayPrice}<span className="text-sm text-gray-400 font-normal">/{billingPeriod === "yearly" ? t("payment.year") : t("payment.month")}</span></p>
             </div>
           </div>
-          <h1 className="text-3xl font-bold mb-3">إتمام الاشتراك</h1>
+          <h1 className="text-3xl font-bold mb-3">{t("payment.completeTitle")}</h1>
           <p className="text-gray-400 max-w-lg mx-auto">
-            اختر طريقة الدفع المناسبة لك — Stripe (تلقائي فوري) أو يدوي (تفعيل خلال 24 ساعة).
+            {t("payment.completeDesc")}
           </p>
         </div>
 
@@ -215,9 +212,9 @@ export default function Payment() {
         {stripeVerifyMut.isSuccess && (
           <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-6 text-center mb-8 space-y-3">
             <Check className="w-12 h-12 text-emerald-400 mx-auto" />
-            <h2 className="text-xl font-bold text-emerald-400">تم تفعيل اشتراكك بنجاح! 🎉</h2>
-            <p className="text-sm text-gray-300">يمكنك الآن استخدام جميع ميزات خطتك</p>
-            <Link href="/chat"><Button className="bg-emerald-600 hover:bg-emerald-700 gap-2">ابدأ الآن ←</Button></Link>
+            <h2 className="text-xl font-bold text-emerald-400">{t("payment.stripeActivated")}</h2>
+            <p className="text-sm text-gray-300">{t("payment.stripeActivatedDesc")}</p>
+            <Link href="/chat"><Button className="bg-emerald-600 hover:bg-emerald-700 gap-2">{t("payment.startNow")}</Button></Link>
           </div>
         )}
 
@@ -228,12 +225,12 @@ export default function Payment() {
               <Sparkles className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h3 className="font-bold text-lg">💳 الدفع التلقائي — Stripe</h3>
-              <p className="text-xs text-gray-400">بطاقة ائتمان / خصم — تفعيل فوري</p>
+              <h3 className="font-bold text-lg">{t("payment.stripeTitle")}</h3>
+              <p className="text-xs text-gray-400">{t("payment.stripeSub")}</p>
             </div>
-            <div className="mr-auto text-left">
+            <div className="ms-auto text-end">
               <p className="text-2xl font-bold">${displayPrice}</p>
-              <p className="text-[10px] text-gray-400">{billingPeriod === "yearly" ? "سنوي" : "شهري"}</p>
+              <p className="text-[10px] text-gray-400">{billingPeriod === "yearly" ? t("payment.yearly") : t("payment.monthly")}</p>
             </div>
           </div>
           <Button
@@ -242,17 +239,17 @@ export default function Payment() {
             className="w-full py-5 text-base gap-2 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500"
           >
             {stripeLoading ? (
-              <><Clock className="w-5 h-5 animate-spin" /> جاري التوجيه لـ Stripe...</>
+              <><Clock className="w-5 h-5 animate-spin" /> {t("payment.stripeRedirect")}</>
             ) : (
-              <><Shield className="w-5 h-5" /> ادفع ${displayPrice} بالبطاقة — تفعيل فوري</>
+              <><Shield className="w-5 h-5" /> {t("payment.payWithCard", { price: displayPrice })}</>
             )}
           </Button>
-          <p className="text-[10px] text-gray-500 text-center">مدعوم من Stripe — آمن ومشفر</p>
+          <p className="text-[10px] text-gray-500 text-center">{t("payment.stripeSecure")}</p>
         </div>
 
         {/* ═══ Manual Payment Methods ═══ */}
         <div className="mb-4">
-          <h3 className="text-sm font-bold text-gray-400 mb-3">أو الدفع اليدوي (تفعيل خلال 24 ساعة):</h3>
+          <h3 className="text-sm font-bold text-gray-400 mb-3">{t("payment.manualTitle")}</h3>
         </div>
 
         {/* Payment Methods Grid */}
@@ -264,7 +261,7 @@ export default function Payment() {
               <button
                 key={key}
                 onClick={() => setSelectedMethod(isSelected ? null : key)}
-                className={`p-5 rounded-2xl border text-right transition-all duration-300 ${
+                className={`p-5 rounded-2xl border text-start transition-all duration-300 ${
                   isSelected
                     ? `${method.bgColor} border-2 scale-[1.02] shadow-lg`
                     : "bg-white/[0.03] border-white/10 hover:bg-white/[0.06] hover:border-white/20"
@@ -274,7 +271,7 @@ export default function Payment() {
                   <span className="text-2xl">{method.icon}</span>
                   <span className="font-semibold text-lg">{method.label}</span>
                 </div>
-                <p className="text-sm text-gray-400">{method.instructions}</p>
+                <p className="text-sm text-gray-400">{t(`payment.${method.instrKey}`)}</p>
               </button>
             );
           })}
@@ -287,20 +284,20 @@ export default function Payment() {
               <CardHeader className="pb-4">
                 <CardTitle className="flex items-center gap-3 text-xl">
                   <span className="text-2xl">{PAYMENT_METHODS[selectedMethod].icon}</span>
-                  الدفع عبر {PAYMENT_METHODS[selectedMethod].label}
+                  {t("payment.payVia", { method: PAYMENT_METHODS[selectedMethod].label })}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
                 {/* Amount */}
                 <div className="bg-white/5 rounded-xl p-4 flex items-center justify-between">
-                  <span className="text-gray-400">المبلغ المطلوب</span>
+                  <span className="text-gray-400">{t("payment.amountRequired")}</span>
                   <span className="text-2xl font-bold text-white">${price} USD</span>
                 </div>
 
                 {/* Address */}
                 <div>
                   <label className="text-sm text-gray-400 mb-2 block">
-                    {selectedMethod === "paypal" ? "حساب PayPal" : "عنوان المحفظة"}
+                    {selectedMethod === "paypal" ? t("payment.paypalAccount") : t("payment.walletAddress")}
                   </label>
                   <div className="bg-black/40 border border-white/10 rounded-xl p-4 flex items-center gap-3">
                     <code className="flex-1 text-sm font-mono text-emerald-400 break-all select-all">
@@ -314,22 +311,22 @@ export default function Payment() {
                 <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
                   <h4 className="font-semibold text-amber-400 mb-2 flex items-center gap-2">
                     <Shield className="size-4" />
-                    تعليمات مهمة
+                    {t("payment.instrTitle")}
                   </h4>
                   <ul className="space-y-2 text-sm text-gray-300">
                     <li className="flex items-start gap-2">
                       <span className="text-amber-400 mt-0.5">1.</span>
-                      أرسل المبلغ <strong className="text-white">${price} USD</strong> بالضبط إلى العنوان أعلاه
+                      {t("payment.instr1", { price })}
                     </li>
                     <li className="flex items-start gap-2">
                       <span className="text-amber-400 mt-0.5">2.</span>
                       {selectedMethod === "paypal"
-                        ? "اكتب في ملاحظات الدفع: اسمك + الخطة المختارة"
-                        : "احتفظ بـ Transaction Hash (معرّف المعاملة)"}
+                        ? t("payment.instr2paypal")
+                        : t("payment.instr2crypto")}
                     </li>
                     <li className="flex items-start gap-2">
                       <span className="text-amber-400 mt-0.5">3.</span>
-                      تواصل معنا عبر أحد الطرق أدناه لتأكيد الدفع وتفعيل اشتراكك
+                      {t("payment.instr3")}
                     </li>
                   </ul>
                 </div>
@@ -341,17 +338,17 @@ export default function Payment() {
         {/* Contact for Activation */}
         <Card className="bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border-indigo-500/20 mb-10">
           <CardContent className="py-8">
-            <h3 className="text-xl font-bold text-center mb-6">تواصل معنا لتفعيل اشتراكك</h3>
+            <h3 className="text-xl font-bold text-center mb-6">{t("payment.contactTitle")}</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg mx-auto">
               <a
-                href="mailto:fmf0038@gmail.com?subject=HAYO AI Subscription - ${planName}&body=مرحباً، أريد الاشتراك في خطة ${displayName}"
+                href={`mailto:fmf0038@gmail.com?subject=${encodeURIComponent(`HAYO AI Subscription - ${planName}`)}&body=${encodeURIComponent(t("payment.emailBody", { plan: displayName }))}`}
                 className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl p-4 hover:bg-white/10 transition-colors"
               >
                 <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
                   <Mail className="size-5 text-blue-400" />
                 </div>
                 <div>
-                  <p className="font-semibold text-sm">البريد الإلكتروني</p>
+                  <p className="font-semibold text-sm">{t("payment.emailLabel")}</p>
                   <p className="text-xs text-gray-400">fmf0038@gmail.com</p>
                 </div>
               </a>
@@ -365,14 +362,14 @@ export default function Payment() {
                   <MessageCircle className="size-5 text-sky-400" />
                 </div>
                 <div>
-                  <p className="font-semibold text-sm">تلغرام</p>
+                  <p className="font-semibold text-sm">{t("payment.telegramLabel")}</p>
                   <p className="text-xs text-gray-400">@fmf0038</p>
                 </div>
               </a>
             </div>
             <p className="text-center text-sm text-gray-400 mt-6">
-              <Clock className="size-4 inline-block ml-1" />
-              يتم تفعيل الاشتراك خلال 24 ساعة من تأكيد الدفع
+              <Clock className="size-4 inline-block ms-1" />
+              {t("payment.activate24")}
             </p>
           </CardContent>
         </Card>
@@ -387,9 +384,9 @@ export default function Payment() {
               <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
                 <KeyRound className="size-5 text-emerald-400" />
               </div>
-              <div className="text-right">
-                <p className="font-bold text-emerald-400">لديك كود اشتراك؟</p>
-                <p className="text-sm text-gray-400">أدخل الكود الذي أرسله لك المدير لتفعيل اشتراكك فوراً</p>
+              <div className="text-start">
+                <p className="font-bold text-emerald-400">{t("payment.haveCode")}</p>
+                <p className="text-sm text-gray-400">{t("payment.haveCodeDesc")}</p>
               </div>
             </div>
             <span className="text-emerald-400 text-lg group-hover:scale-110 transition-transform">
@@ -403,7 +400,7 @@ export default function Payment() {
                 <CardContent className="pt-6">
                   <div className="space-y-4">
                     <div>
-                      <label className="text-sm text-gray-400 mb-2 block">كود الاشتراك</label>
+                      <label className="text-sm text-gray-400 mb-2 block">{t("payment.codeLabel")}</label>
                       <div className="flex gap-3">
                         <Input
                           value={redeemCode}
@@ -426,26 +423,26 @@ export default function Payment() {
                             <span className="animate-spin">⏳</span>
                           ) : (
                             <>
-                              <Sparkles className="size-4 ml-1" />
-                              تفعيل
+                              <Sparkles className="size-4 me-1" />
+                              {t("payment.activate")}
                             </>
                           )}
                         </Button>
                       </div>
                       <p className="text-xs text-gray-500 mt-2">
-                        مثال: HAYO-A1B2C3-D4E5F6 — الكود يفعّل اشتراكك لمدة شهر كامل
+                        {t("payment.codeExample")}
                       </p>
                     </div>
 
                     {redeemMutation.isError && (
                       <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-                        ❌ {redeemMutation.error?.message || "الكود غير صحيح"}
+                        ❌ {redeemMutation.error?.message || t("payment.codeInvalid")}
                       </div>
                     )}
 
                     {redeemMutation.isSuccess && (
                       <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm">
-                        ✅ تم تفعيل اشتراكك! جارٍ تحويلك للدردشة...
+                        ✅ {t("payment.codeActivated")}
                       </div>
                     )}
                   </div>
@@ -459,11 +456,11 @@ export default function Payment() {
         <div className="text-center text-sm text-gray-500 space-y-2 pb-12">
           <div className="flex items-center justify-center gap-2">
             <Shield className="size-4 text-emerald-500" />
-            <span>جميع المعاملات آمنة ومشفرة</span>
+            <span>{t("payment.securityNote")}</span>
           </div>
           <p>
-            بحاجة لمساعدة؟{" "}
-            <a href="mailto:fmf0038@gmail.com" className="text-indigo-400 hover:underline">تواصل معنا</a>
+            {t("payment.needHelp")}{" "}
+            <a href="mailto:fmf0038@gmail.com" className="text-indigo-400 hover:underline">{t("payment.contactUs")}</a>
           </p>
         </div>
       </div>
