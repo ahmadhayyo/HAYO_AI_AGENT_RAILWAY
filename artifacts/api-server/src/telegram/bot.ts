@@ -9,6 +9,11 @@ import TelegramBot from "node-telegram-bot-api";
 import { callProvider, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
 import { fetchOhlcFallback } from "../hayo/market-data";
+import {
+  calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
+  calcPivotPoints, calcADX, calcStrategies, calcFilters,
+  type StrategySignal, type FilterResult,
+} from "../hayo/market-analysis";
 
 // ─── Config ───────────────────────────────────────────────────────────
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -249,157 +254,11 @@ function emaN(arr: number[], n: number) {
   for (let i = 1; i < arr.length; i++) e = arr[i] * k + e * (1 - k);
   return e;
 }
-function calcRSI(closes: number[], period = 14) {
-  if (closes.length < period + 1) return 50;
-  let g = 0, l = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
-    if (d > 0) g += d; else l -= d;
-  }
-  const ag = g / period, al = l / period;
-  return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
-}
-function calcMACD(closes: number[]) {
-  const m = emaN(closes, 12) - emaN(closes, 26);
-  const s = m * 0.88;
-  return { macd: m, signal: s, histogram: m - s };
-}
-function calcBB(closes: number[], period = 20, mult = 2) {
-  const mid = smaN(closes, period);
-  const sl  = closes.slice(-period);
-  const sd  = Math.sqrt(sl.reduce((a, v) => a + Math.pow(v - mid, 2), 0) / period);
-  return { upper: mid + mult * sd, middle: mid, lower: mid - mult * sd };
-}
-function calcATR(highs: number[], lows: number[], closes: number[], period = 14) {
-  const trs: number[] = [];
-  for (let i = 1; i < highs.length; i++)
-    trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i-1]), Math.abs(lows[i] - closes[i-1])));
-  return smaN(trs, period);
-}
 
-// ─── Strategy Engine ──────────────────────────────────────────────────
-interface Sig { name: string; emoji: string; signal: "BUY"|"SELL"|"NEUTRAL"; strength: number; desc: string }
-interface Flt { name: string; emoji: string; passed: boolean; desc: string }
-
-function calcStrategies(
-  closes: number[], highs: number[], lows: number[],
-  sma20: number, sma50: number, sma200: number|null,
-  RSI: number, MACD: ReturnType<typeof calcMACD>,
-  BB: ReturnType<typeof calcBB>, ATR: number,
-): Sig[] {
-  const price = closes[closes.length - 1];
-  const prev  = closes[closes.length - 2] || price;
-  const res: Sig[] = [];
-
-  // 1 — Trend Following
-  let ts: "BUY"|"SELL"|"NEUTRAL" = "NEUTRAL", tStr = 0;
-  if (sma200) {
-    if (price>sma20&&sma20>sma50&&sma50>sma200){ts="BUY";tStr=88;}
-    else if(price<sma20&&sma20<sma50&&sma50<sma200){ts="SELL";tStr=88;}
-    else if(price>sma20&&sma20>sma50){ts="BUY";tStr=65;}
-    else if(price<sma20&&sma20<sma50){ts="SELL";tStr=65;}
-  } else {
-    if(price>sma20&&sma20>sma50){ts="BUY";tStr=70;}
-    else if(price<sma20&&sma20<sma50){ts="SELL";tStr=70;}
-  }
-  res.push({ name:"تتبع الاتجاه", emoji:"🎯", signal:ts, strength:tStr,
-    desc:ts==="BUY"?"SMA20>50>200 صاعد":ts==="SELL"?"SMA20<50<200 هابط":"لا توافق" });
-
-  // 2 — Breakout (Bollinger)
-  let bs: "BUY"|"SELL"|"NEUTRAL" = "NEUTRAL", bStr = 0;
-  const bbW = (BB.upper-BB.lower)/BB.middle*100;
-  if(bbW>=0.8){
-    if(prev<=BB.lower&&price>BB.lower){bs="BUY";bStr=82;}
-    else if(prev>=BB.upper&&price<BB.upper){bs="SELL";bStr=82;}
-    else if(price<BB.lower){bs="BUY";bStr=68;}
-    else if(price>BB.upper){bs="SELL";bStr=68;}
-  }
-  res.push({ name:"اختراق Bollinger", emoji:"💥", signal:bs, strength:bStr,
-    desc:bbW<0.8?"نطاق ضيق — انتظار":bs==="BUY"?"ارتداد من النطاق السفلي":bs==="SELL"?"ارتداد من النطاق العلوي":"داخل النطاق" });
-
-  // 3 — RSI
-  let rs: "BUY"|"SELL"|"NEUTRAL" = "NEUTRAL", rStr = 0;
-  if(RSI<20){rs="BUY";rStr=92;}else if(RSI<30){rs="BUY";rStr=78;}else if(RSI<38){rs="BUY";rStr=58;}
-  else if(RSI>80){rs="SELL";rStr=92;}else if(RSI>70){rs="SELL";rStr=78;}else if(RSI>62){rs="SELL";rStr=58;}
-  res.push({ name:"زخم RSI", emoji:"⚡", signal:rs, strength:rStr,
-    desc:`RSI=${RSI.toFixed(1)} — ${RSI<30?"ذروة بيع 🔴":RSI<38?"قرب ذروة بيع":RSI>70?"ذروة شراء 🟢":RSI>62?"قرب ذروة شراء":"محايد"}` });
-
-  // 4 — MACD
-  let ms: "BUY"|"SELL"|"NEUTRAL" = "NEUTRAL", mStr = 0;
-  if(MACD.histogram>0&&MACD.macd>MACD.signal){ms="BUY";mStr=Math.min(88,50+Math.round(Math.abs(MACD.histogram)/(Math.abs(MACD.macd)||1)*80));}
-  else if(MACD.histogram<0&&MACD.macd<MACD.signal){ms="SELL";mStr=Math.min(88,50+Math.round(Math.abs(MACD.histogram)/(Math.abs(MACD.macd)||1)*80));}
-  res.push({ name:"تقاطع MACD", emoji:"📊", signal:ms, strength:mStr,
-    desc:`MACD ${MACD.macd>MACD.signal?"فوق":"تحت"} الإشارة` });
-
-  // 5 — Scalping
-  const dist=(price-sma20)/sma20*100;
-  let ss: "BUY"|"SELL"|"NEUTRAL" = "NEUTRAL", sStr = 0;
-  if(dist<-0.20){ss="BUY";sStr=75;}else if(dist<-0.10){ss="BUY";sStr=58;}
-  else if(dist>0.20){ss="SELL";sStr=75;}else if(dist>0.10){ss="SELL";sStr=58;}
-  res.push({ name:"سكالبينج", emoji:"⚡", signal:ss, strength:sStr,
-    desc:`بُعد عن SMA20: ${dist>=0?"+":""}${dist.toFixed(3)}%` });
-
-  // 6 — Swing
-  const dSMA50=Math.abs(price-sma50)/sma50*100, nearSMA50=dSMA50<0.18;
-  let ws: "BUY"|"SELL"|"NEUTRAL" = "NEUTRAL", wStr = 0;
-  if(nearSMA50&&sma20>sma50){ws="BUY";wStr=74;}else if(nearSMA50&&sma20<sma50){ws="SELL";wStr=74;}
-  else if(price>sma50&&RSI<48){ws="BUY";wStr=62;}else if(price<sma50&&RSI>52){ws="SELL";wStr=62;}
-  res.push({ name:"سوينغ", emoji:"🌊", signal:ws, strength:wStr,
-    desc:nearSMA50?`قرب SMA50 — انعكاس محتمل`:`انتظار تصحيح نحو SMA50` });
-
-  // 7 — Support & Resistance
-  {
-    const pd=price>100?2:price>10?3:5, f5=(n:number)=>n.toFixed(pd);
-    const swH:number[]=[],swL:number[]=[];
-    for(let i=3;i<highs.length-3;i++){
-      let isH=true,isL=true;
-      for(let j=i-3;j<=i+3;j++){if(j===i)continue;if(highs[j]>=highs[i])isH=false;if(lows[j]<=lows[i])isL=false;}
-      if(isH)swH.push(highs[i]);if(isL)swL.push(lows[i]);
-    }
-    const cluster=(lvls:number[])=>{
-      const g:{p:number;c:number}[]=[];
-      for(const l of lvls){const x=g.find(x=>Math.abs(x.p-l)<=ATR);if(x){x.p=(x.p*x.c+l)/(x.c+1);x.c++;}else g.push({p:l,c:1});}
-      return g.map(x=>({price:x.p,touches:x.c}));
-    };
-    const vR=cluster(swH).filter(l=>l.price>price&&l.touches>=2).sort((a,b)=>a.price-b.price);
-    const vS=cluster(swL).filter(l=>l.price<price&&l.touches>=2).sort((a,b)=>b.price-a.price);
-    const nR=vR[0]??null,nS=vS[0]??null,prox=ATR*0.5;
-    let srSig:"BUY"|"SELL"|"NEUTRAL"="NEUTRAL",srStr=0,srDesc="";
-    if(nS&&Math.abs(price-nS.price)<=prox){
-      srSig="BUY";srStr=nS.touches>=3?88:72;
-      srDesc=`دعم عند ${f5(nS.price)} (${nS.touches} لمسات${nS.touches>=3?" ✅":" ⚡"})`;
-    } else if(nR&&Math.abs(price-nR.price)<=prox){
-      srSig="SELL";srStr=nR.touches>=3?88:72;
-      srDesc=`مقاومة عند ${f5(nR.price)} (${nR.touches} لمسات${nR.touches>=3?" ✅":" ⚡"})`;
-    } else {
-      srDesc=`دعم: ${nS?f5(nS.price)+"("+nS.touches+"x)":"—"} | مقاومة: ${nR?f5(nR.price)+"("+nR.touches+"x)":"—"}`;
-    }
-    res.push({ name:"دعم ومقاومة", emoji:"🏛️", signal:srSig, strength:srStr, desc:srDesc });
-  }
-  return res;
-}
-
-function calcFilters(
-  price:number,sma20:number,sma50:number,sma200:number|null,
-  RSI:number,ATR:number,closes:number[]
-):Flt[]{
-  const res:Flt[]=[];
-  const ref=sma200||sma50,bull=price>ref;
-  res.push({name:"الاتجاه الرئيسي",emoji:"🧭",passed:true,
-    desc:bull?`📈 صاعد (فوق ${sma200?"SMA200":"SMA50"})`:`📉 هابط (تحت ${sma200?"SMA200":"SMA50"})`});
-  const avgM=smaN(closes.slice(-20).map((c,i,a)=>i>0?Math.abs(c-a[i-1]):0).slice(1),14);
-  const ratio=avgM>0?ATR/avgM:1,hiVol=ratio>2.8;
-  res.push({name:"فلتر التقلب",emoji:"📉",passed:!hiVol,
-    desc:hiVol?`⚠️ تقلب مفرط (${ratio.toFixed(2)}x)`:ratio<0.35?`😴 تقلب منخفض (${ratio.toFixed(2)}x)`:`✅ طبيعي (${ratio.toFixed(2)}x)`});
-  res.push({name:"تأكيد RSI",emoji:"📡",passed:true,
-    desc:`RSI=${RSI.toFixed(1)} — ${RSI>45&&RSI<55?"محايد":RSI>55?"يدعم الشراء":"يدعم البيع"}`});
-  const h=new Date().getUTCHours();
-  const london=h>=8&&h<16,ny=h>=13&&h<21,overlap=h>=13&&h<16,active=london||ny;
-  const sess=overlap?"تداخل London/NY 🔥":london?"London 🇬🇧":ny?"New York 🇺🇸":h<8?"آسيا 🌏":"بين الجلسات";
-  res.push({name:"فلتر الجلسة",emoji:"🕐",passed:active,
-    desc:`${sess} UTC ${String(h).padStart(2,"0")}:${String(new Date().getUTCMinutes()).padStart(2,"0")} ${active?"✅":"⚠️"}`});
-  return res;
-}
+// Strategy/filter shapes now come from the shared market-analysis module (15
+// strategies). Sig/Flt kept as aliases so the message builders below are unchanged.
+type Sig = StrategySignal;
+type Flt = FilterResult;
 
 // ─── Market Data — TwelveData API ─────────────────────────────────────
 interface CacheEntry { data: any; ts: number }
@@ -459,6 +318,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   const closes = rawCandles.map((c: any) => parseFloat(c.close));
   const highs  = rawCandles.map((c: any) => parseFloat(c.high));
   const lows   = rawCandles.map((c: any) => parseFloat(c.low));
+  const opens  = rawCandles.map((c: any) => parseFloat(c.open));
 
   const price  = closes[closes.length - 1];
   const dec    = p.decimals;
@@ -471,11 +331,17 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   const MACD   = calcMACD(closes);
   const BB     = calcBB(closes);
   const ATR    = calcATR(highs, lows, closes);
-  const strategies = calcStrategies(closes, highs, lows, SMA20, SMA50, SMA200, RSI, MACD, BB, ATR);
+  // Extra indicators for the full 15-strategy set (same as the web engine).
+  const STOCH  = calcStochastic(closes, highs, lows);
+  const WILLR  = calcWilliamsR(closes, highs, lows);
+  const PIVOTS = calcPivotPoints(highs, lows, closes);
+  const ADX    = calcADX(highs, lows, closes);
+  const strategies = calcStrategies(closes, highs, lows, SMA20, SMA50, SMA200, RSI, MACD, BB, ATR, STOCH, WILLR, ADX, PIVOTS, opens);
   const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes);
 
   const marketResult = {
     price, fmt, RSI, SMA20, SMA50, SMA200, MACD, BB, ATR,
+    STOCH, WILLR, PIVOTS, ADX,
     strategies, filters,
     datetime: rawCandles[rawCandles.length - 1].datetime,
   };
