@@ -1068,7 +1068,13 @@ function IndicatorsPanel({ data }: { data: TradingData }) {
 // USD-quoted instruments (EURUSD, XAUUSD, BTCUSD, indices…); for USD-base
 // (USDJPY/USDCHF/USDCAD) it converts the quote at entry; crosses are labelled
 // approximate. Pure client-side, no network.
-function RiskCalculator({ pair, currentPrice }: { pair: string; currentPrice: number }) {
+function RiskCalculator({ pair, currentPrice, timeframe, direction, confidence, onLog, logging }: {
+  pair: string; currentPrice: number; timeframe: string;
+  direction?: "BUY" | "SELL" | "HOLD";
+  confidence?: number;
+  onLog?: (p: { entry: number; stopLoss: number; takeProfit?: number }) => void;
+  logging?: boolean;
+}) {
   const dec = pair === "BTCUSD" ? 1 : pair === "XAUUSD" ? 2 : pair === "XAGUSD" ? 3 : pair.includes("JPY") ? 3 : pair === "US30" || pair === "USOIL" ? 2 : 5;
   const pipSize = pair.includes("JPY") ? 0.01 : pair === "XAUUSD" ? 0.1 : pair === "XAGUSD" ? 0.01 : pair === "BTCUSD" || pair === "US30" ? 1 : pair === "USOIL" ? 0.01 : 0.0001;
   const [balance, setBalance] = useState("1000");
@@ -1152,6 +1158,122 @@ function RiskCalculator({ pair, currentPrice }: { pair: string; currentPrice: nu
       )}
       {approx && slDist > 0 && (
         <div className="text-[10px] text-amber-300/70 mt-2">~ تقديري: هذا الزوج غير مسعّر بالدولار مباشرةً؛ التحويل عند سعر الدخول (دقيق لأزواج USD/XXX، تقريبي للأزواج المتقاطعة).</div>
+      )}
+      {onLog && (
+        <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2 flex-wrap">
+          <button
+            disabled={logging || !direction || direction === "HOLD" || !(slDist > 0)}
+            onClick={() => onLog({ entry: e, stopLoss: s, takeProfit: t > 0 ? t : undefined })}
+            className={`text-xs font-semibold px-3 py-2 rounded-lg transition-colors ${
+              logging || !direction || direction === "HOLD" || !(slDist > 0)
+                ? "bg-white/5 text-white/30 cursor-not-allowed"
+                : direction === "BUY"
+                ? "bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
+                : "bg-red-500/20 text-red-300 hover:bg-red-500/30"
+            }`}
+          >
+            📔 {logging ? "جارٍ الحفظ…" : `سجّل هذه الإشارة (${direction === "BUY" ? "شراء" : direction === "SELL" ? "بيع" : "—"})`}
+          </button>
+          <span className="text-[10px] text-white/40">
+            {direction === "HOLD" || !direction
+              ? "الحُكم الحالي «انتظار» — لا تُسجَّل"
+              : !(slDist > 0)
+              ? "أدخل وقف الخسارة أولاً"
+              : "يُحفظ ويُقيَّم تلقائياً عند لمس الهدف أو الوقف"}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Signal Performance Journal Panel ────────────────────────────────
+function JournalPanel() {
+  const statsQ = trpc.tradingAnalysis.journalStats.useQuery(undefined, { refetchInterval: 60_000 });
+  const listQ = trpc.tradingAnalysis.journalList.useQuery({ limit: 30 }, { refetchInterval: 60_000 });
+  const evalMut = trpc.tradingAnalysis.journalEvaluateNow.useMutation({
+    onSuccess: () => { statsQ.refetch(); listQ.refetch(); toast.success("تمّ تحديث نتائج الإشارات"); },
+  });
+  const s = statsQ.data as any;
+  const list = (listQ.data as any[]) || [];
+  const hasData = s && s.total > 0;
+
+  const statusChip = (st: string) =>
+    st === "win" ? <span className="text-emerald-400">✅ ربح</span>
+    : st === "loss" ? <span className="text-red-400">❌ خسارة</span>
+    : st === "expired" ? <span className="text-white/40">⌛ منتهية</span>
+    : <span className="text-amber-400">⏳ مفتوحة</span>;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">📔</span>
+          <span className="font-bold text-sm text-white/90">سجلّ أداء الإشارات</span>
+        </div>
+        <button
+          onClick={() => evalMut.mutate()}
+          disabled={evalMut.isPending}
+          className="text-[11px] px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/15 text-white/70 hover:bg-white/10 disabled:opacity-50"
+        >
+          {evalMut.isPending ? "…" : "🔄 تحديث النتائج"}
+        </button>
+      </div>
+
+      {!hasData ? (
+        <div className="text-xs text-white/40 text-center py-4">
+          لا توجد إشارات مسجّلة بعد. استخدم زر «📔 سجّل هذه الإشارة» في الحاسبة أعلاه لبدء تتبّع أدائك.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/25 py-2 text-center">
+              <div className="text-[10px] text-white/50">نسبة الربح</div>
+              <div className="text-lg font-bold text-emerald-300 tabular-nums">{s.winRate}%</div>
+              <div className="text-[9px] text-white/40">{s.wins}✅ / {s.losses}❌</div>
+            </div>
+            <div className="rounded-lg bg-white/5 border border-white/15 py-2 text-center">
+              <div className="text-[10px] text-white/50">عامل الربح (PF)</div>
+              <div className={`text-lg font-bold tabular-nums ${s.profitFactor >= 1 ? "text-emerald-300" : "text-red-300"}`}>{s.profitFactor >= 999 ? "∞" : s.profitFactor}</div>
+            </div>
+            <div className="rounded-lg bg-white/5 border border-white/15 py-2 text-center">
+              <div className="text-[10px] text-white/50">متوسط R</div>
+              <div className={`text-lg font-bold tabular-nums ${s.avgR >= 0 ? "text-emerald-300" : "text-red-300"}`}>{s.avgR > 0 ? "+" : ""}{s.avgR}R</div>
+            </div>
+            <div className="rounded-lg bg-white/5 border border-white/15 py-2 text-center">
+              <div className="text-[10px] text-white/50">صافي R / مفتوحة</div>
+              <div className={`text-lg font-bold tabular-nums ${s.totalR >= 0 ? "text-emerald-300" : "text-red-300"}`}>{s.totalR > 0 ? "+" : ""}{s.totalR}R</div>
+              <div className="text-[9px] text-white/40">{s.open} مفتوحة</div>
+            </div>
+          </div>
+
+          {Array.isArray(s.byPair) && s.byPair.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {s.byPair.filter((p: any) => p.wins + p.losses > 0).map((p: any) => (
+                <span key={p.pair} className="text-[10px] px-2 py-1 rounded-full bg-white/5 border border-white/10 text-white/60">
+                  {p.pair}: <span className={p.winRate >= 50 ? "text-emerald-400" : "text-red-400"}>{p.winRate}%</span> ({p.wins}/{p.wins + p.losses})
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="max-h-64 overflow-y-auto space-y-1">
+            {list.map((r: any) => (
+              <div key={r.id} className="flex items-center justify-between gap-2 text-[11px] py-1.5 px-2 rounded-lg bg-black/20 border border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`font-bold ${r.direction === "BUY" ? "text-emerald-400" : "text-red-400"}`}>{r.direction === "BUY" ? "▲" : "▼"}</span>
+                  <span className="font-semibold text-white/80">{r.pair}</span>
+                  <span className="text-white/40">{r.timeframe}</span>
+                  <span className="text-white/40 font-mono truncate">@{Number(r.entry)}</span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {r.outcomeR != null && <span className={`font-mono ${Number(r.outcomeR) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{Number(r.outcomeR) > 0 ? "+" : ""}{Number(r.outcomeR)}R</span>}
+                  {statusChip(r.status)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
@@ -1278,6 +1400,16 @@ export default function TradingAnalysis() {
         toast.error(`خطأ: ${err.message}`);
       }
     },
+  });
+
+  const journalUtils = trpc.useUtils();
+  const journalLogMut = trpc.tradingAnalysis.journalLog.useMutation({
+    onSuccess: () => {
+      toast.success("📔 تم تسجيل الإشارة — ستُقيَّم تلقائياً");
+      journalUtils.tradingAnalysis.journalStats.invalidate();
+      journalUtils.tradingAnalysis.journalList.invalidate();
+    },
+    onError: (err: any) => toast.error(`تعذّر التسجيل: ${err.message}`),
   });
 
   const handleAnalyze = (pair = selectedPair, tf = selectedTf) => {
@@ -1567,8 +1699,27 @@ export default function TradingAnalysis() {
               )}
 
               {tradingData && !analyzeMutation.isPending && (
-                <RiskCalculator pair={selectedPair} currentPrice={tradingData.currentPrice} />
+                <RiskCalculator
+                  pair={selectedPair}
+                  currentPrice={tradingData.currentPrice}
+                  timeframe={selectedTf}
+                  direction={tradingData.technicalVerdict?.direction}
+                  confidence={tradingData.technicalVerdict?.confidence}
+                  logging={journalLogMut.isPending}
+                  onLog={(p) => journalLogMut.mutate({
+                    pair: selectedPair,
+                    timeframe: selectedTf,
+                    direction: (tradingData.technicalVerdict?.direction as "BUY" | "SELL"),
+                    entry: p.entry,
+                    stopLoss: p.stopLoss,
+                    takeProfit: p.takeProfit,
+                    confidence: tradingData.technicalVerdict?.confidence ?? 0,
+                    source: "manual",
+                  })}
+                />
               )}
+
+              {tradingData && !analyzeMutation.isPending && <JournalPanel />}
 
               {/* Live news filter banner — deterministic real-time countdown gate */}
               {tradingData && !analyzeMutation.isPending && tradingData.newsRisk && (

@@ -272,6 +272,111 @@ export async function ensureSubscriptionSchema(): Promise<void> {
   console.log(`[Schema] ensureSubscriptionSchema: ${ok}/${ddl.length} statements applied`);
 }
 
+// ==================== Signal Performance Journal ====================
+// Standalone table (not in the Drizzle schema package) — created idempotently
+// at boot. Tracks each logged forex signal and its realized outcome so the
+// owner can measure win-rate / profit-factor / avg R per pair.
+export async function ensureSignalJournalSchema(): Promise<void> {
+  if (!db) return;
+  try {
+    await db.execute(sql.raw(`
+      CREATE TABLE IF NOT EXISTS "signalJournal" (
+        "id" serial PRIMARY KEY,
+        "userId" integer,
+        "pair" varchar(16) NOT NULL,
+        "timeframe" varchar(8) NOT NULL,
+        "direction" varchar(4) NOT NULL,
+        "entry" double precision NOT NULL,
+        "stopLoss" double precision NOT NULL,
+        "takeProfit" double precision,
+        "confidence" integer NOT NULL DEFAULT 0,
+        "source" varchar(16) NOT NULL DEFAULT 'manual',
+        "status" varchar(12) NOT NULL DEFAULT 'open',
+        "outcomeR" double precision,
+        "closePrice" double precision,
+        "note" text,
+        "createdAt" timestamp NOT NULL DEFAULT now(),
+        "closedAt" timestamp
+      )`));
+    console.log("[Schema] ensureSignalJournalSchema: ok");
+  } catch (e: any) {
+    console.warn("[Schema] ensureSignalJournalSchema failed:", e?.message);
+  }
+}
+
+export interface SignalJournalInput {
+  userId?: number | null;
+  pair: string; timeframe: string; direction: "BUY" | "SELL";
+  entry: number; stopLoss: number; takeProfit?: number | null;
+  confidence?: number; source?: string; note?: string | null;
+}
+export async function insertSignalJournal(s: SignalJournalInput): Promise<number> {
+  const database = ensureDb();
+  const res: any = await database.execute(sql`
+    INSERT INTO "signalJournal" ("userId","pair","timeframe","direction","entry","stopLoss","takeProfit","confidence","source","note")
+    VALUES (${s.userId ?? null}, ${s.pair}, ${s.timeframe}, ${s.direction}, ${s.entry}, ${s.stopLoss}, ${s.takeProfit ?? null}, ${s.confidence ?? 0}, ${s.source ?? "manual"}, ${s.note ?? null})
+    RETURNING "id"`);
+  const rows = res.rows ?? res;
+  return rows?.[0]?.id ?? 0;
+}
+
+export async function getOpenSignals(): Promise<any[]> {
+  if (!db) return [];
+  const res: any = await db.execute(sql`SELECT * FROM "signalJournal" WHERE "status" = 'open' ORDER BY "createdAt" ASC LIMIT 500`);
+  return res.rows ?? res ?? [];
+}
+
+export async function closeSignalJournal(id: number, status: "win" | "loss" | "expired", closePrice: number | null, outcomeR: number | null): Promise<void> {
+  if (!db) return;
+  await db.execute(sql`UPDATE "signalJournal" SET "status" = ${status}, "closePrice" = ${closePrice}, "outcomeR" = ${outcomeR}, "closedAt" = now() WHERE "id" = ${id}`);
+}
+
+export async function getJournalList(limit = 50, userId?: number | null): Promise<any[]> {
+  if (!db) return [];
+  const res: any = userId != null
+    ? await db.execute(sql`SELECT * FROM "signalJournal" WHERE "userId" = ${userId} ORDER BY "createdAt" DESC LIMIT ${limit}`)
+    : await db.execute(sql`SELECT * FROM "signalJournal" ORDER BY "createdAt" DESC LIMIT ${limit}`);
+  return res.rows ?? res ?? [];
+}
+
+export async function getJournalStats(userId?: number | null): Promise<any> {
+  if (!db) return null;
+  const whereClause = userId != null ? sql`WHERE "userId" = ${userId}` : sql``;
+  const res: any = await db.execute(sql`
+    SELECT
+      count(*) FILTER (WHERE "status" = 'win')  AS wins,
+      count(*) FILTER (WHERE "status" = 'loss') AS losses,
+      count(*) FILTER (WHERE "status" = 'open') AS open,
+      count(*) FILTER (WHERE "status" = 'expired') AS expired,
+      count(*) AS total,
+      COALESCE(sum("outcomeR") FILTER (WHERE "status" = 'win'), 0)  AS gross_win_r,
+      COALESCE(sum("outcomeR") FILTER (WHERE "status" = 'loss'), 0) AS gross_loss_r,
+      COALESCE(avg("outcomeR") FILTER (WHERE "status" IN ('win','loss')), 0) AS avg_r
+    FROM "signalJournal" ${whereClause}`);
+  const r = (res.rows ?? res ?? [])[0] || {};
+  const wins = Number(r.wins || 0), losses = Number(r.losses || 0);
+  const grossWin = Number(r.gross_win_r || 0), grossLoss = Math.abs(Number(r.gross_loss_r || 0));
+  const closed = wins + losses;
+  // Per-pair breakdown
+  const pairRes: any = await db.execute(sql`
+    SELECT "pair",
+      count(*) FILTER (WHERE "status" = 'win')  AS wins,
+      count(*) FILTER (WHERE "status" = 'loss') AS losses
+    FROM "signalJournal" ${whereClause} GROUP BY "pair" ORDER BY count(*) DESC LIMIT 12`);
+  const byPair = (pairRes.rows ?? pairRes ?? []).map((p: any) => {
+    const w = Number(p.wins || 0), l = Number(p.losses || 0);
+    return { pair: p.pair, wins: w, losses: l, winRate: w + l > 0 ? Math.round((w / (w + l)) * 100) : 0 };
+  });
+  return {
+    wins, losses, open: Number(r.open || 0), expired: Number(r.expired || 0), total: Number(r.total || 0),
+    winRate: closed > 0 ? Math.round((wins / closed) * 100) : 0,
+    profitFactor: grossLoss > 0 ? Number((grossWin / grossLoss).toFixed(2)) : (grossWin > 0 ? 999 : 0),
+    avgR: Number(Number(r.avg_r || 0).toFixed(2)),
+    totalR: Number((grossWin - grossLoss).toFixed(2)),
+    byPair,
+  };
+}
+
 export async function seedDefaultPlans(): Promise<void> {
   if (!db) {
     console.warn("[Seed] Database not available — skipping default plans seed");

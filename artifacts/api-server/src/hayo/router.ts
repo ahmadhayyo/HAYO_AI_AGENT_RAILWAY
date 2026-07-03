@@ -135,6 +135,7 @@ import {
   addMessage, getConversationMessages,
   saveUploadedFile, getUserFiles, getFileById,
   getActivePlans, getPlanById, seedDefaultPlans, seedOwnerAccount, ensureSubscriptionSchema,
+  ensureSignalJournalSchema, insertSignalJournal, getOpenSignals, closeSignalJournal, getJournalList, getJournalStats,
   getUserActiveSubscription, createSubscription, getEffectivePlan,
   getOrCreateDailyUsage, incrementUsage,
   checkCredits, deductCredits, CREDIT_COSTS,
@@ -155,9 +156,68 @@ setTimeout(async () => {
   } catch (err) {
     console.error("[Schema] ensureSubscriptionSchema failed:", err);
   }
+  ensureSignalJournalSchema().catch(err => console.error("[Schema] ensureSignalJournalSchema failed:", err));
   seedDefaultPlans().catch(err => console.error("[Seed] Failed to seed plans:", err));
   seedOwnerAccount().catch(err => console.error("[Seed] Failed to seed owner:", err));
 }, 5000);
+
+// ── Signal-journal outcome evaluator ────────────────────────────────────
+// Every 15 min: for each OPEN logged signal, pull recent candles for its pair/
+// timeframe and check whether price hit the stop-loss or take-profit (SL checked
+// first per candle = pessimistic). Marks win/loss with the realized R multiple,
+// or expires signals still open after 5 days. Independent of the UI.
+async function evaluateSignalJournal(): Promise<void> {
+  let open: any[] = [];
+  try { open = await getOpenSignals(); } catch { return; }
+  if (!open.length) return;
+  const tdSymbolMap: Record<string, string> = {
+    EURUSD: "EUR/USD", USDJPY: "USD/JPY", GBPUSD: "GBP/USD", GBPJPY: "GBP/JPY",
+    USDCHF: "USD/CHF", AUDUSD: "AUD/USD", NZDUSD: "NZD/USD", USDCAD: "USD/CAD",
+    EURGBP: "EUR/GBP", EURJPY: "EUR/JPY", EURCHF: "EUR/CHF", AUDCAD: "AUD/CAD",
+    XAUUSD: "XAU/USD", XAGUSD: "XAG/USD", BTCUSD: "BTC/USD", ETHUSD: "ETH/USD",
+    USOIL: "CL", US30: "DJIA",
+  };
+  const now = Date.now();
+  const EXPIRE_MS = 5 * 24 * 60 * 60 * 1000;
+  // Group by pair+timeframe to reuse one candle fetch per group.
+  const groups = new Map<string, any[]>();
+  for (const s of open) {
+    const k = `${s.pair}|${s.timeframe}`;
+    (groups.get(k) || groups.set(k, []).get(k)!).push(s);
+  }
+  for (const [key, sigs] of groups) {
+    const [pair, timeframe] = key.split("|");
+    const symbol = tdSymbolMap[pair];
+    if (!symbol) continue;
+    let candles: Array<{ high: number; low: number; time: number }> = [];
+    try {
+      const td = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${timeframe}&outputsize=200&apikey=__API_KEY__`);
+      if (td?.values && Array.isArray(td.values)) {
+        candles = td.values.map((c: any) => ({ high: parseFloat(c.high), low: parseFloat(c.low), time: Date.parse(c.datetime) })).filter((c: any) => !Number.isNaN(c.time));
+      }
+    } catch { /* skip group this cycle */ }
+    for (const s of sigs) {
+      const created = new Date(s.createdAt).getTime();
+      const entry = Number(s.entry), sl = Number(s.stopLoss), tp = s.takeProfit != null ? Number(s.takeProfit) : null;
+      const isBuy = s.direction === "BUY";
+      const rDen = Math.abs(entry - sl) || 1e-9;
+      // Look at candles strictly AFTER the signal was created, oldest → newest.
+      const after = candles.filter((c) => c.time > created).sort((a, b) => a.time - b.time);
+      let done = false;
+      for (const c of after) {
+        const hitSL = isBuy ? c.low <= sl : c.high >= sl;
+        const hitTP = tp != null && (isBuy ? c.high >= tp : c.low <= tp);
+        if (hitSL) { await closeSignalJournal(s.id, "loss", sl, -1).catch(() => {}); done = true; break; }
+        if (hitTP) { const r = Math.abs((tp as number) - entry) / rDen; await closeSignalJournal(s.id, "win", tp, Number(r.toFixed(2))).catch(() => {}); done = true; break; }
+      }
+      if (!done && now - created > EXPIRE_MS) {
+        await closeSignalJournal(s.id, "expired", null, null).catch(() => {});
+      }
+    }
+  }
+}
+setInterval(() => { evaluateSignalJournal().catch(() => {}); }, 15 * 60 * 1000);
+setTimeout(() => { evaluateSignalJournal().catch(() => {}); }, 60 * 1000);
 
 // ── Desktop download token store (in-memory, 24h TTL) ────────────
 export const desktopDownloadMap = new Map<string, { zipPath: string; filename: string; expiresAt: number }>();
@@ -4157,6 +4217,51 @@ ${scanSummary}
       const { sendTestConvergenceSignal } = await import("../telegram/bot.js");
       const result = await sendTestConvergenceSignal();
       return { result };
+    }),
+
+    // ── Signal Performance Journal ─────────────────────────────────────
+    journalLog: protectedProcedure
+      .input(z.object({
+        pair: z.string(),
+        timeframe: z.string(),
+        direction: z.enum(["BUY", "SELL"]),
+        entry: z.number(),
+        stopLoss: z.number(),
+        takeProfit: z.number().optional(),
+        confidence: z.number().optional(),
+        source: z.string().optional(),
+        note: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        await ensureSignalJournalSchema();
+        // Basic sanity: SL must be on the correct side of entry.
+        if (input.direction === "BUY" && input.stopLoss >= input.entry)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "لصفقة شراء، وقف الخسارة يجب أن يكون أقل من سعر الدخول" });
+        if (input.direction === "SELL" && input.stopLoss <= input.entry)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "لصفقة بيع، وقف الخسارة يجب أن يكون أعلى من سعر الدخول" });
+        const id = await insertSignalJournal({
+          userId: ctx.user.id, pair: input.pair, timeframe: input.timeframe, direction: input.direction,
+          entry: input.entry, stopLoss: input.stopLoss, takeProfit: input.takeProfit ?? null,
+          confidence: input.confidence ?? 0, source: input.source ?? "manual", note: input.note ?? null,
+        });
+        return { id };
+      }),
+
+    journalStats: protectedProcedure.query(async ({ ctx }) => {
+      await ensureSignalJournalSchema();
+      return getJournalStats(ctx.user.id);
+    }),
+
+    journalList: protectedProcedure
+      .input(z.object({ limit: z.number().min(1).max(200).default(50) }).optional())
+      .query(async ({ ctx, input }) => {
+        await ensureSignalJournalSchema();
+        return getJournalList(input?.limit ?? 50, ctx.user.id);
+      }),
+
+    journalEvaluateNow: protectedProcedure.mutation(async () => {
+      await evaluateSignalJournal();
+      return { ok: true };
     }),
 
     // ── Send Full Analysis to Telegram ────────────────────────────────
