@@ -4766,6 +4766,49 @@ ${scanSummary}
         const rsiLabel = rsi > 70 ? "ذروة شراء ⚠️" : rsi < 30 ? "ذروة بيع ⚠️" : "محايد";
         const last5 = candles.slice(-5).map((c, i) => `  ${i + 1}. O:${c.open} H:${c.high} L:${c.low} C:${c.close}`).join("\n");
 
+        // ── Deterministic Technical Verdict — objective aggregate of all layers ──
+        // Independent of the AIs: weighted vote over strategies + filters + HTF,
+        // gated by the live news filter. Gives a fast, reproducible read.
+        let technicalVerdict: { direction: "BUY" | "SELL" | "HOLD"; score: number; confidence: number; reasons: string[] };
+        {
+          const reasons: string[] = [];
+          let vote = 0; // >0 bullish, <0 bearish
+          // 1) Strategy consensus weighted by strength
+          for (const s of strategySignals) {
+            if (s.signal === "BUY") vote += s.strength / 100;
+            else if (s.signal === "SELL") vote -= s.strength / 100;
+          }
+          reasons.push(`الاستراتيجيات: ${buySigs} شراء / ${sellSigs} بيع (متوسط قوة ${avgStrength.toFixed(0)}%)`);
+          // 2) Filters (trend direction)
+          if (trendFilter) {
+            if (trendFilter.allowsBuy) { vote += 1.2; reasons.push("فلتر الاتجاه: صاعد ✅"); }
+            else { vote -= 1.2; reasons.push("فلتر الاتجاه: هابط ✅"); }
+          }
+          // 3) HTF bias (strong weight — top-down)
+          if (htf.bias === "BUY") { vote += 2; reasons.push(`الإطار الأعلى (${htf.interval}): صاعد 📈`); }
+          else if (htf.bias === "SELL") { vote -= 2; reasons.push(`الإطار الأعلى (${htf.interval}): هابط 📉`); }
+          else reasons.push(`الإطار الأعلى (${htf.interval}): عرضي ↔️`);
+          // 4) Volatility/session context
+          if (volFilter && !volFilter.passed) reasons.push("⚠️ تقلب مفرط — خطر متزايد");
+          if (sessionFilter && !sessionFilter.passed) reasons.push("⚠️ خارج الجلسات الرئيسية");
+
+          const maxVote = strategySignals.length * 1 + 1.2 + 2; // rough normalizer
+          const norm = Math.max(-1, Math.min(1, vote / (maxVote * 0.55)));
+          let direction: "BUY" | "SELL" | "HOLD" = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
+          let confidence = Math.round(Math.abs(norm) * 100);
+
+          // 5) LIVE news gate overrides
+          if (newsRisk.dangerZone) {
+            direction = "HOLD";
+            confidence = Math.min(confidence, 25);
+            reasons.unshift(`⛔ ${newsRisk.label}`);
+          } else if (newsRisk.cautionZone) {
+            confidence = Math.round(confidence * 0.7);
+            reasons.unshift(`⚠️ ${newsRisk.label}`);
+          }
+          technicalVerdict = { direction, score: Math.round(norm * 100), confidence, reasons };
+        }
+
         const marketContext = `═══════════════════════════════
 تحليل زوج ${input.pair} — الإطار الزمني: ${input.timeframe}
 السعر الحالي: ${fmt(currentPrice)}
@@ -4800,6 +4843,9 @@ ${newsContext}
 🧭 انحياز الإطار الأعلى (Multi-Timeframe): ${htf.trend === "صاعد" ? "📈 صاعد" : htf.trend === "هابط" ? "📉 هابط" : "↔️ عرضي"} على ${htf.interval}
 ${htf.note}
 ⚖️ قاعدة MTF: الإشارات المتوافقة مع انحياز الإطار الأعلى أعلى احتمالاً؛ إشارة معاكسة للإطار الأعلى تحتاج تأكيداً أقوى (اعتبرها ارتداداً/سكالب قصير فقط).
+
+⚙️ الحُكم الفني الآلي (تجميع موضوعي لكل الطبقات): ${technicalVerdict.direction === "BUY" ? "🟢 شراء" : technicalVerdict.direction === "SELL" ? "🔴 بيع" : "🟡 انتظار"} — ثقة ${technicalVerdict.confidence}% (score ${technicalVerdict.score})
+${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
 
 ملاحظة: الاتجاه الرئيسي ${trendFilter?.allowsBuy ? "📈 صاعد" : "📉 هابط"} — ${trendFilter?.allowsBuy ? "يفضّل الشراء" : "يفضّل البيع"}.`.trim();
 
@@ -4885,6 +4931,7 @@ ${htf.note}
           economicNews: economicNewsItems,
           newsRisk,
           htf,
+          technicalVerdict,
           results: settled.map((r, i) => {
             if (r.status === "fulfilled") return r.value;
             return {

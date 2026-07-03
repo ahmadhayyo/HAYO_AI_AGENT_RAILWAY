@@ -103,6 +103,12 @@ interface TradingData {
     bias: "BUY" | "SELL" | "NEUTRAL";
     note: string;
   };
+  technicalVerdict?: {
+    direction: "BUY" | "SELL" | "HOLD";
+    score: number;
+    confidence: number;
+    reasons: string[];
+  };
   results: AnalysisResult[];
 }
 
@@ -1417,6 +1423,49 @@ export default function TradingAnalysis() {
               animate={{ opacity: 1, y: 0 }}
               className="space-y-4"
             >
+              {/* Deterministic Technical Verdict — objective aggregate of all layers */}
+              {tradingData && !analyzeMutation.isPending && tradingData.technicalVerdict && (
+                <div
+                  className={`rounded-xl border-2 px-4 py-4 ${
+                    tradingData.technicalVerdict.direction === "BUY"
+                      ? "bg-emerald-500/10 border-emerald-500/50"
+                      : tradingData.technicalVerdict.direction === "SELL"
+                      ? "bg-red-500/10 border-red-500/50"
+                      : "bg-amber-500/10 border-amber-500/50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">⚙️</span>
+                      <span className="text-xs uppercase tracking-wide text-white/60">الحُكم الفني الآلي (مستقل عن الـ AI)</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={`text-lg font-extrabold ${
+                          tradingData.technicalVerdict.direction === "BUY"
+                            ? "text-emerald-400"
+                            : tradingData.technicalVerdict.direction === "SELL"
+                            ? "text-red-400"
+                            : "text-amber-400"
+                        }`}
+                      >
+                        {tradingData.technicalVerdict.direction === "BUY"
+                          ? "🟢 شراء"
+                          : tradingData.technicalVerdict.direction === "SELL"
+                          ? "🔴 بيع"
+                          : "🟡 انتظار"}
+                      </span>
+                      <span className="text-sm font-bold text-white/80 tabular-nums">ثقة {tradingData.technicalVerdict.confidence}%</span>
+                    </div>
+                  </div>
+                  <ul className="text-xs text-white/70 space-y-0.5 leading-relaxed">
+                    {tradingData.technicalVerdict.reasons.map((r, i) => (
+                      <li key={i}>• {r}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {tradingData && !analyzeMutation.isPending && (
                 <ConsensusBanner results={tradingData.results} news={analysisNews} />
               )}
