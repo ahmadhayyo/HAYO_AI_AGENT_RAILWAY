@@ -1024,5 +1024,18 @@
     "codeExecution": "Code execution",
     "fileUploads": "File uploads",
     "webSearchUsage": "Web search"
+  },
+  "converter": {
+    "loginDesc": "Log in to use the file converter",
+    "backToAgent": "← Back to Agent",
+    "title": "File Converter",
+    "subtitle": "Convert between Excel, Word, PDF, CSV and text",
+    "available": "Available conversions",
+    "texts": "Text",
+    "pdfNote": "* Works with text-based PDFs only (scanned PDFs are not supported)",
+    "tips": "Tips",
+    "tip1": "You can edit the data before converting",
+    "tip2": "All conversions happen locally in your browser",
+    "tip3": "No data is saved on the server"
   }
 }

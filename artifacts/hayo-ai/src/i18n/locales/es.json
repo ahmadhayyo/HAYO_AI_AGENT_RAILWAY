@@ -1024,5 +1024,18 @@
     "codeExecution": "Ejecución de código",
     "fileUploads": "Subidas de archivos",
     "webSearchUsage": "Búsqueda web"
+  },
+  "converter": {
+    "loginDesc": "Inicia sesión para usar el conversor de archivos",
+    "backToAgent": "← Volver al agente",
+    "title": "Conversor de archivos",
+    "subtitle": "Convierte entre Excel, Word, PDF, CSV y texto",
+    "available": "Conversiones disponibles",
+    "texts": "Texto",
+    "pdfNote": "* Funciona solo con PDF de texto (no admite PDF escaneado)",
+    "tips": "Consejos",
+    "tip1": "Puedes editar los datos antes de convertir",
+    "tip2": "Todas las conversiones ocurren localmente en tu navegador",
+    "tip3": "No se guardan datos en el servidor"
   }
 }

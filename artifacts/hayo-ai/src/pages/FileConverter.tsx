@@ -27,12 +27,12 @@ export default function FileConverter() {
       <div className="min-h-screen bg-background flex items-center justify-center p-4">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle>يجب تسجيل الدخول</CardTitle>
-            <CardDescription>قم بتسجيل الدخول لاستخدام محول الصيغ</CardDescription>
+            <CardTitle>{t("account.loginRequired")}</CardTitle>
+            <CardDescription>{t("converter.loginDesc")}</CardDescription>
           </CardHeader>
           <CardContent>
             <Button asChild className="w-full">
-              <a href={getLoginUrl()}>تسجيل الدخول</a>
+              <a href={getLoginUrl()}>{t("common.login")}</a>
             </Button>
           </CardContent>
         </Card>
@@ -48,12 +48,12 @@ export default function FileConverter() {
           <div>
             <div className="flex items-center gap-3 mb-2">
               <Link href="/agent" className="text-muted-foreground hover:text-primary">
-                ← العودة للوكيل
+                {t("converter.backToAgent")}
               </Link>
             </div>
-            <h1 className="text-3xl font-bold">محول الصيغ</h1>
+            <h1 className="text-3xl font-bold">{t("converter.title")}</h1>
             <p className="text-muted-foreground mt-2">
-              حول بين Excel و Word و PDF و CSV و النصوص
+              {t("converter.subtitle")}
             </p>
           </div>
         </div>
@@ -105,7 +105,7 @@ export default function FileConverter() {
           <div className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">تحويلات متاحة</CardTitle>
+                <CardTitle className="text-base">{t("converter.available")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 {activeTab === "excel" && (
@@ -138,7 +138,7 @@ export default function FileConverter() {
                     <div className="flex items-center gap-2 text-sm">
                       <span className="font-medium">Word</span>
                       <ArrowRight className="w-4 h-4" />
-                      <span className="text-muted-foreground">النصوص</span>
+                      <span className="text-muted-foreground">{t("converter.texts")}</span>
                     </div>
                   </div>
                 )}
@@ -148,14 +148,14 @@ export default function FileConverter() {
                     <div className="flex items-center gap-2 text-sm">
                       <span className="font-medium">PDF</span>
                       <ArrowRight className="w-4 h-4" />
-                      <span className="text-green-600 font-medium">نص .txt ✓</span>
+                      <span className="text-green-600 font-medium">{t("converter.texts")} .txt ✓</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       <span className="font-medium">PDF</span>
                       <ArrowRight className="w-4 h-4" />
                       <span className="text-green-600 font-medium">Word .docx ✓</span>
                     </div>
-                    <p className="text-xs text-muted-foreground pt-1">* يعمل مع ملفات PDF النصية فقط (لا يدعم PDF المسحوب ضوئياً)</p>
+                    <p className="text-xs text-muted-foreground pt-1">{t("converter.pdfNote")}</p>
                   </div>
                 )}
               </CardContent>
@@ -164,12 +164,12 @@ export default function FileConverter() {
             {/* Tips */}
             <Card className="bg-blue-50 border-blue-200">
               <CardHeader>
-                <CardTitle className="text-sm">💡 نصائح</CardTitle>
+                <CardTitle className="text-sm">💡 {t("converter.tips")}</CardTitle>
               </CardHeader>
               <CardContent className="text-sm text-blue-900 space-y-2">
-                <p>✓ يمكنك تحرير البيانات قبل التحويل</p>
-                <p>✓ جميع التحويلات تتم محلياً في متصفحك</p>
-                <p>✓ لا يتم حفظ أي بيانات على الخادم</p>
+                <p>✓ {t("converter.tip1")}</p>
+                <p>✓ {t("converter.tip2")}</p>
+                <p>✓ {t("converter.tip3")}</p>
               </CardContent>
             </Card>
           </div>

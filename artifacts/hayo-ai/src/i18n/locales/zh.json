@@ -1024,5 +1024,18 @@
     "codeExecution": "代码执行",
     "fileUploads": "文件上传",
     "webSearchUsage": "网页搜索"
+  },
+  "converter": {
+    "loginDesc": "登录以使用文件转换器",
+    "backToAgent": "← 返回智能体",
+    "title": "文件转换器",
+    "subtitle": "在 Excel、Word、PDF、CSV 和文本之间转换",
+    "available": "可用转换",
+    "texts": "文本",
+    "pdfNote": "* 仅适用于文本型 PDF（不支持扫描版 PDF）",
+    "tips": "提示",
+    "tip1": "转换前您可以编辑数据",
+    "tip2": "所有转换均在您的浏览器本地进行",
+    "tip3": "服务器上不保存任何数据"
   }
 }

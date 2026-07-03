@@ -1024,5 +1024,18 @@
     "codeExecution": "Kod çalıştırma",
     "fileUploads": "Dosya yüklemeleri",
     "webSearchUsage": "Web araması"
+  },
+  "converter": {
+    "loginDesc": "Dosya dönüştürücüyü kullanmak için giriş yapın",
+    "backToAgent": "← Ajana dön",
+    "title": "Dosya Dönüştürücü",
+    "subtitle": "Excel, Word, PDF, CSV ve metin arasında dönüştürün",
+    "available": "Mevcut dönüşümler",
+    "texts": "Metin",
+    "pdfNote": "* Yalnızca metin tabanlı PDF'lerle çalışır (taranmış PDF desteklenmez)",
+    "tips": "İpuçları",
+    "tip1": "Dönüştürmeden önce verileri düzenleyebilirsiniz",
+    "tip2": "Tüm dönüşümler tarayıcınızda yerel olarak gerçekleşir",
+    "tip3": "Sunucuda hiçbir veri saklanmaz"
   }
 }
