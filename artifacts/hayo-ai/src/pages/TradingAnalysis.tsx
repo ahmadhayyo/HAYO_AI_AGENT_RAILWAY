@@ -1061,6 +1061,102 @@ function IndicatorsPanel({ data }: { data: TradingData }) {
   );
 }
 
+// ─── Risk / Position-Size Calculator ─────────────────────────────────
+// Money-management tool: given account balance, risk %, entry and stop-loss,
+// it computes the risk amount and the position size. Uses OANDA-style UNITS
+// (what the owner's broker actually accepts) plus standard lots. Exact for
+// USD-quoted instruments (EURUSD, XAUUSD, BTCUSD, indices…); for USD-base
+// (USDJPY/USDCHF/USDCAD) it converts the quote at entry; crosses are labelled
+// approximate. Pure client-side, no network.
+function RiskCalculator({ pair, currentPrice }: { pair: string; currentPrice: number }) {
+  const dec = pair === "BTCUSD" ? 1 : pair === "XAUUSD" ? 2 : pair === "XAGUSD" ? 3 : pair.includes("JPY") ? 3 : pair === "US30" || pair === "USOIL" ? 2 : 5;
+  const pipSize = pair.includes("JPY") ? 0.01 : pair === "XAUUSD" ? 0.1 : pair === "XAGUSD" ? 0.01 : pair === "BTCUSD" || pair === "US30" ? 1 : pair === "USOIL" ? 0.01 : 0.0001;
+  const [balance, setBalance] = useState("1000");
+  const [riskPct, setRiskPct] = useState("1");
+  const [entry, setEntry] = useState(currentPrice.toFixed(dec));
+  const [sl, setSl] = useState("");
+  const [tp, setTp] = useState("");
+  useEffect(() => { setEntry(currentPrice.toFixed(dec)); }, [currentPrice, dec]);
+
+  const bal = parseFloat(balance) || 0;
+  const rp = parseFloat(riskPct) || 0;
+  const e = parseFloat(entry) || 0;
+  const s = parseFloat(sl) || 0;
+  const t = parseFloat(tp) || 0;
+  const riskAmount = bal * rp / 100;
+  const slDist = e && s ? Math.abs(e - s) : 0;
+  const slPips = slDist ? slDist / pipSize : 0;
+
+  const quoteUSD = pair.endsWith("USD") || pair === "US30" || pair === "USOIL";
+  const baseUSD = pair.startsWith("USD");
+  const approx = !quoteUSD; // JPY-quote / crosses → converted at entry (approximate)
+  // Units such that a full SL move loses exactly riskAmount (USD account).
+  let units = 0;
+  if (slDist > 0 && riskAmount > 0) {
+    units = quoteUSD ? riskAmount / slDist : riskAmount * e / slDist;
+  }
+  const lots = units / 100000;
+  const rr = slDist && t ? Math.abs(t - e) / slDist : 0;
+  const rewardAmount = rr * riskAmount;
+
+  const fld = "w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-emerald-400/60 outline-none";
+  const lbl = "text-[11px] text-white/50 mb-1 block";
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-lg">🧮</span>
+        <span className="font-bold text-sm text-white/90">حاسبة حجم الصفقة والمخاطرة</span>
+        <span className="text-[10px] text-white/40">({pair})</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
+        <div><label className={lbl}>رصيد الحساب ($)</label><input className={fld} inputMode="decimal" value={balance} onChange={(ev) => setBalance(ev.target.value)} /></div>
+        <div><label className={lbl}>المخاطرة (%)</label><input className={fld} inputMode="decimal" value={riskPct} onChange={(ev) => setRiskPct(ev.target.value)} /></div>
+        <div><label className={lbl}>الدخول (Entry)</label><input className={fld} inputMode="decimal" value={entry} onChange={(ev) => setEntry(ev.target.value)} /></div>
+        <div><label className={lbl}>وقف الخسارة (SL)</label><input className={fld} inputMode="decimal" value={sl} onChange={(ev) => setSl(ev.target.value)} placeholder="أدخل السعر" /></div>
+        <div><label className={lbl}>الهدف (TP) — اختياري</label><input className={fld} inputMode="decimal" value={tp} onChange={(ev) => setTp(ev.target.value)} placeholder="اختياري" /></div>
+      </div>
+      {slDist > 0 && riskAmount > 0 ? (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+          <div className="rounded-lg bg-red-500/10 border border-red-500/25 py-2">
+            <div className="text-[10px] text-white/50">المبلغ المخاطَر به</div>
+            <div className="text-sm font-bold text-red-300 tabular-nums">${riskAmount.toFixed(2)}</div>
+          </div>
+          <div className="rounded-lg bg-white/5 border border-white/15 py-2">
+            <div className="text-[10px] text-white/50">مسافة الوقف</div>
+            <div className="text-sm font-bold text-white/80 tabular-nums">{slPips.toFixed(0)} نقطة</div>
+          </div>
+          <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 py-2">
+            <div className="text-[10px] text-white/50">الحجم (units){approx ? " ~" : ""}</div>
+            <div className="text-sm font-bold text-emerald-300 tabular-nums">{Math.round(units).toLocaleString("en-US")}</div>
+          </div>
+          <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 py-2">
+            <div className="text-[10px] text-white/50">اللوت (lots){approx ? " ~" : ""}</div>
+            <div className="text-sm font-bold text-emerald-300 tabular-nums">{lots.toFixed(2)}</div>
+          </div>
+          {rr > 0 && (
+            <>
+              <div className="rounded-lg bg-white/5 border border-white/15 py-2">
+                <div className="text-[10px] text-white/50">نسبة R:R</div>
+                <div className="text-sm font-bold text-white/80 tabular-nums">1 : {rr.toFixed(2)}</div>
+              </div>
+              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/25 py-2">
+                <div className="text-[10px] text-white/50">الربح المتوقع</div>
+                <div className="text-sm font-bold text-emerald-300 tabular-nums">${rewardAmount.toFixed(2)}</div>
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="text-xs text-white/40 text-center py-2">أدخل رصيدك ووقف الخسارة لحساب الحجم المناسب.</div>
+      )}
+      {approx && slDist > 0 && (
+        <div className="text-[10px] text-amber-300/70 mt-2">~ تقديري: هذا الزوج غير مسعّر بالدولار مباشرةً؛ التحويل عند سعر الدخول (دقيق لأزواج USD/XXX، تقريبي للأزواج المتقاطعة).</div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────
 export default function TradingAnalysis() {
   const { isAuthenticated, loading: authLoading } = useAuth();
@@ -1468,6 +1564,10 @@ export default function TradingAnalysis() {
 
               {tradingData && !analyzeMutation.isPending && (
                 <ConsensusBanner results={tradingData.results} news={analysisNews} />
+              )}
+
+              {tradingData && !analyzeMutation.isPending && (
+                <RiskCalculator pair={selectedPair} currentPrice={tradingData.currentPrice} />
               )}
 
               {/* Live news filter banner — deterministic real-time countdown gate */}
