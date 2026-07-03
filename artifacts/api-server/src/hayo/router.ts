@@ -238,6 +238,7 @@ function calcStrategies(
   williamsR?: number,
   adx?: { adx: number; pdi: number; mdi: number },
   pivots?: { pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number },
+  opens?: number[],
 ): StrategySignal[] {
   const price = closes[closes.length - 1];
   const prevPrice = closes[closes.length - 2] || price;
@@ -499,6 +500,152 @@ function calcStrategies(
     else { desc = `تحت Pivot (${pivots.pivot.toFixed(2)}) — نطاق هبوطي`; }
     signals.push({ id: "pivot_bounce", name: "ارتداد Pivot", emoji: "📍",
       signal: sig, strength: str, desc });
+  }
+
+  // ═══════════ Price-Action layer (deterministic) ═══════════
+
+  // Shared swing detection (fractal, 2 bars each side) — indices + values.
+  const sw = 2;
+  const swHi: { i: number; v: number }[] = [];
+  const swLo: { i: number; v: number }[] = [];
+  for (let i = sw; i < highs.length - sw; i++) {
+    let isH = true, isL = true;
+    for (let j = i - sw; j <= i + sw; j++) {
+      if (j === i) continue;
+      if (highs[j] >= highs[i]) isH = false;
+      if (lows[j] <= lows[i]) isL = false;
+    }
+    if (isH) swHi.push({ i, v: highs[i] });
+    if (isL) swLo.push({ i, v: lows[i] });
+  }
+
+  // 11 — Market Structure (BOS / CHoCH) — smart-money structure
+  {
+    let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+    let str = 0;
+    let desc = "لا تتوفر بيانات كافية لبنية السوق";
+    if (swHi.length >= 2 && swLo.length >= 2) {
+      const lastHi = swHi[swHi.length - 1], prevHi = swHi[swHi.length - 2];
+      const lastLo = swLo[swLo.length - 1], prevLo = swLo[swLo.length - 2];
+      const hh = lastHi.v > prevHi.v;   // higher high
+      const hl = lastLo.v > prevLo.v;   // higher low
+      const lh = lastHi.v < prevHi.v;   // lower high
+      const ll = lastLo.v < prevLo.v;   // lower low
+      const priorUp = hl || hh;          // prior bullish structure
+      const priorDown = lh || ll;        // prior bearish structure
+      if (price > lastHi.v && hl) {
+        sig = "BUY"; str = 84;
+        desc = `اختراق صعودي للبنية (BOS) فوق ${lastHi.v.toFixed(price > 100 ? 2 : 5)} مع قيعان صاعدة — استمرار صعودي`;
+      } else if (price < lastLo.v && lh) {
+        sig = "SELL"; str = 84;
+        desc = `كسر هبوطي للبنية (BOS) تحت ${lastLo.v.toFixed(price > 100 ? 2 : 5)} مع قمم هابطة — استمرار هبوطي`;
+      } else if (price > lastHi.v && priorDown) {
+        sig = "BUY"; str = 70;
+        desc = `تغيّر الطابع (CHoCH) صعودي — كسر آخر قمة بعد هيكل هابط — انعكاس محتمل للأعلى`;
+      } else if (price < lastLo.v && priorUp) {
+        sig = "SELL"; str = 70;
+        desc = `تغيّر الطابع (CHoCH) هبوطي — كسر آخر قاع بعد هيكل صاعد — انعكاس محتمل للأسفل`;
+      } else if (hh && hl) {
+        sig = "BUY"; str = 55; desc = "بنية صاعدة (قمم وقيعان أعلى) — تحيّز شرائي";
+      } else if (lh && ll) {
+        sig = "SELL"; str = 55; desc = "بنية هابطة (قمم وقيعان أدنى) — تحيّز بيعي";
+      } else {
+        desc = "بنية متذبذبة/عرضية — لا اتجاه هيكلي واضح";
+      }
+    }
+    signals.push({ id: "market_structure", name: "بنية السوق (BOS/CHoCH)", emoji: "🏗️", signal: sig, strength: str, desc });
+  }
+
+  // 12 — Fibonacci Golden Zone (retracement of last impulse leg)
+  {
+    let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+    let str = 0;
+    let desc = "لا يوجد اندفاع واضح لحساب فيبوناتشي";
+    const lastHi = swHi[swHi.length - 1];
+    const lastLo = swLo[swLo.length - 1];
+    if (lastHi && lastLo) {
+      const dec = price > 100 ? 2 : price > 10 ? 3 : 5;
+      const up = lastLo.i < lastHi.i; // impulse leg direction (low then high = bullish)
+      const hi = lastHi.v, lo = lastLo.v, range = hi - lo;
+      if (range > 0) {
+        const fib = (r: number) => up ? hi - range * r : lo + range * r;
+        const z618 = fib(0.618), z50 = fib(0.5), z382 = fib(0.382);
+        const golden = up ? (price <= z50 && price >= z618) : (price >= z50 && price <= z618);
+        const near = (a: number, b: number) => Math.abs(a - b) <= (atr * 0.6 || range * 0.03);
+        if (up && (golden || near(price, z618) || near(price, z50))) {
+          sig = "BUY"; str = golden ? 80 : 68;
+          desc = `ارتداد صعودي في منطقة فيبوناتشي الذهبية (0.5=${z50.toFixed(dec)} / 0.618=${z618.toFixed(dec)}) — استمرار الاندفاع الصاعد`;
+        } else if (!up && (golden || near(price, z618) || near(price, z50))) {
+          sig = "SELL"; str = golden ? 80 : 68;
+          desc = `ارتداد هبوطي في منطقة فيبوناتشي الذهبية (0.5=${z50.toFixed(dec)} / 0.618=${z618.toFixed(dec)}) — استمرار الاندفاع الهابط`;
+        } else {
+          desc = `اندفاع ${up ? "صاعد" : "هابط"} | مناطق فيبو: 0.382=${z382.toFixed(dec)} · 0.5=${z50.toFixed(dec)} · 0.618=${z618.toFixed(dec)}`;
+        }
+      }
+    }
+    signals.push({ id: "fibonacci", name: "فيبوناتشي (منطقة ذهبية)", emoji: "🌀", signal: sig, strength: str, desc });
+  }
+
+  // 13 — RSI Divergence (price vs momentum)
+  {
+    let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+    let str = 0;
+    let desc = "لا يوجد دايفرجنس واضح على RSI";
+    const rsiAt = (idx: number): number | null => {
+      if (idx < 15) return null;
+      return calcRSI(closes.slice(0, idx + 1), 14);
+    };
+    if (swHi.length >= 2) {
+      const a = swHi[swHi.length - 2], b = swHi[swHi.length - 1];
+      const ra = rsiAt(a.i), rb = rsiAt(b.i);
+      if (ra !== null && rb !== null && b.v > a.v && rb < ra - 2) {
+        sig = "SELL"; str = 83;
+        desc = `دايفرجنس هبوطي: قمة سعرية أعلى (${a.v.toFixed(5)}→${b.v.toFixed(5)}) مقابل RSI أدنى (${ra.toFixed(1)}→${rb.toFixed(1)}) — ضعف زخم صاعد`;
+      }
+    }
+    if (sig === "NEUTRAL" && swLo.length >= 2) {
+      const a = swLo[swLo.length - 2], b = swLo[swLo.length - 1];
+      const ra = rsiAt(a.i), rb = rsiAt(b.i);
+      if (ra !== null && rb !== null && b.v < a.v && rb > ra + 2) {
+        sig = "BUY"; str = 83;
+        desc = `دايفرجنس صعودي: قاع سعري أدنى (${a.v.toFixed(5)}→${b.v.toFixed(5)}) مقابل RSI أعلى (${ra.toFixed(1)}→${rb.toFixed(1)}) — ضعف زخم هابط`;
+      }
+    }
+    signals.push({ id: "rsi_divergence", name: "دايفرجنس RSI", emoji: "🔀", signal: sig, strength: str, desc });
+  }
+
+  // 14 — Candlestick Pattern (engulfing / pin bar) — needs opens
+  if (opens && opens.length === closes.length && closes.length >= 2) {
+    let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+    let str = 0;
+    let desc = "لا يوجد نموذج شمعة انعكاسي واضح";
+    const n = closes.length - 1;
+    const o = opens[n], c = closes[n], h = highs[n], l = lows[n];
+    const po = opens[n - 1], pc = closes[n - 1];
+    const body = Math.abs(c - o), range = (h - l) || 1e-9;
+    const upperWick = h - Math.max(o, c), lowerWick = Math.min(o, c) - l;
+    // Bullish/bearish engulfing
+    if (c > o && pc < po && c >= po && o <= pc) { sig = "BUY"; str = 78; desc = "ابتلاع شرائي (Bullish Engulfing) — انعكاس صعودي"; }
+    else if (c < o && pc > po && c <= po && o >= pc) { sig = "SELL"; str = 78; desc = "ابتلاع بيعي (Bearish Engulfing) — انعكاس هبوطي"; }
+    // Pin bars (hammer / shooting star)
+    else if (lowerWick > body * 2 && upperWick < body && body / range < 0.4) { sig = "BUY"; str = 70; desc = "شمعة مطرقة (Hammer) — رفض للأسعار المنخفضة — صعودي"; }
+    else if (upperWick > body * 2 && lowerWick < body && body / range < 0.4) { sig = "SELL"; str = 70; desc = "شمعة نجمة ساقطة (Shooting Star) — رفض للأسعار المرتفعة — هبوطي"; }
+    // Confluence with S/R proximity boosts strength (structure levels)
+    signals.push({ id: "candlestick", name: "نماذج الشموع", emoji: "🕯️", signal: sig, strength: str, desc });
+  }
+
+  // 15 — Momentum (Rate of Change)
+  {
+    let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+    let str = 0;
+    const look = Math.min(10, closes.length - 1);
+    const roc = look > 0 ? (price - closes[closes.length - 1 - look]) / closes[closes.length - 1 - look] * 100 : 0;
+    if (roc > 0.35) { sig = "BUY"; str = Math.min(85, 55 + Math.round(roc * 8)); }
+    else if (roc < -0.35) { sig = "SELL"; str = Math.min(85, 55 + Math.round(Math.abs(roc) * 8)); }
+    signals.push({ id: "momentum_roc", name: "الزخم (ROC)", emoji: "🚀", signal: sig, strength: str,
+      desc: `معدّل التغيّر خلال ${look} شمعة: ${roc >= 0 ? "+" : ""}${roc.toFixed(3)}% — ${
+        roc > 0.35 ? "زخم صاعد" : roc < -0.35 ? "زخم هابط" : "زخم ضعيف/محايد"
+      }` });
   }
 
   return signals;
@@ -4143,6 +4290,7 @@ ${scanSummary}
               const closes = candles.map((c: any) => parseFloat(c.close));
               const highs = candles.map((c: any) => parseFloat(c.high));
               const lows = candles.map((c: any) => parseFloat(c.low));
+              const opens = candles.map((c: any) => parseFloat(c.open));
               const price = closes[closes.length - 1];
               if (tf === "15min") latestPrice = price;
 
@@ -4159,7 +4307,7 @@ ${scanSummary}
               const pivots = calcPivotPoints(highs, lows, closes);
               lastATR = atr;
 
-              const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adxVal, pivots);
+              const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adxVal, pivots, opens);
               const filters = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes);
 
               const buys = strategies.filter(s => s.signal === "BUY").length;
@@ -4561,6 +4709,7 @@ ${scanSummary}
         const closes  = candles.map(c => parseFloat(c.close));
         const highs   = candles.map(c => parseFloat(c.high));
         const lows    = candles.map(c => parseFloat(c.low));
+        const opens   = candles.map(c => parseFloat(c.open));
         const currentPrice = closes[closes.length - 1];
         const decimals = input.pair === "BTCUSD" ? 1 : input.pair === "XAUUSD" ? 2 : input.pair === "XAGUSD" ? 3 : input.pair.includes("JPY") ? 3 : 5;
         const fmt = (n: number) => n.toFixed(decimals);
@@ -4579,7 +4728,7 @@ ${scanSummary}
         const adx   = calcADX(highs, lows, closes);
 
         // Calculate strategies and filters
-        const strategySignals = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adx, pivots);
+        const strategySignals = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adx, pivots, opens);
         const filterResults   = calcFilters(currentPrice, sma20, sma50, sma200, rsi, atr, closes);
 
         // Strategy consensus
@@ -4780,6 +4929,7 @@ ${newsContext}
               const closes = candles.map((c: any) => parseFloat(c.close));
               const highs = candles.map((c: any) => parseFloat(c.high));
               const lows = candles.map((c: any) => parseFloat(c.low));
+              const opens = candles.map((c: any) => parseFloat(c.open));
               const price = closes[closes.length - 1];
 
               const rsi = calcRSI(closes);
@@ -4793,7 +4943,7 @@ ${newsContext}
               const adxVal = calcADX(highs, lows, closes);
               const pivotsVal = calcPivotPoints(highs, lows, closes);
 
-              const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, calcWilliamsR(closes, highs, lows), adxVal, pivotsVal);
+              const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, calcWilliamsR(closes, highs, lows), adxVal, pivotsVal, opens);
               const buys = strategies.filter(s => s.signal === "BUY").length;
               const sells = strategies.filter(s => s.signal === "SELL").length;
               const dominant = buys > sells ? "BUY" : sells > buys ? "SELL" : "NEUTRAL";

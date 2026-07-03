@@ -634,7 +634,7 @@ function StrategyPanel({ signals }: { signals: StrategySignal[] }) {
         <div className="flex items-center gap-2">
           <Target className="w-5 h-5 text-violet-400" />
           <h3 className="font-bold text-base text-white">إشارات الاستراتيجيات</h3>
-          <span className="text-xs text-white/40">(10 استراتيجيات)</span>
+          <span className="text-xs text-white/40">(15 استراتيجية)</span>
         </div>
         <div className="flex items-center gap-2 text-sm flex-wrap">
           <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-medium">{buys} شراء</span>
@@ -1269,7 +1269,7 @@ export default function TradingAnalysis() {
           <BarChart3 className="w-5 h-5 text-emerald-400" />
           <span className="font-bold text-sm">محلل الأسواق المالية</span>
           <span className="text-xs bg-emerald-400/10 text-emerald-400 px-2 py-0.5 rounded-full">AI × 3</span>
-          <span className="text-xs bg-violet-400/10 text-violet-400 px-2 py-0.5 rounded-full">10 استراتيجيات</span>
+          <span className="text-xs bg-violet-400/10 text-violet-400 px-2 py-0.5 rounded-full">15 استراتيجية</span>
           <span className="text-xs bg-blue-400/10 text-blue-400 px-2 py-0.5 rounded-full">5 فلاتر</span>
         </div>
         <div className="text-xs text-muted-foreground hidden sm:flex items-center gap-1">
@@ -1374,7 +1374,7 @@ export default function TradingAnalysis() {
                 </div>
                 <h2 className="font-bold text-base">محلل الأسواق بـ AI × 3</h2>
                 <p className="text-muted-foreground text-xs leading-relaxed">
-                  10 استراتيجيات + 5 فلاتر (4 تقنية + الأخبار) + 3 نماذج AI + إشارات تلقائية
+                  15 استراتيجية + 5 فلاتر (4 تقنية + الأخبار) + 3 نماذج AI + إشارات تلقائية
                 </p>
                 <div className="grid grid-cols-3 gap-1.5 text-xs">
                   <div className="bg-violet-500/10 border border-violet-500/20 rounded-lg p-1.5 text-violet-400 text-center">🟣 Claude Opus 4</div>
@@ -1396,7 +1396,7 @@ export default function TradingAnalysis() {
                 <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
                 <div className="text-sm font-medium">يجري التحليل...</div>
                 <div className="text-xs text-muted-foreground text-center">
-                  10 استراتيجيات + 5 فلاتر + 3 نماذج AI + أخبار اقتصادية
+                  15 استراتيجية + 5 فلاتر + 3 نماذج AI + أخبار اقتصادية
                 </div>
               </div>
             )}
