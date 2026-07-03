@@ -9,8 +9,11 @@ import {
   ArrowLeft, Zap, BarChart3, Calendar, Clock, Check, Eye, EyeOff
 } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 export default function MyAccount() {
+  const { t, i18n } = useTranslation();
   const { user, isAuthenticated, loading, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<"overview" | "keys" | "usage">("overview");
 
@@ -27,33 +30,34 @@ export default function MyAccount() {
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center text-white">
         <div className="text-center">
           <Shield className="w-16 h-16 text-indigo-400 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold mb-2">تسجيل الدخول مطلوب</h1>
-          <p className="text-gray-400 mb-6">يجب تسجيل الدخول لعرض حسابك</p>
-          <a href={getLoginUrl()}><Button className="bg-gradient-to-r from-indigo-500 to-purple-600">تسجيل الدخول</Button></a>
+          <h1 className="text-2xl font-bold mb-2">{t("account.loginRequired")}</h1>
+          <p className="text-gray-400 mb-6">{t("account.loginToView")}</p>
+          <a href={getLoginUrl()}><Button className="bg-gradient-to-r from-indigo-500 to-purple-600">{t("common.login")}</Button></a>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white">
+    <div className="min-h-screen bg-[#0a0a0f] text-white" dir={i18n.dir()}>
       {/* Header */}
       <header className="border-b border-white/5 bg-[#0a0a0f]/80 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link href="/" className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors">
-              <ArrowLeft className="w-4 h-4" />
-              <span className="text-sm">الرئيسية</span>
+              <ArrowLeft className="w-4 h-4 rtl:rotate-180" />
+              <span className="text-sm">{t("account.home")}</span>
             </Link>
             <div className="h-6 w-px bg-white/10" />
-            <span className="font-bold">حسابي</span>
+            <span className="font-bold">{t("account.title")}</span>
           </div>
           <div className="flex items-center gap-3">
-            <Link href="/chat"><Button variant="ghost" size="sm">الدردشة</Button></Link>
+            <LanguageSwitcher />
+            <Link href="/chat"><Button variant="ghost" size="sm">{t("nav.chat")}</Button></Link>
             {user?.role === "admin" && (
-              <Link href="/admin"><Button variant="ghost" size="sm" className="text-amber-400">لوحة المدير</Button></Link>
+              <Link href="/admin"><Button variant="ghost" size="sm" className="text-amber-400">{t("account.adminPanel")}</Button></Link>
             )}
-            <Button variant="ghost" size="sm" onClick={() => logout()}>تسجيل الخروج</Button>
+            <Button variant="ghost" size="sm" onClick={() => logout()}>{t("account.logout")}</Button>
           </div>
         </div>
       </header>
@@ -66,14 +70,14 @@ export default function MyAccount() {
               {(user?.name || "U")[0].toUpperCase()}
             </div>
             <div>
-              <h1 className="text-xl font-bold">{user?.name || "مستخدم"}</h1>
+              <h1 className="text-xl font-bold">{user?.name || t("account.guest")}</h1>
               <p className="text-sm text-gray-400">{user?.email || ""}</p>
               <div className="flex items-center gap-2 mt-1">
                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${
                   user?.role === "admin" ? "bg-amber-500/20 text-amber-300" : "bg-indigo-500/20 text-indigo-300"
                 }`}>
                   {user?.role === "admin" ? <Crown className="w-3 h-3" /> : <User className="w-3 h-3" />}
-                  {user?.role === "admin" ? "مدير" : "مستخدم"}
+                  {user?.role === "admin" ? t("account.roleAdmin") : t("account.roleUser")}
                 </span>
               </div>
             </div>
@@ -83,9 +87,9 @@ export default function MyAccount() {
         {/* Tabs */}
         <div className="flex gap-2 mb-8 border-b border-white/5 pb-4">
           {[
-            { id: "overview" as const, label: "نظرة عامة", icon: BarChart3 },
-            { id: "keys" as const, label: "مفاتيح API", icon: Key },
-            { id: "usage" as const, label: "الاستخدام", icon: Clock },
+            { id: "overview" as const, label: t("account.tabOverview"), icon: BarChart3 },
+            { id: "keys" as const, label: t("account.tabKeys"), icon: Key },
+            { id: "usage" as const, label: t("account.tabUsage"), icon: Clock },
           ].map(tab => (
             <button
               key={tab.id}
@@ -111,6 +115,7 @@ export default function MyAccount() {
 }
 
 function OverviewTab() {
+  const { t, i18n } = useTranslation();
   const { data: sub, isLoading } = trpc.usage.subscription.useQuery();
 
   if (isLoading) {
@@ -123,7 +128,7 @@ function OverviewTab() {
       <div className="rounded-xl border border-white/10 bg-white/[0.02] p-6">
         <h3 className="font-semibold mb-4 flex items-center gap-2">
           <Crown className="w-5 h-5 text-amber-400" />
-          خطتك الحالية
+          {t("account.currentPlan")}
         </h3>
         {sub?.plan ? (
           <div className="space-y-4">
@@ -132,11 +137,11 @@ function OverviewTab() {
                 <p className="text-lg font-bold">{sub.plan.displayName}</p>
                 <p className="text-sm text-gray-400">{sub.plan.description}</p>
               </div>
-              <div className="text-left">
+              <div className="text-end">
                 {sub.plan.name === "owner" ? (
-                  <span className="text-xl font-bold text-amber-400">غير محدود</span>
+                  <span className="text-xl font-bold text-amber-400">{t("account.unlimited")}</span>
                 ) : (
-                  <p className="text-2xl font-bold">${sub.plan.priceMonthly}<span className="text-sm text-gray-400">/شهر</span></p>
+                  <p className="text-2xl font-bold">${sub.plan.priceMonthly}<span className="text-sm text-gray-400">{t("account.perMonth")}</span></p>
                 )}
               </div>
             </div>
@@ -144,27 +149,27 @@ function OverviewTab() {
               <div className="flex items-center gap-4 text-sm text-gray-400">
                 <span className="flex items-center gap-1">
                   <Calendar className="w-4 h-4" />
-                  ينتهي: {new Date(sub.subscription.endDate).toLocaleDateString("ar")}
+                  {t("account.expires")} {new Date(sub.subscription.endDate).toLocaleDateString(i18n.language)}
                 </span>
                 <span className={`px-2 py-0.5 rounded text-xs ${
                   sub.subscription.status === "active" ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"
                 }`}>
-                  {sub.subscription.status === "active" ? "نشط" : sub.subscription.status}
+                  {sub.subscription.status === "active" ? t("account.active") : sub.subscription.status}
                 </span>
               </div>
             )}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-              <MiniStat label="رسائل/يوم" value={sub.plan.dailyMessageLimit >= 999999 ? "∞" : sub.plan.dailyMessageLimit === -1 ? "∞" : String(sub.plan.dailyMessageLimit)} />
-              <MiniStat label="رفع ملفات" value={`${sub.plan.maxFileUploadMB}MB`} />
-              <MiniStat label="تنفيذ كود" value={`${sub.plan.maxCodeExecutionSec}ث`} />
-              <MiniStat label="بحث ويب" value={sub.plan.canUseWebSearch ? "✓" : "✗"} />
+              <MiniStat label={t("account.msgsPerDay")} value={sub.plan.dailyMessageLimit >= 999999 ? "∞" : sub.plan.dailyMessageLimit === -1 ? "∞" : String(sub.plan.dailyMessageLimit)} />
+              <MiniStat label={t("account.fileUpload")} value={`${sub.plan.maxFileUploadMB}MB`} />
+              <MiniStat label={t("account.codeExec")} value={`${sub.plan.maxCodeExecutionSec}${t("account.secShort")}`} />
+              <MiniStat label={t("account.webSearch")} value={sub.plan.canUseWebSearch ? "✓" : "✗"} />
             </div>
           </div>
         ) : (
           <div className="text-center py-8">
             <Zap className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-            <p className="text-gray-400 mb-4">أنت على الخطة المجانية</p>
-            <Link href="/pricing"><Button className="bg-gradient-to-r from-indigo-500 to-purple-600">ترقية الخطة</Button></Link>
+            <p className="text-gray-400 mb-4">{t("account.freePlan")}</p>
+            <Link href="/pricing"><Button className="bg-gradient-to-r from-indigo-500 to-purple-600">{t("account.upgrade")}</Button></Link>
           </div>
         )}
       </div>
@@ -173,17 +178,18 @@ function OverviewTab() {
 }
 
 function KeysTab() {
+  const { t } = useTranslation();
   const { data: keys, isLoading, refetch } = trpc.apiKeys.list.useQuery();
   const createKey = trpc.apiKeys.create.useMutation({
     onSuccess: (data: any) => {
       setNewKey(data.rawKey);
-      toast.success("تم إنشاء المفتاح بنجاح");
+      toast.success(t("account.keyCreated"));
       refetch();
     },
     onError: (e: any) => toast.error(e.message),
   });
   const revokeKey = trpc.apiKeys.revoke.useMutation({
-    onSuccess: () => { toast.success("تم إلغاء المفتاح"); refetch(); },
+    onSuccess: () => { toast.success(t("account.keyRevoked")); refetch(); },
     onError: (e: any) => toast.error(e.message),
   });
   const { data: plans } = trpc.plans.list.useQuery();
@@ -196,14 +202,14 @@ function KeysTab() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h3 className="font-semibold">مفاتيح API الخاصة بك</h3>
+        <h3 className="font-semibold">{t("account.yourKeys")}</h3>
         <Button
           size="sm"
           onClick={() => setShowCreate(!showCreate)}
           className="bg-gradient-to-r from-indigo-500 to-purple-600"
         >
-          <Plus className="w-4 h-4 ml-1" />
-          مفتاح جديد
+          <Plus className="w-4 h-4 me-1" />
+          {t("account.newKey")}
         </Button>
       </div>
 
@@ -214,12 +220,12 @@ function KeysTab() {
             <input
               value={keyLabel}
               onChange={e => setKeyLabel(e.target.value)}
-              placeholder="اسم المفتاح (مثال: تطبيق الجوال)"
+              placeholder={t("account.keyNamePlaceholder")}
               className="flex-1 bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-indigo-500/50"
             />
             <Button
               onClick={() => {
-                if (!keyLabel.trim()) { toast.error("أدخل اسم المفتاح"); return; }
+                if (!keyLabel.trim()) { toast.error(t("account.enterKeyName")); return; }
                 // Get free plan for self-service key creation
 const freePlan = plans?.find((p: any) => p.name === 'free');
 createKey.mutate({ label: keyLabel.trim(), planId: freePlan?.id || 1, durationDays: 30 });
@@ -229,7 +235,7 @@ createKey.mutate({ label: keyLabel.trim(), planId: freePlan?.id || 1, durationDa
               disabled={createKey.isPending}
               size="sm"
             >
-              {createKey.isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : "إنشاء"}
+              {createKey.isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : t("account.create")}
             </Button>
           </div>
         </div>
@@ -240,19 +246,19 @@ createKey.mutate({ label: keyLabel.trim(), planId: freePlan?.id || 1, durationDa
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 mb-6">
           <div className="flex items-center gap-2 mb-2">
             <Check className="w-4 h-4 text-emerald-400" />
-            <span className="text-sm font-medium text-emerald-300">تم إنشاء المفتاح - انسخه الآن! لن يظهر مرة أخرى</span>
+            <span className="text-sm font-medium text-emerald-300">{t("account.keyCreatedCopy")}</span>
           </div>
           <div className="flex items-center gap-2">
             <code className="flex-1 bg-black/30 rounded px-3 py-2 text-sm font-mono text-emerald-300 break-all">{newKey}</code>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => { navigator.clipboard.writeText(newKey); toast.success("تم النسخ"); }}
+              onClick={() => { navigator.clipboard.writeText(newKey); toast.success(t("account.copied")); }}
             >
               <Copy className="w-4 h-4" />
             </Button>
           </div>
-          <Button variant="ghost" size="sm" className="mt-2 text-gray-400" onClick={() => setNewKey(null)}>إخفاء</Button>
+          <Button variant="ghost" size="sm" className="mt-2 text-gray-400" onClick={() => setNewKey(null)}>{t("account.hide")}</Button>
         </div>
       )}
 
@@ -271,7 +277,7 @@ createKey.mutate({ label: keyLabel.trim(), planId: freePlan?.id || 1, durationDa
                     <span className={`px-2 py-0.5 rounded text-xs ${
                       k.isActive ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"
                     }`}>
-                      {k.isActive ? "نشط" : "ملغى"}
+                      {k.isActive ? t("account.active") : t("account.revoked")}
                     </span>
                   </div>
                   <code className="text-xs text-gray-500 font-mono mt-1 block">
@@ -296,8 +302,8 @@ createKey.mutate({ label: keyLabel.trim(), planId: freePlan?.id || 1, durationDa
           {(keys || []).length === 0 && (
             <div className="text-center py-12 text-gray-500">
               <Key className="w-12 h-12 mx-auto mb-3 opacity-50" />
-              <p>لم تنشئ أي مفتاح API بعد</p>
-              <p className="text-xs mt-1">أنشئ مفتاحاً للوصول إلى HAYO AI من تطبيقاتك</p>
+              <p>{t("account.noKeys")}</p>
+              <p className="text-xs mt-1">{t("account.noKeysDesc")}</p>
             </div>
           )}
         </div>
@@ -307,6 +313,7 @@ createKey.mutate({ label: keyLabel.trim(), planId: freePlan?.id || 1, durationDa
 }
 
 function UsageTab() {
+  const { t } = useTranslation();
   const { data: usage, isLoading } = trpc.usage.daily.useQuery();
   const { data: sub } = trpc.usage.subscription.useQuery();
 
@@ -324,12 +331,12 @@ function UsageTab() {
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-white/10 bg-white/[0.02] p-6">
-        <h3 className="font-semibold mb-6">استخدامك اليوم</h3>
+        <h3 className="font-semibold mb-6">{t("account.usageToday")}</h3>
         <div className="space-y-5">
-          <UsageBar label="الرسائل" used={messagesUsed} limit={dailyLimit === -1 ? 999 : dailyLimit} color="indigo" />
-          <UsageBar label="تنفيذ الكود" used={codeUsed} limit={50} color="emerald" />
-          <UsageBar label="رفع الملفات" used={filesUsed} limit={20} color="amber" />
-          <UsageBar label="بحث الويب" used={searchUsed} limit={plan?.canUseWebSearch ? 30 : 0} color="purple" />
+          <UsageBar label={t("account.messages")} used={messagesUsed} limit={dailyLimit === -1 ? 999 : dailyLimit} color="indigo" />
+          <UsageBar label={t("account.codeExecution")} used={codeUsed} limit={50} color="emerald" />
+          <UsageBar label={t("account.fileUploads")} used={filesUsed} limit={20} color="amber" />
+          <UsageBar label={t("account.webSearchUsage")} used={searchUsed} limit={plan?.canUseWebSearch ? 30 : 0} color="purple" />
         </div>
       </div>
     </div>
