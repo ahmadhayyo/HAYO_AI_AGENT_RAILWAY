@@ -662,7 +662,13 @@
     "mindMap": "Mind Map",
     "mindMapDesc": "Turn any idea into an interactive mind map with actionable steps",
     "osint": "OSINT Tools",
-    "osintDesc": "Open source intelligence — 9 real tools"
+    "osintDesc": "Open source intelligence — 9 real tools",
+    "islam": "Mensagem do Islã",
+    "islamDesc": "O Alcorão Sagrado • Hadith profético • as quatro escolas • milagres científicos",
+    "brokers": "Plataformas de trading",
+    "brokersDesc": "Conecte contas Quotex • IQ Option • Pocket Option e acompanhe as operações",
+    "guest": "Usuário",
+    "footerStats": "6 modelos de IA • 22+ ferramentas • 35+ integrações • 7 seções de estudos • EA Factory • trading automático"
   },
   "warRoom": {
     "title": "War Room",

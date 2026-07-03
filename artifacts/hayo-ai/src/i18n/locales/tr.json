@@ -662,7 +662,13 @@
     "mindMap": "Mind Map",
     "mindMapDesc": "Turn any idea into an interactive mind map with actionable steps",
     "osint": "OSINT Tools",
-    "osintDesc": "Open source intelligence — 9 real tools"
+    "osintDesc": "Open source intelligence — 9 real tools",
+    "islam": "İslam Mesajı",
+    "islamDesc": "Kur'an-ı Kerim • Nebevi Hadis • dört mezhep • bilimsel mucizeler",
+    "brokers": "Ticaret platformları",
+    "brokersDesc": "Quotex • IQ Option • Pocket Option hesaplarını bağlayın ve işlemleri takip edin",
+    "guest": "Kullanıcı",
+    "footerStats": "6 YZ modeli • 22+ araç • 35+ entegrasyon • 7 çalışma bölümü • EA Factory • otomatik ticaret"
   },
   "warRoom": {
     "title": "War Room",

@@ -24,7 +24,7 @@ const HAYO_LOGO = `${import.meta.env.BASE_URL ?? "/"}logo.png`;
 
 export default function Dashboard() {
   const { user, loading: authLoading, isAuthenticated, logout } = useAuth();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const convListQuery = trpc.conversations.list.useQuery(undefined, { enabled: isAuthenticated });
   const { data: creditsData } = trpc.usage.credits.useQuery(undefined, { enabled: isAuthenticated });
 
@@ -36,10 +36,10 @@ export default function Dashboard() {
         <div className="text-center space-y-6 max-w-md px-4">
           <img src={HAYO_LOGO} alt="HAYO AI" className="w-20 h-20 rounded-2xl mx-auto shadow-lg shadow-indigo-500/25" />
           <h1 className="text-3xl font-bold">HAYO AI AGENT</h1>
-          <p className="text-muted-foreground">منصة الذكاء الاصطناعي الشاملة — 22+ أداة احترافية</p>
+          <p className="text-muted-foreground">{t("dashboard.subtitle")}</p>
           <a href={getLoginUrl()}>
             <Button size="lg" className="bg-gradient-to-r from-indigo-500 to-violet-600 text-white gap-2">
-              تسجيل الدخول <ArrowRight className="size-4 rtl:rotate-180" />
+              {t("common.login")} <ArrowRight className="size-4 rtl:rotate-180" />
             </Button>
           </a>
         </div>
@@ -55,11 +55,11 @@ export default function Dashboard() {
       id: "ai", title: t("dashboard.sectionAI"), emoji: "🤖",
       gradient: "from-indigo-500/10 to-violet-500/10", border: "border-indigo-500/15",
       pages: [
-        { href: "/chat", icon: MessageSquare, name: t("dashboard.smartChat"), desc: t("dashboard.smartChatDesc"), color: "from-indigo-500 to-violet-600", badge: t("common.essential") || "أساسي" },
-        { href: "/agent", icon: Terminal, name: t("dashboard.codeAgent"), desc: t("dashboard.codeAgentDesc"), color: "from-emerald-500 to-teal-500", badge: t("common.advanced") || "متقدم" },
+        { href: "/chat", icon: MessageSquare, name: t("dashboard.smartChat"), desc: t("dashboard.smartChatDesc"), color: "from-indigo-500 to-violet-600", badge: t("common.essential") },
+        { href: "/agent", icon: Terminal, name: t("dashboard.codeAgent"), desc: t("dashboard.codeAgentDesc"), color: "from-emerald-500 to-teal-500", badge: t("common.advanced") },
         { href: "/war-room", icon: Swords, name: t("dashboard.warRoom"), desc: t("dashboard.warRoomDesc"), color: "from-red-500 to-orange-500" },
         { href: "/prompt-factory", icon: Wand2, name: t("dashboard.promptFactory"), desc: t("dashboard.promptFactoryDesc"), color: "from-violet-500 to-purple-600" },
-        { href: "/mindmap", icon: Brain, name: t("dashboard.mindMap") || "خريطة العقل", desc: t("dashboard.mindMapDesc") || "حوّل أي فكرة لخريطة ذهنية تفاعلية", color: "from-cyan-500 to-blue-500", badge: "🎁" },
+        { href: "/mindmap", icon: Brain, name: t("dashboard.mindMap"), desc: t("dashboard.mindMapDesc"), color: "from-cyan-500 to-blue-500", badge: "🎁" },
       ],
     },
     {
@@ -70,7 +70,7 @@ export default function Dashboard() {
         { href: "/app-builder", icon: Rocket, name: t("dashboard.appBuilder"), desc: t("dashboard.appBuilderDesc"), color: "from-pink-500 to-rose-500" },
         { href: "/reverse", icon: FileCode, name: t("dashboard.reverseEng"), desc: t("dashboard.reverseEngDesc"), color: "from-amber-500 to-orange-500" },
         { href: "/integrations", icon: LinkIcon, name: t("dashboard.integrationsPage"), desc: t("dashboard.integrationsDesc"), color: "from-blue-500 to-indigo-500" },
-        { href: "/osint", icon: Shield, name: t("dashboard.osint") || "أدوات OSINT", desc: t("dashboard.osintDesc") || "استخبارات مصادر مفتوحة — 9 أدوات حقيقية", color: "from-red-500 to-orange-500" },
+        { href: "/osint", icon: Shield, name: t("dashboard.osint"), desc: t("dashboard.osintDesc"), color: "from-red-500 to-orange-500" },
       ],
     },
     {
@@ -79,7 +79,7 @@ export default function Dashboard() {
       pages: [
         { href: "/office", icon: Building2, name: t("dashboard.officeSuite"), desc: t("dashboard.officeSuiteDesc"), color: "from-blue-600 to-cyan-500" },
         { href: "/studies", icon: Lightbulb, name: t("dashboard.studies"), desc: t("dashboard.studiesDesc"), color: "from-amber-500 to-orange-500" },
-        { href: "/islam", icon: BookOpen, name: "رسالة الإسلام", desc: "القرآن الكريم • الحديث النبوي • المذاهب الأربعة • الإعجاز العلمي", color: "from-emerald-600 to-teal-600" },
+        { href: "/islam", icon: BookOpen, name: t("dashboard.islam"), desc: t("dashboard.islamDesc"), color: "from-emerald-600 to-teal-600" },
       ],
     },
     {
@@ -87,7 +87,7 @@ export default function Dashboard() {
       gradient: "from-emerald-500/10 to-green-500/10", border: "border-emerald-500/15",
       pages: [
         { href: "/trading", icon: TrendingUp, name: t("dashboard.tradingAnalysis"), desc: t("dashboard.tradingDesc"), color: "from-emerald-500 to-green-600" },
-        { href: "/trading-brokers", icon: BarChart3, name: "منصات التداول", desc: "ربط حسابات Quotex • IQ Option • Pocket Option وتتبع الصفقات", color: "from-blue-500 to-cyan-600" },
+        { href: "/trading-brokers", icon: BarChart3, name: t("dashboard.brokers"), desc: t("dashboard.brokersDesc"), color: "from-blue-500 to-cyan-600" },
         { href: "/ea-factory", icon: Cpu, name: t("dashboard.eaFactory"), desc: t("dashboard.eaFactoryDesc"), color: "from-violet-500 to-fuchsia-500" },
         { href: "/telegram", icon: Bot, name: t("dashboard.telegramBot"), desc: t("dashboard.telegramDesc"), color: "from-[#26A5E4] to-cyan-500" },
       ],
@@ -104,7 +104,7 @@ export default function Dashboard() {
   ];
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-background" dir={i18n.dir()}>
       {/* Header */}
       <header className="border-b border-border bg-card/50 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex items-center justify-between h-14 px-4">
@@ -113,9 +113,9 @@ export default function Dashboard() {
             <span className="font-bold text-sm">HAYO AI</span>
           </Link>
           <div className="flex items-center gap-2">
-            <Link href="/chat"><Button variant="ghost" size="sm" className="text-xs gap-1"><MessageSquare className="size-3.5" /> الدردشة</Button></Link>
-            <Link href="/pricing"><Button variant="ghost" size="sm" className="text-xs gap-1"><CreditCard className="size-3.5" /> الأسعار</Button></Link>
-            <Link href="/account"><Button variant="ghost" size="sm" className="text-xs gap-1"><User className="size-3.5" /> {t("nav.account") || "حسابي"}</Button></Link>
+            <Link href="/chat"><Button variant="ghost" size="sm" className="text-xs gap-1"><MessageSquare className="size-3.5" /> {t("nav.chat")}</Button></Link>
+            <Link href="/pricing"><Button variant="ghost" size="sm" className="text-xs gap-1"><CreditCard className="size-3.5" /> {t("nav.pricing")}</Button></Link>
+            <Link href="/account"><Button variant="ghost" size="sm" className="text-xs gap-1"><User className="size-3.5" /> {t("nav.account")}</Button></Link>
             <LanguageSwitcher />
             <Button variant="ghost" size="sm" className="text-xs gap-1 text-destructive" onClick={() => logout()}><LogOut className="size-3.5" /></Button>
           </div>
@@ -126,7 +126,7 @@ export default function Dashboard() {
         {/* Welcome + Stats */}
         <div className="flex items-start justify-between flex-wrap gap-4">
           <div>
-            <h1 className="text-2xl font-bold">{t("dashboard.welcome") + "،"} {user?.name || "مستخدم"} 👋</h1>
+            <h1 className="text-2xl font-bold">{t("dashboard.welcome")} {user?.name || t("dashboard.guest")} 👋</h1>
             <p className="text-muted-foreground text-sm mt-1">{t("dashboard.subtitle")}</p>
           </div>
           <div className="flex items-center gap-3">
@@ -138,7 +138,7 @@ export default function Dashboard() {
             )}
             <Link href="/chat">
               <Button className="bg-gradient-to-r from-indigo-500 to-violet-600 text-white gap-2 h-11">
-                <Plus className="size-4" /> محادثة جديدة
+                <Plus className="size-4" /> {t("dashboard.newChat")}
               </Button>
             </Link>
           </div>
@@ -237,7 +237,7 @@ export default function Dashboard() {
             <div className="flex-1">
               <h3 className="font-bold">HAYO AI AGENT Platform</h3>
               <p className="text-sm text-muted-foreground mt-0.5">
-                6 نماذج AI • 22+ أداة • 35+ تكامل • 7 أقسام دراسات • EA Factory • تداول آلي
+                {t("dashboard.footerStats")}
               </p>
             </div>
             <div className="flex items-center gap-2">
