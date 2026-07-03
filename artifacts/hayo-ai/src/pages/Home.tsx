@@ -6,8 +6,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
-import { Link, Redirect } from "wouter";
-import { useAuth } from "@/_core/hooks/useAuth";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
@@ -181,13 +180,12 @@ function CategorySection({
 export default function Home() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { t } = useTranslation();
-  // "/" is the public MARKETING landing. It has no dashboard feature cards, so a
-  // logged-in owner who clicks a "الرئيسية"/home link (they all point to "/")
-  // would land here and think their premium features "disappeared". Send any
-  // authenticated user straight to their real home — the /dashboard with the
-  // feature cards. Logged-out visitors still see the marketing page.
-  const { isAuthenticated } = useAuth();
-  if (isAuthenticated) return <Redirect to="/dashboard" />;
+  // "/" is the public welcome/intro landing page and it should always render here
+  // (for both guests and logged-in users) — the owner wants the intro to show when
+  // opening the platform link, not flash-and-redirect. Auth resilience + the
+  // owner→admin backstop in the API handle the "plan looks reverted" concern
+  // separately, so no client redirect is needed. Authenticated users reach their
+  // dashboard via the nav/login buttons.
 
   // ─── Platform Dropdown Groups ──────────────────────────────────────
   const platformGroups = [
