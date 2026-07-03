@@ -37,15 +37,15 @@ const COLOR_MAP: Record<string, { bg: string; border: string; text: string }> = 
   orange: { bg: "bg-orange-500/10", border: "border-orange-500/30", text: "text-orange-400" },
 };
 
-const TARGET_LABELS: Record<string, { label: string; href: string; icon: string }> = {
-  studies:     { label: "دراسات واستشارات", href: "/studies", icon: "📊" },
-  office:      { label: "أعمال مكتبية", href: "/office", icon: "📄" },
-  agent:       { label: "وكيل الكود", href: "/agent", icon: "🤖" },
-  appbuilder:  { label: "منشئ التطبيقات", href: "/app-builder", icon: "📱" },
-  prompt:      { label: "مصنع البرومبت", href: "/prompt-factory", icon: "🪄" },
-  trading:     { label: "تحليل الأسواق", href: "/trading", icon: "📈" },
-  chat:        { label: "دردشة AI", href: "/chat", icon: "💬" },
-  "ea-factory": { label: "EA Factory", href: "/ea-factory", icon: "⚙️" },
+const TARGET_LABELS: Record<string, { labelKey: string; href: string; icon: string }> = {
+  studies:     { labelKey: "mindmap.tl_studies", href: "/studies", icon: "📊" },
+  office:      { labelKey: "mindmap.tl_office", href: "/office", icon: "📄" },
+  agent:       { labelKey: "mindmap.tl_agent", href: "/agent", icon: "🤖" },
+  appbuilder:  { labelKey: "mindmap.tl_appbuilder", href: "/app-builder", icon: "📱" },
+  prompt:      { labelKey: "mindmap.tl_prompt", href: "/prompt-factory", icon: "🪄" },
+  trading:     { labelKey: "mindmap.tl_trading", href: "/trading", icon: "📈" },
+  chat:        { labelKey: "mindmap.tl_chat", href: "/chat", icon: "💬" },
+  "ea-factory": { labelKey: "EA Factory", href: "/ea-factory", icon: "⚙️" },
 };
 
 // Recursive tree node component
@@ -56,6 +56,8 @@ function TreeNode({ node, onExpand, onAction, expanded, toggleExpand }: {
   expanded: Set<string>;
   toggleExpand: (id: string) => void;
 }) {
+  const { t } = useTranslation();
+  const tlabel = (k?: string) => (k && k.startsWith("mindmap.") ? t(k) : (k || ""));
   const colors = COLOR_MAP[node.color] || COLOR_MAP.blue;
   const isOpen = expanded.has(node.id);
   const hasChildren = node.children && node.children.length > 0;
@@ -80,7 +82,7 @@ function TreeNode({ node, onExpand, onAction, expanded, toggleExpand }: {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h4 className={`font-bold text-sm ${colors.text}`}>{node.label}</h4>
-            {node.type === "action" && <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">إجراء</span>}
+            {node.type === "action" && <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">{t("mindmap.action")}</span>}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{node.description}</p>
 
@@ -89,14 +91,14 @@ function TreeNode({ node, onExpand, onAction, expanded, toggleExpand }: {
             <button onClick={() => onAction(node.actionTarget!, node.actionPrompt || node.description)}
               className="mt-2 flex items-center gap-1.5 text-[10px] px-2.5 py-1 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
               <Send className="w-3 h-3" />
-              أرسل لـ {TARGET_LABELS[node.actionTarget]?.icon} {TARGET_LABELS[node.actionTarget]?.label || node.actionTarget}
+              {t("mindmap.sendTo")} {TARGET_LABELS[node.actionTarget]?.icon} {tlabel(TARGET_LABELS[node.actionTarget]?.labelKey) || node.actionTarget}
             </button>
           )}
         </div>
 
         {/* Expand button */}
         {!hasChildren && node.type !== "action" && (
-          <button onClick={() => onExpand(node)} className="opacity-0 group-hover:opacity-100 shrink-0 p-1 rounded-lg hover:bg-secondary/50 text-muted-foreground" title="توسيع">
+          <button onClick={() => onExpand(node)} className="opacity-0 group-hover:opacity-100 shrink-0 p-1 rounded-lg hover:bg-secondary/50 text-muted-foreground" title={t("mindmap.expand")}>
             <Plus className="w-3.5 h-3.5" />
           </button>
         )}
@@ -132,7 +134,7 @@ export default function MindMap() {
       function collect(node: MindNode, d: number) { ids.add(node.id); if (d < 2 && node.children) node.children.forEach(c => collect(c, d + 1)); }
       if (data.root) collect(data.root as any, 0);
       setExpanded(ids);
-      toast.success(`✅ خريطة ذهنية بـ ${data.totalNodes} عقدة!`);
+      toast.success(t("mindmap.mapCreated", { n: data.totalNodes }));
     },
     onError: (e) => toast.error(e.message),
   });
@@ -144,7 +146,7 @@ export default function MindMap() {
   }, []);
 
   const handleExpand = useCallback(async (node: MindNode) => {
-    toast.info("⏳ AI يوسّع العقدة...");
+    toast.info(t("mindmap.aiExpanding"));
     try {
       const children = await expandMut.mutateAsync({ node, parentContext: idea });
       if (!mapData) return;
@@ -155,14 +157,14 @@ export default function MindMap() {
       };
       setMapData({ ...mapData, root: updateTree(mapData.root), totalNodes: mapData.totalNodes + (children as any[]).length });
       setExpanded(prev => new Set([...prev, node.id]));
-      toast.success("تم التوسيع!");
+      toast.success(t("mindmap.expanded"));
     } catch (e: any) { toast.error(e.message); }
   }, [mapData, idea, expandMut]);
 
   const handleAction = useCallback((target: string, prompt: string) => {
     const info = TARGET_LABELS[target];
     if (info) {
-      toast.success(`🚀 جاري الانتقال لـ ${info.label}...`);
+      toast.success(t("mindmap.navigating", { label: info.labelKey.startsWith("mindmap.") ? t(info.labelKey) : info.labelKey }));
       // Store prompt for the target page
       try { sessionStorage.setItem(`hayo-mindmap-${target}`, prompt); } catch {}
       navigate(info.href);
@@ -183,7 +185,7 @@ export default function MindMap() {
       <div className="bg-card border border-border rounded-2xl p-8 max-w-md text-center space-y-4">
         <Brain className="w-16 h-16 mx-auto text-primary opacity-60" />
         <h2 className="text-2xl font-bold">Mind Map</h2>
-        <Button asChild className="w-full"><a href={getLoginUrl()}>تسجيل الدخول</a></Button>
+        <Button asChild className="w-full"><a href={getLoginUrl()}>{t("common.login")}</a></Button>
       </div>
     </div>
   );
@@ -196,7 +198,7 @@ export default function MindMap() {
           <div className="w-px h-5 bg-border" />
           <Brain className="w-5 h-5 text-primary" />
           <span className="font-bold text-sm">Mind Map</span>
-          <span className="text-[9px] bg-primary/10 text-primary px-2 py-0.5 rounded-full">🎁 هدية Claude</span>
+          <span className="text-[9px] bg-primary/10 text-primary px-2 py-0.5 rounded-full">{t("mindmap.claudeGift")}</span>
         </div>
         <LanguageSwitcher />
       </header>
@@ -209,29 +211,29 @@ export default function MindMap() {
               <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/20 to-violet-500/20">
                 <Brain className="w-10 h-10 text-primary" />
               </div>
-              <h1 className="text-3xl font-bold">خريطة العقل التفاعلية</h1>
-              <p className="text-muted-foreground max-w-xl mx-auto">اكتب أي فكرة — مشروع، مشكلة، خطة — وسيحوّلها AI لخريطة ذهنية بصرية مع إجراءات عملية مربوطة بأقسام المنصة</p>
+              <h1 className="text-3xl font-bold">{t("mindmap.title")}</h1>
+              <p className="text-muted-foreground max-w-xl mx-auto">{t("mindmap.subtitle")}</p>
             </div>
 
             <div className="bg-card border border-border rounded-2xl p-6 space-y-4">
-              <textarea value={idea} onChange={e => setIdea(e.target.value)} rows={3} placeholder="مثال: أريد بناء مطعم سوشي في إسطنبول بميزانية 50,000$ مع تطبيق توصيل..."
+              <textarea value={idea} onChange={e => setIdea(e.target.value)} rows={3} placeholder={t("mindmap.ideaPlaceholder")}
                 className="w-full bg-secondary/50 border border-border rounded-xl px-4 py-3 text-sm resize-none focus:ring-2 focus:ring-primary/50" />
-              <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="ملاحظات إضافية (اختياري): أركز على... أحتاج تفصيل في..."
+              <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder={t("mindmap.notesPlaceholder")}
                 className="w-full bg-secondary/30 border border-border rounded-xl px-4 py-3 text-xs resize-none" />
               <div className="flex items-center gap-3">
                 <div className="flex-1">
-                  <label className="text-xs text-muted-foreground">عمق التفريع</label>
+                  <label className="text-xs text-muted-foreground">{t("mindmap.depth")}</label>
                   <div className="flex gap-2 mt-1">
                     {[2, 3, 4].map(d => (
                       <button key={d} onClick={() => setDepth(d)} className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${depth === d ? "bg-primary/15 border-primary text-primary" : "border-border text-muted-foreground"}`}>
-                        {d} مستويات
+                        {t("mindmap.levels", { d })}
                       </button>
                     ))}
                   </div>
                 </div>
                 <Button onClick={() => generateMut.mutate({ idea, depth, userNotes: notes || undefined })} disabled={generateMut.isPending || idea.trim().length < 5}
                   className="h-12 px-8 gap-2 bg-gradient-to-r from-primary to-violet-600 text-base">
-                  {generateMut.isPending ? <><Loader2 className="w-5 h-5 animate-spin" /> AI يفكر...</> : <><Sparkles className="w-5 h-5" /> إنشاء الخريطة</>}
+                  {generateMut.isPending ? <><Loader2 className="w-5 h-5 animate-spin" /> {t("mindmap.aiThinking")}</> : <><Sparkles className="w-5 h-5" /> {t("mindmap.createMap")}</>}
                 </Button>
               </div>
             </div>
@@ -239,9 +241,9 @@ export default function MindMap() {
             {/* Examples */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {[
-                "أريد بناء مطعم في إسطنبول بميزانية 50,000$",
-                "خطة لإطلاق تطبيق توصيل طعام في السوق العربي",
-                "مشروع مزرعة دواجن 20,000 طير مع تصدير",
+                t("mindmap.ex1"),
+                t("mindmap.ex2"),
+                t("mindmap.ex3"),
               ].map(ex => (
                 <button key={ex} onClick={() => setIdea(ex)} className="text-right text-xs p-3 rounded-xl border border-border hover:border-primary/30 hover:bg-primary/5 transition-all text-muted-foreground">
                   💡 {ex}
@@ -262,8 +264,8 @@ export default function MindMap() {
                   <p className="text-sm text-muted-foreground mt-1">{mapData.summary}</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-xs bg-primary/10 text-primary px-3 py-1 rounded-full">{mapData.totalNodes} عقدة</span>
-                  <button onClick={expandAll} className="text-xs text-primary hover:underline flex items-center gap-1"><Maximize2 className="w-3 h-3" /> فتح الكل</button>
+                  <span className="text-xs bg-primary/10 text-primary px-3 py-1 rounded-full">{t("mindmap.nodes", { n: mapData.totalNodes })}</span>
+                  <button onClick={expandAll} className="text-xs text-primary hover:underline flex items-center gap-1"><Maximize2 className="w-3 h-3" /> {t("mindmap.openAll")}</button>
                 </div>
               </div>
               {mapData.suggestions.length > 0 && (
@@ -282,8 +284,8 @@ export default function MindMap() {
 
             {/* Actions */}
             <div className="flex gap-3 flex-wrap">
-              <Button variant="outline" onClick={() => { setMapData(null); setIdea(""); }} className="gap-2"><RefreshCw className="w-4 h-4" /> خريطة جديدة</Button>
-              <Button variant="outline" onClick={() => { navigator.clipboard.writeText(JSON.stringify(mapData, null, 2)); toast.success("تم النسخ"); }} className="gap-2"><Copy className="w-4 h-4" /> نسخ JSON</Button>
+              <Button variant="outline" onClick={() => { setMapData(null); setIdea(""); }} className="gap-2"><RefreshCw className="w-4 h-4" /> {t("mindmap.newMap")}</Button>
+              <Button variant="outline" onClick={() => { navigator.clipboard.writeText(JSON.stringify(mapData, null, 2)); toast.success(t("payment.copied")); }} className="gap-2"><Copy className="w-4 h-4" /> {t("mindmap.copyJson")}</Button>
             </div>
           </div>
         )}
