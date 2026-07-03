@@ -190,93 +190,93 @@ export default function Home() {
   // ─── Platform Dropdown Groups ──────────────────────────────────────
   const platformGroups = [
     {
-      title: "🤖 الذكاء الاصطناعي",
+      title: t("home.grpAI"),
       items: [
-        { href: "/chat",            icon: MessageSquare, label: "الدردشة الذكية",     desc: "7 نماذج + رفع ملفات + صور" },
-        { href: "/agent",           icon: Terminal,      label: "وكيل الكود",         desc: "6 نماذج • 11 فئة برمجية" },
-        { href: "/war-room",        icon: Swords,        label: "غرفة المعارك",       desc: "4 نماذج تتنافس في وقت واحد" },
-        { href: "/prompt-factory",  icon: FlaskConical,  label: "مصنع البرومبت",      desc: "بناء وتحسين البرومبتات" },
-        { href: "/mindmap",         icon: Network,       label: "الخريطة الذهنية",   desc: "خرائط تفاعلية بالذكاء الاصطناعي" },
+        { href: "/chat",            icon: MessageSquare, label: t("home.t_chat"),          desc: t("home.d_chat") },
+        { href: "/agent",           icon: Terminal,      label: t("home.t_agent"),         desc: t("home.d_agent") },
+        { href: "/war-room",        icon: Swords,        label: t("home.t_warRoom"),       desc: t("home.d_warRoom") },
+        { href: "/prompt-factory",  icon: FlaskConical,  label: t("home.t_promptFactory"), desc: t("home.d_promptFactory") },
+        { href: "/mindmap",         icon: Network,       label: t("home.t_mindmap"),       desc: t("home.d_mindmap") },
       ],
     },
     {
-      title: "🛠️ التطوير",
+      title: t("home.grpDev"),
       items: [
-        { href: "/byoc",           icon: Code2,      label: "بيئة IDE",          desc: "كود + تنفيذ فوري" },
-        { href: "/app-builder",    icon: Smartphone, label: "منشئ التطبيقات",   desc: "Expo EAS • Android & iOS" },
-        { href: "/reverse",        icon: ScanSearch, label: "الهندسة العكسية",   desc: "APK/EXE تحليل شامل" },
-        { href: "/integrations",   icon: Plug,       label: "التكاملات",         desc: "35+ خدمة خارجية" },
-        { href: "/osint",          icon: Search,     label: "OSINT",             desc: "أدوات استخبارات المصادر" },
+        { href: "/byoc",           icon: Code2,      label: t("home.t_byoc"),         desc: t("home.d_byoc") },
+        { href: "/app-builder",    icon: Smartphone, label: t("home.t_appBuilder"),   desc: t("home.d_appBuilder") },
+        { href: "/reverse",        icon: ScanSearch, label: t("home.t_reverse"),      desc: t("home.d_reverse") },
+        { href: "/integrations",   icon: Plug,       label: t("home.t_integrations"), desc: t("home.d_integrations") },
+        { href: "/osint",          icon: Search,     label: t("home.t_osint"),        desc: t("home.d_osint") },
       ],
     },
     {
-      title: "💼 الأعمال",
+      title: t("home.grpBiz"),
       items: [
-        { href: "/office",  icon: Briefcase,    label: "الأعمال المكتبية", desc: "PPTX • Word • Excel" },
-        { href: "/studies", icon: GraduationCap,label: "الدراسات",         desc: "7 فئات • تصدير DOCX" },
-        { href: "/islam",   icon: BookOpen,     label: "رسالة الإسلام",   desc: "قرآن • حديث • فقه • معجزات" },
-        { href: "/converter",icon: FileType,   label: "تحويل الملفات",    desc: "30+ صيغة" },
+        { href: "/office",  icon: Briefcase,    label: t("home.t_office"),    desc: t("home.d_office") },
+        { href: "/studies", icon: GraduationCap,label: t("home.t_studies"),   desc: t("home.d_studies") },
+        { href: "/islam",   icon: BookOpen,     label: t("home.t_islam"),     desc: t("home.d_islam") },
+        { href: "/converter",icon: FileType,   label: t("home.t_converter"), desc: t("home.d_converter") },
       ],
     },
     {
-      title: "📈 التداول",
+      title: t("home.grpTrade"),
       items: [
-        { href: "/trading",    icon: TrendingUp, label: "تحليل الأسواق", desc: "9 أزواج • OANDA" },
-        { href: "/ea-factory", icon: Cpu,        label: "EA Factory",     desc: "مصنع MQ4/MQ5 بالذكاء الاصطناعي" },
+        { href: "/trading",    icon: TrendingUp, label: t("home.t_trading"),   desc: t("home.d_trading") },
+        { href: "/ea-factory", icon: Cpu,        label: t("home.t_eaFactory"), desc: t("home.d_eaFactory") },
       ],
     },
   ];
 
   const accountGroups = [
     {
-      title: "👤 الحساب",
+      title: t("home.grpAccount"),
       items: [
-        { href: "/account",    icon: User,          label: "حسابي",          desc: "الملف الشخصي والاشتراك" },
-        { href: "/dashboard",  icon: LayoutDashboard,label: "لوحة التحكم",   desc: "نظرة عامة على الاستخدام" },
-        { href: "/pricing",    icon: CreditCard,    label: "الأسعار",        desc: "الخطط والاشتراكات" },
-        { href: "/payment",    icon: CreditCard,    label: "الدفع",          desc: "إضافة رمز اشتراك" },
+        { href: "/account",    icon: User,          label: t("home.t_account"),   desc: t("home.d_account") },
+        { href: "/dashboard",  icon: LayoutDashboard,label: t("home.t_dashboard"),desc: t("home.d_dashboard") },
+        { href: "/pricing",    icon: CreditCard,    label: t("home.t_pricing"),   desc: t("home.d_pricing") },
+        { href: "/payment",    icon: CreditCard,    label: t("home.t_payment"),   desc: t("home.d_payment") },
       ],
     },
     {
-      title: "⚙️ الإدارة (Admin)",
+      title: t("home.grpAdmin"),
       items: [
-        { href: "/model-settings", icon: Settings,      label: "إعدادات النماذج",  desc: "تخصيص تعليمات AI" },
-        { href: "/ai-agent",      icon: Bot,           label: "AI Agent التنفيذي", desc: "تعديل الكود مباشرة بالذكاء" },
-        { href: "/admin",          icon: ShieldCheck,   label: "لوحة الإدارة",     desc: "إدارة المستخدمين والأكواد" },
-        { href: "/maintenance",    icon: Wrench,        label: "صيانة النظام",     desc: "فحص وإصلاح ذكي" },
-        { href: "/telegram",       icon: Send,          label: "بوتات تيليغرام",  desc: "إعداد webhook" },
+        { href: "/model-settings", icon: Settings,      label: t("home.t_modelSettings"), desc: t("home.d_modelSettings") },
+        { href: "/ai-agent",      icon: Bot,           label: t("home.t_aiAgent"),       desc: t("home.d_aiAgent") },
+        { href: "/admin",          icon: ShieldCheck,   label: t("home.t_admin"),         desc: t("home.d_admin") },
+        { href: "/maintenance",    icon: Wrench,        label: t("home.t_maintenance"),   desc: t("home.d_maintenance") },
+        { href: "/telegram",       icon: Send,          label: t("home.t_telegram"),      desc: t("home.d_telegram") },
       ],
     },
   ];
 
   // ─── Quick Access Sections ─────────────────────────────────────────
   const aiSection = [
-    { icon: MessageSquare, title: "الدردشة الذكية",   desc: "7 نماذج AI • رفع ملفات • توليد صور", href: "/chat",           iconBg: "bg-blue-500/20" },
-    { icon: Terminal,      title: "وكيل الكود",       desc: "6 نماذج • 11 فئة • Fix All", href: "/agent",           iconBg: "bg-emerald-500/20" },
-    { icon: Swords,        title: "غرفة المعارك",     desc: "4 نماذج تتنافس معاً", href: "/war-room",        iconBg: "bg-red-500/20" },
-    { icon: FlaskConical,  title: "مصنع البرومبت",    desc: "بناء برومبتات احترافية", href: "/prompt-factory",  iconBg: "bg-fuchsia-500/20" },
-    { icon: Network,       title: "الخريطة الذهنية", desc: "خرائط تفاعلية بالذكاء الاصطناعي", href: "/mindmap",         iconBg: "bg-cyan-500/20" },
+    { icon: MessageSquare, title: t("home.t_chat"),          desc: t("home.d_chat"),          href: "/chat",           iconBg: "bg-blue-500/20" },
+    { icon: Terminal,      title: t("home.t_agent"),         desc: t("home.d_agent"),         href: "/agent",          iconBg: "bg-emerald-500/20" },
+    { icon: Swords,        title: t("home.t_warRoom"),       desc: t("home.d_warRoom"),       href: "/war-room",       iconBg: "bg-red-500/20" },
+    { icon: FlaskConical,  title: t("home.t_promptFactory"), desc: t("home.d_promptFactory"), href: "/prompt-factory", iconBg: "bg-fuchsia-500/20" },
+    { icon: Network,       title: t("home.t_mindmap"),       desc: t("home.d_mindmap"),       href: "/mindmap",        iconBg: "bg-cyan-500/20" },
   ];
 
   const devSection = [
-    { icon: Code2,      title: "بيئة IDE",           desc: "كود + تنفيذ فوري في المتصفح", href: "/byoc",         iconBg: "bg-orange-500/20" },
-    { icon: Smartphone, title: "منشئ التطبيقات",    desc: "Expo EAS • Android & iOS", href: "/app-builder",  iconBg: "bg-pink-500/20" },
-    { icon: ScanSearch, title: "الهندسة العكسية",   desc: "APK/EXE/ELF/IPA تحليل", href: "/reverse",      iconBg: "bg-amber-500/20" },
-    { icon: Plug,       title: "التكاملات",          desc: "35+ خدمة خارجية", href: "/integrations", iconBg: "bg-green-500/20" },
-    { icon: Search,     title: "OSINT",              desc: "استخبارات المصادر المفتوحة", href: "/osint",        iconBg: "bg-slate-500/20" },
+    { icon: Code2,      title: t("home.t_byoc"),         desc: t("home.d_byoc"),         href: "/byoc",         iconBg: "bg-orange-500/20" },
+    { icon: Smartphone, title: t("home.t_appBuilder"),   desc: t("home.d_appBuilder"),   href: "/app-builder",  iconBg: "bg-pink-500/20" },
+    { icon: ScanSearch, title: t("home.t_reverse"),      desc: t("home.d_reverse"),      href: "/reverse",      iconBg: "bg-amber-500/20" },
+    { icon: Plug,       title: t("home.t_integrations"), desc: t("home.d_integrations"), href: "/integrations", iconBg: "bg-green-500/20" },
+    { icon: Search,     title: t("home.t_osint"),        desc: t("home.d_osint"),        href: "/osint",        iconBg: "bg-slate-500/20" },
   ];
 
   const businessSection = [
-    { icon: Briefcase,     title: "الأعمال المكتبية", desc: "PPTX • Word • Excel • تحويل", href: "/office",     iconBg: "bg-violet-500/20" },
-    { icon: GraduationCap, title: "الدراسات",          desc: "7 فئات • جدوى • تقني • طبي", href: "/studies",    iconBg: "bg-purple-500/20" },
-    { icon: BookOpen,      title: "رسالة الإسلام",    desc: "قرآن • حديث • فقه • معجزات", href: "/islam",      iconBg: "bg-emerald-700/30" },
-    { icon: FileType,      title: "تحويل الملفات",    desc: "30+ صيغة بدون خادم", href: "/converter",  iconBg: "bg-sky-500/20" },
-    { icon: Settings,      title: "إعدادات النماذج",  desc: "تخصيص system prompts", href: "/model-settings", iconBg: "bg-indigo-500/20" },
+    { icon: Briefcase,     title: t("home.t_office"),        desc: t("home.d_office"),        href: "/office",         iconBg: "bg-violet-500/20" },
+    { icon: GraduationCap, title: t("home.t_studies"),       desc: t("home.d_studies"),       href: "/studies",        iconBg: "bg-purple-500/20" },
+    { icon: BookOpen,      title: t("home.t_islam"),         desc: t("home.d_islam"),         href: "/islam",          iconBg: "bg-emerald-700/30" },
+    { icon: FileType,      title: t("home.t_converter"),     desc: t("home.d_converter"),     href: "/converter",      iconBg: "bg-sky-500/20" },
+    { icon: Settings,      title: t("home.t_modelSettings"), desc: t("home.d_modelSettings"), href: "/model-settings", iconBg: "bg-indigo-500/20" },
   ];
 
   const tradingSection = [
-    { icon: TrendingUp, title: "تحليل الأسواق", desc: "9 أزواج • 3 فريمات • OANDA", href: "/trading",    iconBg: "bg-emerald-500/20" },
-    { icon: Cpu,        title: "EA Factory",     desc: "مصنع استراتيجيات MQ4/MQ5", href: "/ea-factory", iconBg: "bg-amber-500/20" },
+    { icon: TrendingUp, title: t("home.t_trading"),   desc: t("home.d_trading"),   href: "/trading",    iconBg: "bg-emerald-500/20" },
+    { icon: Cpu,        title: t("home.t_eaFactory"), desc: t("home.d_eaFactory"), href: "/ea-factory", iconBg: "bg-amber-500/20" },
   ];
 
   const agents = [
@@ -287,12 +287,12 @@ export default function Home() {
   ];
 
   const features = [
-    { icon: Brain, title: "6 نماذج AI", desc: "Claude Opus + Sonnet + Haiku • GPT-4o • DeepSeek R1 • Gemini 2.5 • Groq LLaMA • Mistral" },
-    { icon: Upload, title: "تحليل 70+ صيغة", desc: "PDF, Word, Excel, PowerPoint, صور, فيديو, صوت, كود, MQ4/MQ5, أرشيف" },
-    { icon: Terminal, title: "وكيل كود متعدد النماذج", desc: "6 نماذج تكتب وتصلح الكود • 11 فئة • Fix All • إنشاء مشاريع كاملة" },
-    { icon: BarChart3, title: "تداول وتحليل أسواق", desc: "9 أزواج • 3 فريمات • تنفيذ تلقائي OANDA • EA Factory لـ MQ4/MQ5" },
-    { icon: MessageSquare, title: "دردشة ذكية متعددة", desc: "7 نماذج للاختيار • رفع ملفات • تسجيل صوتي • قراءة صوتية • توليد صور" },
-    { icon: Bot, title: "22+ أداة احترافية", desc: "أعمال مكتبية • دراسات 7 أقسام • بناء تطبيقات • هندسة عكسية • 35+ تكامل" },
+    { icon: Brain, title: t("home.feat1Title"), desc: t("home.feat1Desc") },
+    { icon: Upload, title: t("home.feat2Title"), desc: t("home.feat2Desc") },
+    { icon: Terminal, title: t("home.feat3Title"), desc: t("home.feat3Desc") },
+    { icon: BarChart3, title: t("home.feat4Title"), desc: t("home.feat4Desc") },
+    { icon: MessageSquare, title: t("home.feat5Title"), desc: t("home.feat5Desc") },
+    { icon: Bot, title: t("home.feat6Title"), desc: t("home.feat6Desc") },
   ];
 
   return (
@@ -308,8 +308,8 @@ export default function Home() {
 
           {/* Desktop: Two Dropdown Menus */}
           <div className="hidden lg:flex items-center gap-2">
-            <NavDropdown label="المنصة" icon={Globe} groups={platformGroups} />
-            <NavDropdown label="الحساب" icon={User} groups={accountGroups} />
+            <NavDropdown label={t("home.navPlatform")} icon={Globe} groups={platformGroups} />
+            <NavDropdown label={t("home.navAccount")} icon={User} groups={accountGroups} />
           </div>
 
           {/* Right Actions */}
@@ -397,13 +397,13 @@ export default function Home() {
             </motion.div>
 
             <motion.div custom={4} variants={fadeUp} className="flex items-center gap-6 pt-4">
-              <div className="text-center"><div className="text-2xl font-heading font-bold">6+</div><div className="text-xs text-muted-foreground">نماذج AI</div></div>
+              <div className="text-center"><div className="text-2xl font-heading font-bold">6+</div><div className="text-xs text-muted-foreground">{t("home.statModels")}</div></div>
               <div className="w-px h-8 bg-border" />
-              <div className="text-center"><div className="text-2xl font-heading font-bold">22+</div><div className="text-xs text-muted-foreground">أداة مدمجة</div></div>
+              <div className="text-center"><div className="text-2xl font-heading font-bold">22+</div><div className="text-xs text-muted-foreground">{t("home.statTools")}</div></div>
               <div className="w-px h-8 bg-border" />
-              <div className="text-center"><div className="text-2xl font-heading font-bold">10</div><div className="text-xs text-muted-foreground">لغة مدعومة</div></div>
+              <div className="text-center"><div className="text-2xl font-heading font-bold">10</div><div className="text-xs text-muted-foreground">{t("home.statLangs")}</div></div>
               <div className="w-px h-8 bg-border" />
-              <div className="text-center"><div className="text-2xl font-heading font-bold">35+</div><div className="text-xs text-muted-foreground">تكامل خارجي</div></div>
+              <div className="text-center"><div className="text-2xl font-heading font-bold">35+</div><div className="text-xs text-muted-foreground">{t("home.statIntegrations")}</div></div>
             </motion.div>
           </motion.div>
 
@@ -435,29 +435,29 @@ export default function Home() {
 
           <div className="space-y-12">
             <CategorySection
-              title="أدوات الذكاء الاصطناعي"
-              subtitle="نماذج متعددة • دردشة • كود • إبداع"
+              title={t("home.secAITitle")}
+              subtitle={t("home.secAISub")}
               color="from-blue-500 to-indigo-500"
               items={aiSection}
               delay={0}
             />
             <CategorySection
-              title="التطوير والبناء"
-              subtitle="IDE • تطبيقات • هندسة عكسية • تكاملات"
+              title={t("home.secDevTitle")}
+              subtitle={t("home.secDevSub")}
               color="from-orange-500 to-amber-500"
               items={devSection}
               delay={1}
             />
             <CategorySection
-              title="الأعمال والدراسات"
-              subtitle="مكتبية • أبحاث • إسلاميات • تحويل ملفات"
+              title={t("home.secBizTitle")}
+              subtitle={t("home.secBizSub")}
               color="from-violet-500 to-purple-500"
               items={businessSection}
               delay={2}
             />
             <CategorySection
-              title="التداول والأسواق"
-              subtitle="فوركس • OANDA • استراتيجيات MQ4/MQ5"
+              title={t("home.secTradeTitle")}
+              subtitle={t("home.secTradeSub")}
               color="from-emerald-500 to-green-500"
               items={tradingSection}
               delay={3}
@@ -566,7 +566,7 @@ export default function Home() {
               <Link href="/pricing">
                 <Button variant="outline" size="lg" className="border-border/60 text-base px-10 h-12">
                   <CreditCard className="w-4 h-4 ml-2" />
-                  {t("home.seePricing") || "عرض الأسعار"}
+                  {t("home.viewPricing")}
                 </Button>
               </Link>
             </motion.div>
@@ -585,9 +585,9 @@ export default function Home() {
             {t("home.copyright") || "© 2025 HAYO AI — منصة ذكاء اصطناعي عربية شاملة"}
           </p>
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            <Link href="/pricing" className="hover:text-foreground transition-colors">الأسعار</Link>
-            <Link href="/admin" className="hover:text-foreground transition-colors">الإدارة</Link>
-            <Link href="/dashboard" className="hover:text-foreground transition-colors">لوحة التحكم</Link>
+            <Link href="/pricing" className="hover:text-foreground transition-colors">{t("nav.pricing")}</Link>
+            <Link href="/admin" className="hover:text-foreground transition-colors">{t("nav.admin")}</Link>
+            <Link href="/dashboard" className="hover:text-foreground transition-colors">{t("nav.dashboard")}</Link>
           </div>
         </div>
       </footer>
