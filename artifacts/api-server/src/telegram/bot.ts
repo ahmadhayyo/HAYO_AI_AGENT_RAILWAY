@@ -648,6 +648,61 @@ function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fe
   ].join("\n");
 }
 
+// Deterministic FINAL recommendation — integrates strategies + trend filter +
+// AI consensus into one clear verdict with an explanation and concrete levels
+// (from the strongest matching AI result, or ATR-based when AI is off). This is
+// the "التوصية" the owner reads at the end of every signal.
+function buildRecommendation(
+  d: Awaited<ReturnType<typeof fetchMarket>>,
+  aiResults: any[],
+): string[] {
+  const buys = d.strategies.filter((s: Sig) => s.signal === "BUY");
+  const sells = d.strategies.filter((s: Sig) => s.signal === "SELL");
+  let vote = 0;
+  for (const s of d.strategies as Sig[]) { if (s.signal === "BUY") vote += s.strength / 100; else if (s.signal === "SELL") vote -= s.strength / 100; }
+  const trendF = d.filters.find((f: any) => /اتجاه|trend/i.test(f.name));
+  const trendUp = trendF ? /صاعد|📈|فوق/.test(trendF.desc) : null;
+  if (trendUp === true) vote += 1.2; else if (trendUp === false) vote -= 1.2;
+
+  const validAI = aiResults.filter((r: any) => r.signal !== "ERROR" && r.signal !== "HOLD");
+  const anyAI = aiResults.some((r: any) => r.signal !== "ERROR");
+  const aiBuys = validAI.filter((r: any) => r.signal === "BUY").length;
+  const aiSells = validAI.filter((r: any) => r.signal === "SELL").length;
+  vote += (aiBuys - aiSells) * 1.5;
+
+  const maxVote = d.strategies.length + 1.2 + validAI.length * 1.5;
+  const norm = Math.max(-1, Math.min(1, vote / (Math.max(1, maxVote) * 0.5)));
+  const dir: "BUY" | "SELL" | "HOLD" = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
+  let conf = Math.round(Math.abs(norm) * 100);
+
+  let entry = "", sl = "", tp = "";
+  const best = validAI.filter((r: any) => r.signal === dir && r.entry).sort((a: any, b: any) => b.confidence - a.confidence)[0];
+  if (best) { entry = String(best.entry); sl = String(best.sl); tp = String(best.tp); if (best.confidence) conf = Math.round((conf + best.confidence) / 2); }
+  else if (dir !== "HOLD") {
+    const atr = d.ATR || d.price * 0.001;
+    entry = d.fmt(d.price);
+    sl = d.fmt(dir === "BUY" ? d.price - 1.5 * atr : d.price + 1.5 * atr);
+    tp = d.fmt(dir === "BUY" ? d.price + 2 * atr : d.price - 2 * atr);
+  }
+
+  const reasons: string[] = [`${buys.length} إشارة شراء مقابل ${sells.length} بيع`];
+  if (trendUp !== null) reasons.push(`الاتجاه الرئيسي ${trendUp ? "صاعد 📈" : "هابط 📉"}`);
+  if (anyAI && validAI.length) reasons.push(`توافق AI ${aiBuys}🟢/${aiSells}🔴`);
+  else if (!anyAI) reasons.push("نماذج AI غير مفعّلة (فعّل المفاتيح لتحليل أعمق)");
+
+  const dirLabel = dir === "BUY" ? "🟢 <b>شراء</b>" : dir === "SELL" ? "🔴 <b>بيع</b>" : "🟡 <b>انتظار</b>";
+  const out = [
+    ``,
+    `<b>━━ ✅ التوصية النهائية ━━</b>`,
+    `${dirLabel} | ثقة <code>${conf}%</code>`,
+    `📝 <i>${reasons.join("، ")}.</i>`,
+  ];
+  if (dir !== "HOLD" && entry) out.push(`🎯 دخول <code>${entry}</code> | 🛑 وقف <code>${sl}</code> | 🎯 هدف <code>${tp}</code>`);
+  else out.push(`⏸️ <i>لا صفقة واضحة الآن — انتظر تحسّن التوافق.</i>`);
+  out.push(`⚠️ <i>إدارة المخاطرة: لا تخاطر بأكثر من 1–2% من رأس المال.</i>`);
+  return out;
+}
+
 function buildAIMsg(
   pair: string, tf: string,
   d: Awaited<ReturnType<typeof fetchMarket>>,
@@ -705,6 +760,7 @@ function buildAIMsg(
     `┌────────────────────────────────┐`,
     `│  AI توافق: ${aiCons.padEnd(10)} ثقة: ${avgConf}%  │`,
     `└────────────────────────────────┘`,
+    ...buildRecommendation(d, aiResults),
     ``,
     `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
   ].filter(l=>l!=="").join("\n");
@@ -1024,6 +1080,7 @@ async function runConvergenceScan(bot: TelegramBot, ownerChatId: number) {
         `│  🎯 التطابق: ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"}  ثقة AI: ${avgConf}%  │`,
         `│  3/3 فريمات متطابقة             │`,
         `└──────────────────────────────────┘`,
+        ...buildRecommendation(d15, aiResults),
         ``,
         `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
       ].join("\n");
