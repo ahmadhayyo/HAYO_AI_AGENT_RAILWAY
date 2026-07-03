@@ -346,17 +346,17 @@ export default function Chat() {
           // Timeout after 10s
           setTimeout(() => { try { recognition.stop(); } catch {} }, 10000);
         } catch {
-          toast.error("المتصفح لا يدعم تحويل الصوت للنص");
+          toast.error(t("chat.speechNotSupported"));
         }
       };
       recorder.start();
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
-      toast.info("🎤 جاري التسجيل... اضغط مرة أخرى للإيقاف");
+      toast.info(t("chat.recording"));
       // Auto stop after 60s
       setTimeout(() => { if (mediaRecorderRef.current?.state === "recording") { mediaRecorderRef.current.stop(); setIsRecording(false); } }, 60000);
     } catch {
-      toast.error("لم يتم السماح بالوصول للميكروفون");
+      toast.error(t("chat.micDenied"));
     }
   }, [isRecording]);
 
@@ -388,13 +388,13 @@ export default function Chat() {
       // Add image as assistant message
       const imgMsg: ChatMessage = {
         role: "assistant",
-        content: `![${imagePrompt}](${data.imageUrl})\n\n🎨 **صورة مُولّدة:** ${imagePrompt}`,
+        content: `![${imagePrompt}](${data.imageUrl})\n\n🎨 **${t("chat.generatedImageLabel")}** ${imagePrompt}`,
         createdAt: new Date(),
       };
       setLocalMessages(prev => [...prev, imgMsg]);
       setShowImageGen(false);
       setImagePrompt("");
-      toast.success("تم توليد الصورة! 🎨");
+      toast.success(t("chat.imageGenerated"));
     } catch (e: any) { toast.error(e.message); }
     finally { setGeneratingImage(false); }
   }, [imagePrompt]);
@@ -403,7 +403,7 @@ export default function Chat() {
   const handleGenerateVideo = useCallback(async () => {
     if (!videoPrompt.trim()) return;
     setGeneratingVideo(true);
-    toast.info("🎬 جاري توليد الفيديو... قد يستغرق 2-5 دقائق");
+    toast.info(t("chat.videoGenerating"));
     try {
       const res = await fetch(`${API_BASE}/api/chat/generate-video`, {
         method: "POST", credentials: "include",
@@ -414,13 +414,13 @@ export default function Chat() {
       if (data.error) { toast.error(data.error); return; }
       const vidMsg: ChatMessage = {
         role: "assistant",
-        content: `🎬 **فيديو AI — ${videoModel}**\n\n${videoPrompt}\n\n<video controls style="max-width:100%;border-radius:12px;" src="${data.videoUrl}"></video>\n\n⏱️ وقت التوليد: ${data.duration || "غير محدد"}`,
+        content: `🎬 **${t("chat.videoResultTitle")} — ${videoModel}**\n\n${videoPrompt}\n\n<video controls style="max-width:100%;border-radius:12px;" src="${data.videoUrl}"></video>\n\n⏱️ ${t("chat.videoGenTime")} ${data.duration || t("chat.notSpecified")}`,
         createdAt: new Date(),
       };
       setLocalMessages(prev => [...prev, vidMsg]);
       setShowVideoGen(false);
       setVideoPrompt("");
-      toast.success("🎬 تم توليد الفيديو بنجاح!");
+      toast.success(t("chat.videoGeneratedToast"));
     } catch (e: any) { toast.error(e.message); }
     finally { setGeneratingVideo(false); }
   }, [videoPrompt, videoModel, videoAspect]);
@@ -611,7 +611,7 @@ export default function Chat() {
 
       if (isZip || isRar) {
         if (file.size > effectiveZipMax) {
-          alert(`${file.name}: الحجم يتجاوز 50MB`);
+          alert(`${file.name}: ${t("chat.fileSizeExceeds")}`);
           continue;
         }
         try {
@@ -653,8 +653,8 @@ export default function Chat() {
 
           fileEntries.sort((a, b) => a.name.localeCompare(b.name));
 
-          let extractedText = `📦 **${file.name}** — ${fileEntries.length} ملف مستخرج\n\n`;
-          extractedText += `**هيكل المشروع:**\n${fileEntries.map(f => `- \`${f.name}\``).join("\n")}\n\n---\n\n`;
+          let extractedText = `📦 **${file.name}** — ${fileEntries.length} ${t("chat.extractedFilesLabel")}\n\n`;
+          extractedText += `**${t("chat.projectStructure")}:**\n${fileEntries.map(f => `- \`${f.name}\``).join("\n")}\n\n---\n\n`;
           fileEntries.forEach(f => {
             const lang = detectLangForMarkdown(f.name);
             extractedText += `### ${f.name}\n\`\`\`${lang}\n${f.content.slice(0, 15000)}\n\`\`\`\n\n`;
@@ -668,7 +668,7 @@ export default function Chat() {
             extractedText,
           });
         } catch (err) {
-          alert(`فشل استخراج ${file.name}: ${(err as any).message}`);
+          alert(`${t("chat.extractFailed")} ${file.name}: ${(err as any).message}`);
         }
         continue;
       }
@@ -821,13 +821,13 @@ export default function Chat() {
             <img src={HAYO_LOGO} alt="HAYO AI" className="w-7 h-7 rounded-lg" />
             <span className="font-heading font-bold text-sm">HAYO AI</span>
             {user?.role === "admin" && (
-              <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-bold">{t("common.owner") || "مالك"}</span>
+              <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-bold">{t("common.owner")}</span>
             )}
           </Link>
           {user?.role === "admin" && (
             <div className="flex items-center gap-2 text-[10px] text-emerald-400 bg-emerald-500/10 rounded-lg px-2 py-1 mb-2">
               <Crown className="size-3" />
-              <span>{t("common.unlimitedAccess") || "وصول غير محدود — بلا حدود رفع أو نقاط"}</span>
+              <span>{t("common.unlimitedAccess")}</span>
             </div>
           )}
           <Button
@@ -1040,7 +1040,7 @@ export default function Chat() {
                         </div>
                         <div className="flex items-center gap-1 mt-2">
                           <CopyButton text={msg.content} />
-                          <button onClick={() => speakText(msg.content)} className="p-1 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors" title="قراءة صوتية">
+                          <button onClick={() => speakText(msg.content)} className="p-1 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors" title={t("chat.readAloud")}>
                             {isSpeaking ? <VolumeX className="size-3.5 text-red-400" /> : <Volume2 className="size-3.5" />}
                           </button>
                         </div>
@@ -1121,7 +1121,7 @@ export default function Chat() {
                     {isRecording ? <MicOff className="size-5" /> : <Mic className="size-5" />}
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>{isRecording ? "إيقاف التسجيل" : "تسجيل صوتي"}</TooltipContent>
+                <TooltipContent>{isRecording ? t("chat.stopRecording") : t("chat.voiceRecord")}</TooltipContent>
               </Tooltip>
 
               {/* Image Generation */}
@@ -1132,7 +1132,7 @@ export default function Chat() {
                     <ImagePlus className="size-5" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>{t("chat.generateImage") || "توليد صورة AI"}</TooltipContent>
+                <TooltipContent>{t("chat.generateImage")}</TooltipContent>
               </Tooltip>
 
               {/* Video Generation — Owner Only */}
@@ -1144,7 +1144,7 @@ export default function Chat() {
                       <Video className="size-5" />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>{t("chat.generateVideo") || "🎬 توليد فيديو AI (حصري)"}</TooltipContent>
+                  <TooltipContent>{t("chat.generateVideo")}</TooltipContent>
                 </Tooltip>
               )}
 
@@ -1173,12 +1173,12 @@ export default function Chat() {
             {showImageGen && (
               <div className="bg-pink-500/5 border border-pink-500/20 rounded-xl p-3 flex items-center gap-3">
                 <ImagePlus className="size-5 text-pink-400 shrink-0" />
-                <input value={imagePrompt} onChange={e => setImagePrompt(e.target.value)} placeholder={t("chat.imagePromptPlaceholder") || "صف الصورة المطلوبة..."}
+                <input value={imagePrompt} onChange={e => setImagePrompt(e.target.value)} placeholder={t("chat.imagePromptPlaceholder")}
                   className="flex-1 bg-transparent border-0 text-sm focus:outline-none placeholder:text-muted-foreground/50"
                   onKeyDown={e => { if (e.key === "Enter") handleGenerateImage(); }} />
                 <Button size="sm" onClick={handleGenerateImage} disabled={generatingImage || !imagePrompt.trim()} className="bg-pink-600 hover:bg-pink-700 text-white gap-1 text-xs">
                   {generatingImage ? <Loader2 className="size-3 animate-spin" /> : <ImagePlus className="size-3" />}
-                  {generatingImage ? t("common.generating") || "يولّد..." : t("chat.createImage") || "إنشاء صورة"}
+                  {generatingImage ? t("common.generating") : t("chat.createImage")}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setShowImageGen(false)} className="size-7 p-0"><X className="size-3" /></Button>
               </div>
@@ -1190,20 +1190,20 @@ export default function Chat() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Video className="size-5 text-violet-400" />
-                    <span className="text-sm font-bold text-violet-400">{t("chat.videoTitle") || "🎬 توليد فيديو AI"}</span>
-                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400">{t("common.ownerBadge") || "👑 حصري"}</span>
+                    <span className="text-sm font-bold text-violet-400">{t("chat.videoTitle")}</span>
+                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400">{t("common.ownerBadge")}</span>
                   </div>
                   <Button size="sm" variant="ghost" onClick={() => setShowVideoGen(false)} className="size-7 p-0"><X className="size-3" /></Button>
                 </div>
 
                 <textarea value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} rows={2}
-                  placeholder={t("chat.videoPromptPlaceholder") || "صف المشهد بالتفصيل... مثال: طائر فينيق ينهض من النار في غابة مظلمة، إضاءة سينمائية، حركة بطيئة"}
+                  placeholder={t("chat.videoPromptPlaceholder")}
                   className="w-full bg-card border border-border rounded-lg px-3 py-2 text-sm resize-none focus:ring-2 focus:ring-violet-500/50" />
 
                 <div className="flex items-center gap-3">
                   {/* Model Selection */}
                   <div className="flex-1">
-                    <label className="text-[10px] text-muted-foreground mb-1 block">{t("chat.videoModel") || "النموذج"}</label>
+                    <label className="text-[10px] text-muted-foreground mb-1 block">{t("chat.videoModel")}</label>
                     <div className="flex gap-1">
                       {[
                         { id: "minimax", label: "Minimax", emoji: "🎥" },
@@ -1221,7 +1221,7 @@ export default function Chat() {
 
                   {/* Aspect Ratio */}
                   <div>
-                    <label className="text-[10px] text-muted-foreground mb-1 block">{t("chat.videoAspect") || "الأبعاد"}</label>
+                    <label className="text-[10px] text-muted-foreground mb-1 block">{t("chat.videoAspect")}</label>
                     <div className="flex gap-1">
                       {["16:9", "9:16", "1:1"].map(ar => (
                         <button key={ar} onClick={() => setVideoAspect(ar)}
@@ -1235,15 +1235,15 @@ export default function Chat() {
 
                 <Button onClick={handleGenerateVideo} disabled={generatingVideo || !videoPrompt.trim()} className="w-full gap-2 bg-gradient-to-r from-violet-600 to-purple-600 text-white">
                   {generatingVideo ? (
-                    <><Loader2 className="size-4 animate-spin" /> {t("chat.generatingVideo") || "جاري التوليد (2-5 دقائق)..."}</>
+                    <><Loader2 className="size-4 animate-spin" /> {t("chat.generatingVideo")}</>
                   ) : (
-                    <><Video className="size-4" /> {t("chat.createVideo") || "إنشاء فيديو AI"}</>
+                    <><Video className="size-4" /> {t("chat.createVideo")}</>
                   )}
                 </Button>
 
                 {generatingVideo && (
                   <div className="bg-violet-500/10 rounded-lg p-2 text-[10px] text-violet-300 text-center animate-pulse">
-                    ⏳ {t("chat.videoWait") || "توليد الفيديو يستغرق 2-5 دقائق... لا تغلق الصفحة"}
+                    ⏳ {t("chat.videoWait")}
                   </div>
                 )}
               </div>
@@ -1256,15 +1256,15 @@ export default function Chat() {
                   <AlertTriangle className="size-4 text-amber-400 shrink-0" />
                   <div>
                     <p className="text-xs font-medium text-amber-300">
-                      وصلت إلى حد {limitQuery.data.dailyLimit} رسالة يومية مجانية
+                      {t("chat.limitReached", { limit: limitQuery.data.dailyLimit })}
                     </p>
-                    <p className="text-[10px] text-gray-400">اشترك لرفع الحد وإرسال رسائل غير محدودة</p>
+                    <p className="text-[10px] text-gray-400">{t("chat.limitDesc")}</p>
                   </div>
                 </div>
                 <Link href="/payment?plan=basic">
                   <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-semibold whitespace-nowrap transition-all">
                     <Crown className="size-3" />
-                    اشترك الآن
+                    {t("pricing.subscribeNow")}
                   </button>
                 </Link>
               </div>
@@ -1278,10 +1278,10 @@ export default function Chat() {
                 if (pct < 0.6) return null;
                 return (
                   <p className="text-[10px] text-amber-400/70 text-center mt-1">
-                    ⚡ {remaining} رسالة متبقية من أصل {limitQuery.data.dailyLimit} اليوم
+                    {t("chat.remaining", { remaining, limit: limitQuery.data.dailyLimit })}
                     {pct >= 0.8 && (
                       <Link href="/payment?plan=basic">
-                        <span className="text-indigo-400 mr-1 hover:underline cursor-pointer">— اشترك لرفع الحد</span>
+                        <span className="text-indigo-400 mx-1 hover:underline cursor-pointer">{t("chat.subscribeToRaise")}</span>
                       </Link>
                     )}
                   </p>
