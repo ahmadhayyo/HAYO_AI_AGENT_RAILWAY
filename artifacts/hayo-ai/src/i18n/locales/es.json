@@ -928,5 +928,30 @@
     "planPro": "Profesional",
     "planBasic": "Básico",
     "emailBody": "Hola, me gustaría suscribirme al plan {{plan}}"
+  },
+  "auth": {
+    "loginSuccess": "Sesión iniciada con éxito",
+    "loginFail": "Error al iniciar sesión",
+    "registerSuccess": "Cuenta creada con éxito",
+    "registerFail": "Error al crear la cuenta",
+    "tagline": "La plataforma de IA avanzada",
+    "cardTitle": "Inicia sesión en tu cuenta",
+    "cardDesc": "Inicia sesión o crea una cuenta nueva para empezar",
+    "tabLogin": "Iniciar sesión",
+    "tabRegister": "Cuenta nueva",
+    "email": "Correo",
+    "password": "Contraseña",
+    "forgot": "¿Olvidaste tu contraseña?",
+    "loggingIn": "Iniciando sesión...",
+    "name": "Nombre",
+    "namePlaceholder": "Tu nombre completo",
+    "creating": "Creando...",
+    "createAccount": "Crear cuenta",
+    "forgotSub": "Contacta con soporte para recuperar tu cuenta",
+    "forgotBody": "Para recuperar tu contraseña, contacta con el equipo de soporte por uno de los siguientes canales, mencionando tu correo registrado:",
+    "open": "Abrir →",
+    "send": "Enviar →",
+    "resetSubject": "Recuperación de contraseña - HAYO AI",
+    "gotIt": "De acuerdo"
   }
 }

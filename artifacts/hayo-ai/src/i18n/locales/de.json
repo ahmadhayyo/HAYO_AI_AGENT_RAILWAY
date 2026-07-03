@@ -928,5 +928,30 @@
     "planPro": "Professionell",
     "planBasic": "Basis",
     "emailBody": "Hallo, ich möchte den {{plan}}-Plan abonnieren"
+  },
+  "auth": {
+    "loginSuccess": "Erfolgreich angemeldet",
+    "loginFail": "Anmeldung fehlgeschlagen",
+    "registerSuccess": "Konto erfolgreich erstellt",
+    "registerFail": "Konto konnte nicht erstellt werden",
+    "tagline": "Die fortschrittliche KI-Plattform",
+    "cardTitle": "Bei Ihrem Konto anmelden",
+    "cardDesc": "Melden Sie sich an oder erstellen Sie ein neues Konto, um zu starten",
+    "tabLogin": "Anmelden",
+    "tabRegister": "Neues Konto",
+    "email": "E-Mail",
+    "password": "Passwort",
+    "forgot": "Passwort vergessen?",
+    "loggingIn": "Anmeldung...",
+    "name": "Name",
+    "namePlaceholder": "Ihr vollständiger Name",
+    "creating": "Wird erstellt...",
+    "createAccount": "Konto erstellen",
+    "forgotSub": "Kontaktieren Sie den Support, um Ihr Konto wiederherzustellen",
+    "forgotBody": "Um Ihr Passwort wiederherzustellen, kontaktieren Sie bitte das Support-Team über einen der folgenden Kanäle und geben Sie Ihre registrierte E-Mail an:",
+    "open": "Öffnen →",
+    "send": "Senden →",
+    "resetSubject": "Passwort-Wiederherstellung - HAYO AI",
+    "gotIt": "OK, verstanden"
   }
 }

@@ -928,5 +928,30 @@
     "planPro": "专业",
     "planBasic": "基础",
     "emailBody": "您好，我想订阅 {{plan}} 套餐"
+  },
+  "auth": {
+    "loginSuccess": "登录成功",
+    "loginFail": "登录失败",
+    "registerSuccess": "账户创建成功",
+    "registerFail": "账户创建失败",
+    "tagline": "先进的 AI 平台",
+    "cardTitle": "登录您的账户",
+    "cardDesc": "登录或创建新账户即可开始",
+    "tabLogin": "登录",
+    "tabRegister": "新账户",
+    "email": "电子邮件",
+    "password": "密码",
+    "forgot": "忘记密码？",
+    "loggingIn": "正在登录...",
+    "name": "姓名",
+    "namePlaceholder": "您的全名",
+    "creating": "正在创建...",
+    "createAccount": "创建账户",
+    "forgotSub": "联系支持以找回您的账户",
+    "forgotBody": "要找回您的密码，请通过以下渠道之一联系支持团队，并注明您的注册邮箱：",
+    "open": "打开 →",
+    "send": "发送 →",
+    "resetSubject": "密码找回 - HAYO AI",
+    "gotIt": "好的，明白了"
   }
 }

@@ -8,10 +8,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Loader2, Brain, KeyRound, MessageCircle, Mail, X } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 
 const HAYO_LOGO = `${import.meta.env.BASE_URL ?? "/"}logo.png`;
 
 export default function Login() {
+  const { t, i18n } = useTranslation();
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
 
@@ -26,10 +28,10 @@ export default function Login() {
     onSuccess: () => {
       utils.auth.me.invalidate();
       navigate("/dashboard");
-      toast.success("تم تسجيل الدخول بنجاح");
+      toast.success(t("auth.loginSuccess"));
     },
     onError: (err: any) => {
-      toast.error(err.message || "فشل تسجيل الدخول");
+      toast.error(err.message || t("auth.loginFail"));
     },
   });
 
@@ -37,10 +39,10 @@ export default function Login() {
     onSuccess: () => {
       utils.auth.me.invalidate();
       navigate("/dashboard");
-      toast.success("تم إنشاء الحساب بنجاح");
+      toast.success(t("auth.registerSuccess"));
     },
     onError: (err: any) => {
-      toast.error(err.message || "فشل إنشاء الحساب");
+      toast.error(err.message || t("auth.registerFail"));
     },
   });
 
@@ -57,7 +59,7 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4" dir="rtl">
+    <div className="min-h-screen flex items-center justify-center bg-background p-4" dir={i18n.dir()}>
       <div className="w-full max-w-md space-y-6">
         <div className="text-center">
           <img src={HAYO_LOGO} alt="HAYO AI" className="h-12 mx-auto mb-4" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
@@ -65,28 +67,28 @@ export default function Login() {
             <Brain className="h-8 w-8 text-primary" />
             <h1 className="text-3xl font-bold text-foreground">HAYO AI</h1>
           </div>
-          <p className="text-muted-foreground">منصة الذكاء الاصطناعي المتقدمة</p>
+          <p className="text-muted-foreground">{t("auth.tagline")}</p>
         </div>
 
         <Card className="border-border bg-card">
           <CardHeader>
-            <CardTitle className="text-center text-foreground">الدخول إلى حسابك</CardTitle>
+            <CardTitle className="text-center text-foreground">{t("auth.cardTitle")}</CardTitle>
             <CardDescription className="text-center text-muted-foreground">
-              سجل دخولك أو أنشئ حساباً جديداً للبدء
+              {t("auth.cardDesc")}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Tabs defaultValue="login" dir="rtl">
+            <Tabs defaultValue="login" dir={i18n.dir()}>
               <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="login">تسجيل الدخول</TabsTrigger>
-                <TabsTrigger value="register">حساب جديد</TabsTrigger>
+                <TabsTrigger value="login">{t("auth.tabLogin")}</TabsTrigger>
+                <TabsTrigger value="register">{t("auth.tabRegister")}</TabsTrigger>
               </TabsList>
 
               {/* ─── Login Tab ─── */}
               <TabsContent value="login" className="space-y-4 mt-4">
                 <form onSubmit={handleLogin} className="space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="login-email">البريد الإلكتروني</Label>
+                    <Label htmlFor="login-email">{t("auth.email")}</Label>
                     <Input
                       id="login-email"
                       type="email"
@@ -99,13 +101,13 @@ export default function Login() {
                   </div>
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="login-password">كلمة المرور</Label>
+                      <Label htmlFor="login-password">{t("auth.password")}</Label>
                       <button
                         type="button"
                         onClick={() => setShowForgot(true)}
                         className="text-xs text-primary hover:underline focus:outline-none"
                       >
-                        نسيت كلمة المرور؟
+                        {t("auth.forgot")}
                       </button>
                     </div>
                     <Input
@@ -124,8 +126,8 @@ export default function Login() {
                     disabled={loginMutation.isPending}
                   >
                     {loginMutation.isPending ? (
-                      <><Loader2 className="ml-2 h-4 w-4 animate-spin" />جاري الدخول...</>
-                    ) : "تسجيل الدخول"}
+                      <><Loader2 className="me-2 h-4 w-4 animate-spin" />{t("auth.loggingIn")}</>
+                    ) : t("auth.tabLogin")}
                   </Button>
                 </form>
               </TabsContent>
@@ -134,18 +136,18 @@ export default function Login() {
               <TabsContent value="register" className="space-y-4 mt-4">
                 <form onSubmit={handleRegister} className="space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="reg-name">الاسم</Label>
+                    <Label htmlFor="reg-name">{t("auth.name")}</Label>
                     <Input
                       id="reg-name"
                       type="text"
-                      placeholder="اسمك الكامل"
+                      placeholder={t("auth.namePlaceholder")}
                       value={registerName}
                       onChange={(e) => setRegisterName(e.target.value)}
                       required
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="reg-email">البريد الإلكتروني</Label>
+                    <Label htmlFor="reg-email">{t("auth.email")}</Label>
                     <Input
                       id="reg-email"
                       type="email"
@@ -157,7 +159,7 @@ export default function Login() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="reg-password">كلمة المرور</Label>
+                    <Label htmlFor="reg-password">{t("auth.password")}</Label>
                     <Input
                       id="reg-password"
                       type="password"
@@ -174,8 +176,8 @@ export default function Login() {
                     disabled={registerMutation.isPending}
                   >
                     {registerMutation.isPending ? (
-                      <><Loader2 className="ml-2 h-4 w-4 animate-spin" />جاري الإنشاء...</>
-                    ) : "إنشاء حساب"}
+                      <><Loader2 className="me-2 h-4 w-4 animate-spin" />{t("auth.creating")}</>
+                    ) : t("auth.createAccount")}
                   </Button>
                 </form>
               </TabsContent>
@@ -191,7 +193,7 @@ export default function Login() {
           >
             <div
               className="bg-card border border-border rounded-2xl p-6 w-full max-w-sm space-y-5 shadow-2xl"
-              dir="rtl"
+              dir={i18n.dir()}
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
@@ -201,8 +203,8 @@ export default function Login() {
                     <KeyRound className="h-5 w-5 text-primary" />
                   </div>
                   <div>
-                    <h3 className="font-semibold text-foreground text-base">نسيت كلمة المرور؟</h3>
-                    <p className="text-xs text-muted-foreground mt-0.5">تواصل مع الدعم لاسترداد حسابك</p>
+                    <h3 className="font-semibold text-foreground text-base">{t("auth.forgot")}</h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">{t("auth.forgotSub")}</p>
                   </div>
                 </div>
                 <button
@@ -215,7 +217,7 @@ export default function Login() {
 
               {/* Body */}
               <p className="text-sm text-muted-foreground leading-relaxed">
-                لاسترداد كلمة المرور، يرجى التواصل مع فريق الدعم عبر إحدى القنوات التالية مع ذكر بريدك الإلكتروني المسجّل:
+                {t("auth.forgotBody")}
               </p>
 
               <div className="space-y-3">
@@ -233,22 +235,22 @@ export default function Login() {
                     <p className="text-sm font-medium text-foreground">Telegram</p>
                     <p className="text-xs text-muted-foreground font-mono">@fmf0038</p>
                   </div>
-                  <span className="text-xs text-[#229ED9] opacity-0 group-hover:opacity-100 transition-opacity">فتح ←</span>
+                  <span className="text-xs text-[#229ED9] opacity-0 group-hover:opacity-100 transition-opacity">{t("auth.open")}</span>
                 </a>
 
                 {/* Email */}
                 <a
-                  href="mailto:fmf0038@gmail.com?subject=استرداد كلمة المرور - HAYO AI"
+                  href={`mailto:fmf0038@gmail.com?subject=${encodeURIComponent(t("auth.resetSubject"))}`}
                   className="flex items-center gap-3 p-3 rounded-xl bg-muted/50 border border-border hover:bg-muted transition-colors group"
                 >
                   <div className="bg-primary/10 p-2 rounded-lg">
                     <Mail className="h-4 w-4 text-primary" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground">البريد الإلكتروني</p>
+                    <p className="text-sm font-medium text-foreground">{t("auth.email")}</p>
                     <p className="text-xs text-muted-foreground font-mono truncate">fmf0038@gmail.com</p>
                   </div>
-                  <span className="text-xs text-primary opacity-0 group-hover:opacity-100 transition-opacity">إرسال ←</span>
+                  <span className="text-xs text-primary opacity-0 group-hover:opacity-100 transition-opacity">{t("auth.send")}</span>
                 </a>
               </div>
 
@@ -257,7 +259,7 @@ export default function Login() {
                 className="w-full text-sm"
                 onClick={() => setShowForgot(false)}
               >
-                حسناً، فهمت
+                {t("auth.gotIt")}
               </Button>
             </div>
           </div>

@@ -928,5 +928,30 @@
     "planPro": "Professional",
     "planBasic": "Basic",
     "emailBody": "Hi, I would like to subscribe to the {{plan}} plan"
+  },
+  "auth": {
+    "loginSuccess": "Signed in successfully",
+    "loginFail": "Sign-in failed",
+    "registerSuccess": "Account created successfully",
+    "registerFail": "Failed to create account",
+    "tagline": "The advanced AI platform",
+    "cardTitle": "Sign in to your account",
+    "cardDesc": "Log in or create a new account to get started",
+    "tabLogin": "Log in",
+    "tabRegister": "New account",
+    "email": "Email",
+    "password": "Password",
+    "forgot": "Forgot password?",
+    "loggingIn": "Signing in...",
+    "name": "Name",
+    "namePlaceholder": "Your full name",
+    "creating": "Creating...",
+    "createAccount": "Create account",
+    "forgotSub": "Contact support to recover your account",
+    "forgotBody": "To recover your password, please contact the support team via one of the following channels, mentioning your registered email:",
+    "open": "Open →",
+    "send": "Send →",
+    "resetSubject": "Password recovery - HAYO AI",
+    "gotIt": "OK, got it"
   }
 }

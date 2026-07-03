@@ -928,5 +928,30 @@
     "planPro": "Profesyonel",
     "planBasic": "Temel",
     "emailBody": "Merhaba, {{plan}} planına abone olmak istiyorum"
+  },
+  "auth": {
+    "loginSuccess": "Giriş başarılı",
+    "loginFail": "Giriş başarısız",
+    "registerSuccess": "Hesap başarıyla oluşturuldu",
+    "registerFail": "Hesap oluşturulamadı",
+    "tagline": "Gelişmiş yapay zekâ platformu",
+    "cardTitle": "Hesabınıza giriş yapın",
+    "cardDesc": "Başlamak için giriş yapın veya yeni bir hesap oluşturun",
+    "tabLogin": "Giriş yap",
+    "tabRegister": "Yeni hesap",
+    "email": "E-posta",
+    "password": "Şifre",
+    "forgot": "Şifrenizi mi unuttunuz?",
+    "loggingIn": "Giriş yapılıyor...",
+    "name": "Ad",
+    "namePlaceholder": "Tam adınız",
+    "creating": "Oluşturuluyor...",
+    "createAccount": "Hesap oluştur",
+    "forgotSub": "Hesabınızı kurtarmak için destekle iletişime geçin",
+    "forgotBody": "Şifrenizi kurtarmak için lütfen kayıtlı e-postanızı belirterek aşağıdaki kanallardan biri üzerinden destek ekibiyle iletişime geçin:",
+    "open": "Aç →",
+    "send": "Gönder →",
+    "resetSubject": "Şifre kurtarma - HAYO AI",
+    "gotIt": "Tamam, anladım"
   }
 }

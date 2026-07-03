@@ -928,5 +928,30 @@
     "planPro": "Professionnel",
     "planBasic": "Basique",
     "emailBody": "Bonjour, je souhaite m'abonner au forfait {{plan}}"
+  },
+  "auth": {
+    "loginSuccess": "Connexion réussie",
+    "loginFail": "Échec de la connexion",
+    "registerSuccess": "Compte créé avec succès",
+    "registerFail": "Échec de la création du compte",
+    "tagline": "La plateforme d'IA avancée",
+    "cardTitle": "Connectez-vous à votre compte",
+    "cardDesc": "Connectez-vous ou créez un nouveau compte pour commencer",
+    "tabLogin": "Connexion",
+    "tabRegister": "Nouveau compte",
+    "email": "E-mail",
+    "password": "Mot de passe",
+    "forgot": "Mot de passe oublié ?",
+    "loggingIn": "Connexion...",
+    "name": "Nom",
+    "namePlaceholder": "Votre nom complet",
+    "creating": "Création...",
+    "createAccount": "Créer un compte",
+    "forgotSub": "Contactez le support pour récupérer votre compte",
+    "forgotBody": "Pour récupérer votre mot de passe, veuillez contacter l'équipe de support via l'un des canaux suivants, en mentionnant votre e-mail enregistré :",
+    "open": "Ouvrir →",
+    "send": "Envoyer →",
+    "resetSubject": "Récupération de mot de passe - HAYO AI",
+    "gotIt": "OK, compris"
   }
 }
