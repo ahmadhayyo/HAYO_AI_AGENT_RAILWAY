@@ -54,10 +54,10 @@ export default function IslamMessage() {
   const miracleMut = trpc.islam.scientificMiracle.useMutation();
 
   const SECTIONS = [
-    { id: "quran" as Section, icon: BookOpen, label: "القرآن الكريم", color: "from-emerald-600 to-teal-600", emoji: "📖" },
-    { id: "hadith" as Section, icon: Book, label: "الحديث النبوي", color: "from-amber-600 to-orange-600", emoji: "📜" },
-    { id: "madhahib" as Section, icon: Scale, label: "المذاهب الأربعة", color: "from-violet-600 to-purple-600", emoji: "⚖️" },
-    { id: "miracles" as Section, icon: Sparkles, label: "الإعجاز العلمي", color: "from-blue-600 to-cyan-600", emoji: "🔬" },
+    { id: "quran" as Section, icon: BookOpen, label: t("islam.secQuran"), color: "from-emerald-600 to-teal-600", emoji: "📖" },
+    { id: "hadith" as Section, icon: Book, label: t("islam.secHadith"), color: "from-amber-600 to-orange-600", emoji: "📜" },
+    { id: "madhahib" as Section, icon: Scale, label: t("islam.secMadhahib"), color: "from-violet-600 to-purple-600", emoji: "⚖️" },
+    { id: "miracles" as Section, icon: Sparkles, label: t("islam.secMiracles"), color: "from-blue-600 to-cyan-600", emoji: "🔬" },
   ];
 
   return (
@@ -68,7 +68,7 @@ export default function IslamMessage() {
           <Link href="/" className="text-gray-400 hover:text-white"><Home className="w-4 h-4" /></Link>
           <div className="w-px h-5 bg-white/10" />
           <span className="text-lg">🕌</span>
-          <span className="font-bold text-sm">رسالة الإسلام</span>
+          <span className="font-bold text-sm">{t("islam.title")}</span>
         </div>
         <LanguageSwitcher />
       </header>
@@ -96,16 +96,16 @@ export default function IslamMessage() {
             <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex gap-3">
               <Search className="w-5 h-5 text-emerald-400 shrink-0 mt-2" />
               <div className="flex-1 space-y-2">
-                <input value={quranSearch} onChange={e => setQuranSearch(e.target.value)} placeholder="ابحث في القرآن... مثال: الرحمن، الصبر، الجنة..."
+                <input value={quranSearch} onChange={e => setQuranSearch(e.target.value)} placeholder={t("islam.quranPh")}
                   className="w-full bg-transparent border-b border-white/10 pb-2 text-sm focus:outline-none focus:border-emerald-500/50" onKeyDown={e => { if (e.key === "Enter" && quranSearch.trim()) searchQuranMut.mutate({ query: quranSearch }); }} />
-                {searchQuranMut.isPending && <p className="text-xs text-emerald-400 animate-pulse">جاري البحث...</p>}
+                {searchQuranMut.isPending && <p className="text-xs text-emerald-400 animate-pulse">{t("islam.searching")}</p>}
                 {searchQuranMut.data && (
                   <div className="space-y-2 max-h-60 overflow-y-auto">
-                    <p className="text-xs text-gray-400">{searchQuranMut.data.count} نتيجة</p>
+                    <p className="text-xs text-gray-400">{t("islam.resultsCount", { n: searchQuranMut.data.count })}</p>
                     {searchQuranMut.data.matches?.slice(0, 15).map((m: any, i: number) => (
                       <div key={i} className="p-2 rounded-lg bg-white/5 border border-white/5 cursor-pointer hover:border-emerald-500/30" onClick={() => { setSelectedSurah(m.surah.number); setTafsirAyah({ surah: m.surah.number, ayah: m.numberInSurah }); }}>
                         <p className="text-sm font-arabic leading-loose">{m.text}</p>
-                        <p className="text-[10px] text-gray-500 mt-1">{m.surah.name} — الآية {m.numberInSurah}</p>
+                        <p className="text-[10px] text-gray-500 mt-1">{m.surah.name} — {t("islam.verse", { n: m.numberInSurah })}</p>
                       </div>
                     ))}
                   </div>
@@ -120,7 +120,7 @@ export default function IslamMessage() {
                   className={`p-3 rounded-xl border text-center transition-all ${selectedSurah === s.number ? "bg-emerald-500/10 border-emerald-500/30" : "border-white/5 hover:border-white/10"}`}>
                   <span className="text-lg font-bold text-emerald-400">{s.number}</span>
                   <p className="text-xs font-bold mt-1">{s.name}</p>
-                  <p className="text-[9px] text-gray-500">{s.englishName} • {s.numberOfAyahs} آية</p>
+                  <p className="text-[9px] text-gray-500">{s.englishName} • {t("islam.ayahs", { n: s.numberOfAyahs })}</p>
                 </button>
               ))}
             </div>
@@ -130,7 +130,7 @@ export default function IslamMessage() {
               <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
                 <div className="text-center space-y-2">
                   <h2 className="text-2xl font-bold">{surahDataQ.data.name}</h2>
-                  <p className="text-sm text-gray-400">{surahDataQ.data.englishName} — {surahDataQ.data.revelationType === "Meccan" ? "مكية" : "مدنية"} — {surahDataQ.data.numberOfAyahs} آية</p>
+                  <p className="text-sm text-gray-400">{surahDataQ.data.englishName} — {surahDataQ.data.revelationType === "Meccan" ? t("islam.meccan") : t("islam.medinan")} — {t("islam.ayahs", { n: surahDataQ.data.numberOfAyahs })}</p>
                 </div>
                 <div className="space-y-3">
                   {surahDataQ.data.ayahs?.map((ayah: any) => (
@@ -139,7 +139,7 @@ export default function IslamMessage() {
                       <div className="flex-1">
                         <p className="text-lg font-arabic leading-[2.5] text-white/90">{ayah.text}</p>
                         <button onClick={() => setTafsirAyah({ surah: selectedSurah!, ayah: ayah.numberInSurah })}
-                          className="opacity-0 group-hover:opacity-100 text-[10px] text-emerald-400 mt-1 hover:underline">📖 تفسير الآية</button>
+                          className="opacity-0 group-hover:opacity-100 text-[10px] text-emerald-400 mt-1 hover:underline">📖 {t("islam.tafsir")}</button>
                       </div>
                     </div>
                   ))}
@@ -150,7 +150,7 @@ export default function IslamMessage() {
             {/* Tafsir Panel */}
             {tafsirAyah && tafsirQ.data && (
               <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-5 space-y-3">
-                <h3 className="font-bold text-emerald-400 flex items-center gap-2"><BookOpen className="w-4 h-4" /> تفسير الآية {tafsirAyah.surah}:{tafsirAyah.ayah}</h3>
+                <h3 className="font-bold text-emerald-400 flex items-center gap-2"><BookOpen className="w-4 h-4" /> {t("islam.tafsirOf", { s: tafsirAyah.surah, a: tafsirAyah.ayah })}</h3>
                 <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">{tafsirQ.data.text}</div>
               </div>
             )}
@@ -162,7 +162,7 @@ export default function IslamMessage() {
           <div className="space-y-6">
             {/* Book Selection */}
             <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
-              <button onClick={() => setHadithBook("all")} className={`p-2 rounded-xl border text-center text-xs ${hadithBook === "all" ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "border-white/5 text-gray-400"}`}>الكل</button>
+              <button onClick={() => setHadithBook("all")} className={`p-2 rounded-xl border text-center text-xs ${hadithBook === "all" ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "border-white/5 text-gray-400"}`}>{t("islam.all")}</button>
               {Object.entries({ bukhari: "البخاري", muslim: "مسلم", tirmidhi: "الترمذي", abudawud: "أبو داود", nasai: "النسائي", ibnmajah: "ابن ماجه", malik: "مالك", ahmad: "أحمد", darimi: "الدارمي" }).map(([id, name]) => (
                 <button key={id} onClick={() => setHadithBook(id)} className={`p-2 rounded-xl border text-center text-xs ${hadithBook === id ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "border-white/5 text-gray-400"}`}>{name}</button>
               ))}
@@ -171,10 +171,10 @@ export default function IslamMessage() {
             {/* Search */}
             <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3">
               <div className="flex gap-3">
-                <input value={hadithSearch} onChange={e => setHadithSearch(e.target.value)} placeholder="ابحث عن أحاديث... مثال: الوضوء، الصلاة، الصيام، الصدقة..."
+                <input value={hadithSearch} onChange={e => setHadithSearch(e.target.value)} placeholder={t("islam.hadithPh")}
                   className="flex-1 bg-transparent border-b border-white/10 pb-2 text-sm focus:outline-none focus:border-amber-500/50" onKeyDown={e => { if (e.key === "Enter") searchHadithMut.mutate({ query: hadithSearch, book: hadithBook }); }} />
                 <Button onClick={() => searchHadithMut.mutate({ query: hadithSearch, book: hadithBook })} disabled={searchHadithMut.isPending || !hadithSearch.trim()} className="gap-2 bg-gradient-to-r from-amber-600 to-orange-600">
-                  {searchHadithMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />} بحث
+                  {searchHadithMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />} {t("islam.search")}
                 </Button>
               </div>
               {/* Quick Topics */}
@@ -190,8 +190,8 @@ export default function IslamMessage() {
             {searchHadithMut.data && (
               <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-bold text-amber-400">📜 نتائج البحث: {searchHadithMut.data.query}</h3>
-                  <span className="text-[10px] text-gray-500">نموذج: {searchHadithMut.data.modelUsed}</span>
+                  <h3 className="font-bold text-amber-400">📜 {t("islam.searchResults")} {searchHadithMut.data.query}</h3>
+                  <span className="text-[10px] text-gray-500">{t("islam.model")} {searchHadithMut.data.modelUsed}</span>
                 </div>
                 <div className="prose prose-invert prose-sm max-w-none">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{searchHadithMut.data.results}</ReactMarkdown>
@@ -207,10 +207,10 @@ export default function IslamMessage() {
             <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
               <div className="text-center space-y-2">
                 <Scale className="w-10 h-10 text-violet-400 mx-auto" />
-                <h2 className="text-xl font-bold">مقارنة المذاهب الأربعة</h2>
-                <p className="text-sm text-gray-400">الحنفي • المالكي • الشافعي • الحنبلي</p>
+                <h2 className="text-xl font-bold">{t("islam.madhabTitle")}</h2>
+                <p className="text-sm text-gray-400">{t("islam.madhabSubtitle")}</p>
               </div>
-              <input value={madhabTopic} onChange={e => setMadhabTopic(e.target.value)} placeholder="اكتب المسألة الفقهية... مثال: صلاة المسافر، القنوت في الفجر، مسح الخفين..."
+              <input value={madhabTopic} onChange={e => setMadhabTopic(e.target.value)} placeholder={t("islam.madhabPh")}
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-violet-500/50" onKeyDown={e => { if (e.key === "Enter") compareMut.mutate({ topic: madhabTopic }); }} />
               <div className="flex flex-wrap gap-2">
                 {["صلاة المسافر", "القنوت في الفجر", "مسح الخفين", "قراءة الفاتحة خلف الإمام", "التشهد الأول", "زكاة الفطر", "صيام المسافر", "النية في الصيام"].map(t => (
@@ -219,7 +219,7 @@ export default function IslamMessage() {
                 ))}
               </div>
               <Button onClick={() => compareMut.mutate({ topic: madhabTopic })} disabled={compareMut.isPending || !madhabTopic.trim()} className="w-full gap-2 bg-gradient-to-r from-violet-600 to-purple-600">
-                {compareMut.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /> AI يقارن بين المذاهب...</> : <><Scale className="w-4 h-4" /> مقارنة بين المذاهب</>}
+                {compareMut.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /> {t("islam.madhabComparing")}</> : <><Scale className="w-4 h-4" /> {t("islam.madhabCompare")}</>}
               </Button>
             </div>
 
@@ -240,9 +240,9 @@ export default function IslamMessage() {
             <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-4">
               <div className="text-center space-y-2">
                 <Sparkles className="w-10 h-10 text-cyan-400 mx-auto" />
-                <h2 className="text-xl font-bold">الإعجاز العلمي في القرآن والسنة</h2>
+                <h2 className="text-xl font-bold">{t("islam.miracleTitle")}</h2>
               </div>
-              <input value={miracleTopic} onChange={e => setMiracleTopic(e.target.value)} placeholder="اكتب الموضوع... مثال: خلق الإنسان، الجبال أوتاد، توسع الكون..."
+              <input value={miracleTopic} onChange={e => setMiracleTopic(e.target.value)} placeholder={t("islam.miraclePh")}
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-cyan-500/50" onKeyDown={e => { if (e.key === "Enter") miracleMut.mutate({ topic: miracleTopic }); }} />
               <div className="flex flex-wrap gap-2">
                 {["خلق الإنسان من طين", "توسع الكون", "الجبال أوتاد", "ظلمات البحر", "دورة الماء", "الحديد أنزلناه", "البصمة والأصابع", "النحل والشفاء"].map(t => (
@@ -251,7 +251,7 @@ export default function IslamMessage() {
                 ))}
               </div>
               <Button onClick={() => miracleMut.mutate({ topic: miracleTopic })} disabled={miracleMut.isPending || !miracleTopic.trim()} className="w-full gap-2 bg-gradient-to-r from-blue-600 to-cyan-600">
-                {miracleMut.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /> AI يبحث...</> : <><Sparkles className="w-4 h-4" /> اكتشف الإعجاز العلمي</>}
+                {miracleMut.isPending ? <><Loader2 className="w-4 h-4 animate-spin" /> {t("islam.miracleSearching")}</> : <><Sparkles className="w-4 h-4" /> {t("islam.miracleDiscover")}</>}
               </Button>
             </div>
 
