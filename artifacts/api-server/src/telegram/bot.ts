@@ -8,6 +8,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { callProvider, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
+import { fetchOhlcFallback } from "../hayo/market-data";
 
 // ─── Config ───────────────────────────────────────────────────────────
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -416,36 +417,40 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   }
 
   let apiKey = getTwelveDataKey();
-  if (!apiKey) throw new Error("TWELVE_DATA_API_KEY غير مضبوط");
-
-  let json: any;
-  for (let attempt = 0; attempt < 6; attempt++) {
+  let json: any = null;
+  // Try TwelveData first (when a key exists), with key rotation on rate limits.
+  for (let attempt = 0; apiKey && attempt < 6; attempt++) {
     const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(p.tdSymbol)}&interval=${tfCfg.interval}&outputsize=${tfCfg.outputsize}&apikey=${apiKey}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (res.status === 429) {
-      rotateToNextKey();
-      apiKey = getTwelveDataKey();
-      await new Promise(r => setTimeout(r, 8000));
-      continue;
-    }
-    if (!res.ok) throw new Error(`TwelveData HTTP ${res.status}`);
-    json = await res.json() as any;
-
-    if (json.status === "error" && isRateLimitError(json)) {
-      const isDailyDone = await checkAndMarkIfDailyExhausted(apiKey);
-      if (!isDailyDone) {
-        rotateToNextKey();
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (res.status === 429) {
+        rotateToNextKey(); apiKey = getTwelveDataKey();
         await new Promise(r => setTimeout(r, 8000));
+        continue;
       }
-      apiKey = getTwelveDataKey();
-      if (!apiKey) break;
-      continue;
-    }
-    break;
+      if (!res.ok) break; // fall through to OANDA/Yahoo fallback
+      json = await res.json() as any;
+      if (json.status === "error" && isRateLimitError(json)) {
+        const isDailyDone = await checkAndMarkIfDailyExhausted(apiKey);
+        if (!isDailyDone) { rotateToNextKey(); await new Promise(r => setTimeout(r, 8000)); }
+        apiKey = getTwelveDataKey();
+        json = null;
+        if (!apiKey) break;
+        continue;
+      }
+      break;
+    } catch { break; } // network error → fallback
   }
 
-  if (json.status === "error" || !json.values || !Array.isArray(json.values)) {
-    throw new Error(json.message || "لا توجد بيانات من TwelveData");
+  // Fallback to OANDA (broker-grade) → Yahoo (keyless) when TwelveData is
+  // unavailable/exhausted, so Telegram signals keep working without TD credits.
+  if (!json || json.status === "error" || !json.values || !Array.isArray(json.values)) {
+    const fb = await fetchOhlcFallback(p.tdSymbol, tfCfg.interval, tfCfg.outputsize);
+    if (fb) { json = fb; console.log(`[Bot] market data via ${fb.meta.source} (TwelveData unavailable) — ${pair} ${tfCfg.interval}`); }
+  }
+
+  if (!json || json.status === "error" || !json.values || !Array.isArray(json.values)) {
+    throw new Error((json && json.message) || "لا توجد بيانات سوق (TwelveData/OANDA/Yahoo)");
   }
 
   const rawCandles = [...json.values].reverse();
