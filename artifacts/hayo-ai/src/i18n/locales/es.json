@@ -1037,5 +1037,33 @@
     "tip1": "Puedes editar los datos antes de convertir",
     "tip2": "Todas las conversiones ocurren localmente en tu navegador",
     "tip3": "No se guardan datos en el servidor"
+  },
+  "modelSettings": {
+    "custom": "Personalizado",
+    "reset": "Restablecer",
+    "usesCustom": "Este modelo usa instrucciones personalizadas guardadas en el servidor. Se anteponen automáticamente a cada conversación.",
+    "systemPrompt": "Instrucciones del modelo (System Prompt)",
+    "promptPlaceholder": "Ingresa instrucciones personalizadas para este modelo...",
+    "charCount": "{{n}} caracteres",
+    "unsaved": "Cambios sin guardar",
+    "defaultInstr": "Instrucciones predeterminadas (referencia)",
+    "restoreDefault": "Restaurar predeterminado",
+    "saving": "Guardando...",
+    "saveInstr": "Guardar instrucciones",
+    "savedToast": "Instrucciones de {{name}} guardadas en el servidor",
+    "saveFailed": "Error al guardar: {{msg}}",
+    "resetToast": "{{name}} restablecido a las instrucciones predeterminadas",
+    "resetFailed": "Error al restablecer: {{msg}}",
+    "title": "Ajustes de modelos",
+    "subtitle": "Personaliza las instrucciones del sistema para cada modelo de IA",
+    "howItWorks": "Cómo funciona:",
+    "howItWorksBody": "Cada modelo de IA tiene instrucciones de sistema predeterminadas. Puedes personalizarlas por modelo. Las instrucciones personalizadas se anteponen automáticamente a cada conversación con ese modelo.",
+    "storage": "Almacenamiento:",
+    "storageBody": "Las instrucciones se guardan en el servidor y siguen activas hasta que se reinicie.",
+    "loading": "Cargando ajustes de modelos...",
+    "loadFailed": "Error al cargar los ajustes",
+    "retry": "Reintentar",
+    "footer1": "Las instrucciones personalizadas se usan como System Prompt cuando se invoca cada modelo en el chat o el análisis.",
+    "footer2": "Por ejemplo, puedes definir el estilo de respuesta, el idioma preferido, la especialidad requerida o cualquier instrucción especial."
   }
 }

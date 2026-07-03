@@ -1037,5 +1037,33 @@
     "tip1": "Você pode editar os dados antes de converter",
     "tip2": "Todas as conversões ocorrem localmente no seu navegador",
     "tip3": "Nenhum dado é salvo no servidor"
+  },
+  "modelSettings": {
+    "custom": "Personalizado",
+    "reset": "Redefinir",
+    "usesCustom": "Este modelo usa instruções personalizadas salvas no servidor. Elas são adicionadas automaticamente ao início de cada conversa.",
+    "systemPrompt": "Instruções do modelo (System Prompt)",
+    "promptPlaceholder": "Insira instruções personalizadas para este modelo...",
+    "charCount": "{{n}} caracteres",
+    "unsaved": "Alterações não salvas",
+    "defaultInstr": "Instruções padrão (referência)",
+    "restoreDefault": "Restaurar padrão",
+    "saving": "Salvando...",
+    "saveInstr": "Salvar instruções",
+    "savedToast": "Instruções de {{name}} salvas no servidor",
+    "saveFailed": "Falha ao salvar: {{msg}}",
+    "resetToast": "{{name}} redefinido para as instruções padrão",
+    "resetFailed": "Falha ao redefinir: {{msg}}",
+    "title": "Configurações de modelos",
+    "subtitle": "Personalize as instruções de sistema de cada modelo de IA",
+    "howItWorks": "Como funciona:",
+    "howItWorksBody": "Cada modelo de IA tem instruções de sistema padrão. Você pode personalizá-las por modelo. As instruções personalizadas são adicionadas automaticamente ao início de cada conversa com esse modelo.",
+    "storage": "Armazenamento:",
+    "storageBody": "As instruções são salvas no servidor e permanecem ativas até ele reiniciar.",
+    "loading": "Carregando configurações de modelos...",
+    "loadFailed": "Falha ao carregar as configurações",
+    "retry": "Tentar novamente",
+    "footer1": "As instruções personalizadas são usadas como System Prompt quando cada modelo é chamado no chat ou na análise.",
+    "footer2": "Por exemplo, você pode definir o estilo de resposta, o idioma preferido, a especialidade necessária ou quaisquer instruções especiais."
   }
 }

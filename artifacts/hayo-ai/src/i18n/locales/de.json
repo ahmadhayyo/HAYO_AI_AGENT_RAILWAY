@@ -1037,5 +1037,33 @@
     "tip1": "Sie können die Daten vor der Konvertierung bearbeiten",
     "tip2": "Alle Konvertierungen erfolgen lokal in Ihrem Browser",
     "tip3": "Es werden keine Daten auf dem Server gespeichert"
+  },
+  "modelSettings": {
+    "custom": "Benutzerdefiniert",
+    "reset": "Zurücksetzen",
+    "usesCustom": "Dieses Modell verwendet benutzerdefinierte Anweisungen, die auf dem Server gespeichert sind. Sie werden jeder Konversation automatisch vorangestellt.",
+    "systemPrompt": "Modellanweisungen (System Prompt)",
+    "promptPlaceholder": "Geben Sie benutzerdefinierte Anweisungen für dieses Modell ein...",
+    "charCount": "{{n}} Zeichen",
+    "unsaved": "Nicht gespeicherte Änderungen",
+    "defaultInstr": "Standardanweisungen (Referenz)",
+    "restoreDefault": "Standard wiederherstellen",
+    "saving": "Wird gespeichert...",
+    "saveInstr": "Anweisungen speichern",
+    "savedToast": "{{name}}-Anweisungen auf dem Server gespeichert",
+    "saveFailed": "Speichern fehlgeschlagen: {{msg}}",
+    "resetToast": "{{name}} auf Standardanweisungen zurückgesetzt",
+    "resetFailed": "Zurücksetzen fehlgeschlagen: {{msg}}",
+    "title": "Modelleinstellungen",
+    "subtitle": "Systemanweisungen für jedes KI-Modell anpassen",
+    "howItWorks": "So funktioniert's:",
+    "howItWorksBody": "Jedes KI-Modell hat Standard-Systemanweisungen. Sie können sie pro Modell anpassen. Benutzerdefinierte Anweisungen werden jeder Konversation mit diesem Modell automatisch vorangestellt.",
+    "storage": "Speicherung:",
+    "storageBody": "Die Anweisungen werden auf dem Server gespeichert und bleiben bis zu dessen Neustart aktiv.",
+    "loading": "Modelleinstellungen werden geladen...",
+    "loadFailed": "Einstellungen konnten nicht geladen werden",
+    "retry": "Erneut versuchen",
+    "footer1": "Benutzerdefinierte Anweisungen werden als System Prompt verwendet, wenn jedes Modell im Chat oder in der Analyse aufgerufen wird.",
+    "footer2": "Sie können z. B. den Antwortstil, die bevorzugte Sprache, das erforderliche Fachgebiet oder beliebige spezielle Anweisungen festlegen."
   }
 }

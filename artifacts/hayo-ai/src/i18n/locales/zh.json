@@ -1037,5 +1037,33 @@
     "tip1": "转换前您可以编辑数据",
     "tip2": "所有转换均在您的浏览器本地进行",
     "tip3": "服务器上不保存任何数据"
+  },
+  "modelSettings": {
+    "custom": "自定义",
+    "reset": "重置",
+    "usesCustom": "该模型使用保存在服务器上的自定义指令。这些指令会自动添加到每次对话的开头。",
+    "systemPrompt": "模型指令 (System Prompt)",
+    "promptPlaceholder": "为该模型输入自定义指令...",
+    "charCount": "{{n}} 个字符",
+    "unsaved": "未保存的更改",
+    "defaultInstr": "默认指令（供参考）",
+    "restoreDefault": "恢复默认",
+    "saving": "正在保存...",
+    "saveInstr": "保存指令",
+    "savedToast": "{{name}} 指令已保存到服务器",
+    "saveFailed": "保存失败：{{msg}}",
+    "resetToast": "{{name}} 已重置为默认指令",
+    "resetFailed": "重置失败：{{msg}}",
+    "title": "模型设置",
+    "subtitle": "为每个 AI 模型自定义系统指令",
+    "howItWorks": "工作原理：",
+    "howItWorksBody": "每个 AI 模型都有默认系统指令。您可以按模型自定义它们。自定义指令会自动添加到与该模型每次对话的开头。",
+    "storage": "存储：",
+    "storageBody": "指令保存在服务器上，直到服务器重启前一直有效。",
+    "loading": "正在加载模型设置...",
+    "loadFailed": "加载设置失败",
+    "retry": "重试",
+    "footer1": "在聊天或分析中调用每个模型时，自定义指令将用作 System Prompt。",
+    "footer2": "例如，您可以设定回答风格、首选语言、所需专业领域或任何特殊指令。"
   }
 }

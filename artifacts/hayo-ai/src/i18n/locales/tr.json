@@ -1037,5 +1037,33 @@
     "tip1": "Dönüştürmeden önce verileri düzenleyebilirsiniz",
     "tip2": "Tüm dönüşümler tarayıcınızda yerel olarak gerçekleşir",
     "tip3": "Sunucuda hiçbir veri saklanmaz"
+  },
+  "modelSettings": {
+    "custom": "Özel",
+    "reset": "Sıfırla",
+    "usesCustom": "Bu model sunucuda kayıtlı özel talimatlar kullanır. Her sohbetin başına otomatik eklenir.",
+    "systemPrompt": "Model talimatları (System Prompt)",
+    "promptPlaceholder": "Bu model için özel talimatlar girin...",
+    "charCount": "{{n}} karakter",
+    "unsaved": "Kaydedilmemiş değişiklikler",
+    "defaultInstr": "Varsayılan talimatlar (referans)",
+    "restoreDefault": "Varsayılanı geri yükle",
+    "saving": "Kaydediliyor...",
+    "saveInstr": "Talimatları kaydet",
+    "savedToast": "{{name}} talimatları sunucuya kaydedildi",
+    "saveFailed": "Kaydetme başarısız: {{msg}}",
+    "resetToast": "{{name}} varsayılan talimatlara sıfırlandı",
+    "resetFailed": "Sıfırlama başarısız: {{msg}}",
+    "title": "Model Ayarları",
+    "subtitle": "Her YZ modeli için sistem talimatlarını özelleştirin",
+    "howItWorks": "Nasıl çalışır:",
+    "howItWorksBody": "Her YZ modelinin varsayılan sistem talimatları vardır. Bunları model bazında özelleştirebilirsiniz. Özel talimatlar, o modelle her sohbetin başına otomatik eklenir.",
+    "storage": "Depolama:",
+    "storageBody": "Talimatlar sunucuda saklanır ve yeniden başlatılana kadar etkin kalır.",
+    "loading": "Model ayarları yükleniyor...",
+    "loadFailed": "Ayarlar yüklenemedi",
+    "retry": "Yeniden dene",
+    "footer1": "Özel talimatlar, her model sohbette veya analizde çağrıldığında System Prompt olarak kullanılır.",
+    "footer2": "Örneğin yanıt stilini, tercih edilen dili, gereken uzmanlığı veya herhangi bir özel talimatı belirleyebilirsiniz."
   }
 }

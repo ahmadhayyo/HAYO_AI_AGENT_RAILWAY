@@ -1037,5 +1037,33 @@
     "tip1": "Vous pouvez modifier les données avant la conversion",
     "tip2": "Toutes les conversions se font localement dans votre navigateur",
     "tip3": "Aucune donnée n'est enregistrée sur le serveur"
+  },
+  "modelSettings": {
+    "custom": "Personnalisé",
+    "reset": "Réinitialiser",
+    "usesCustom": "Ce modèle utilise des instructions personnalisées enregistrées sur le serveur. Elles sont ajoutées automatiquement au début de chaque conversation.",
+    "systemPrompt": "Instructions du modèle (System Prompt)",
+    "promptPlaceholder": "Saisissez des instructions personnalisées pour ce modèle...",
+    "charCount": "{{n}} caractères",
+    "unsaved": "Modifications non enregistrées",
+    "defaultInstr": "Instructions par défaut (référence)",
+    "restoreDefault": "Restaurer par défaut",
+    "saving": "Enregistrement...",
+    "saveInstr": "Enregistrer les instructions",
+    "savedToast": "Instructions {{name}} enregistrées sur le serveur",
+    "saveFailed": "Échec de l'enregistrement : {{msg}}",
+    "resetToast": "{{name}} réinitialisé aux instructions par défaut",
+    "resetFailed": "Échec de la réinitialisation : {{msg}}",
+    "title": "Paramètres des modèles",
+    "subtitle": "Personnalisez les instructions système de chaque modèle d'IA",
+    "howItWorks": "Comment ça marche :",
+    "howItWorksBody": "Chaque modèle d'IA a des instructions système par défaut. Vous pouvez les personnaliser par modèle. Les instructions personnalisées sont ajoutées automatiquement au début de chaque conversation avec ce modèle.",
+    "storage": "Stockage :",
+    "storageBody": "Les instructions sont enregistrées sur le serveur et restent actives jusqu'à son redémarrage.",
+    "loading": "Chargement des paramètres des modèles...",
+    "loadFailed": "Échec du chargement des paramètres",
+    "retry": "Réessayer",
+    "footer1": "Les instructions personnalisées servent de System Prompt lorsque chaque modèle est appelé en discussion ou en analyse.",
+    "footer2": "Par exemple, vous pouvez définir le style de réponse, la langue préférée, la spécialité requise ou toute instruction particulière."
   }
 }
