@@ -351,6 +351,23 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   return marketResult;
 }
 
+// ─── Higher-timeframe (MTF) bias — top-down context ───────────────────
+const HTF_MAP: Record<string, { interval: string; label: string }> = {
+  "1m": { interval: "15min", label: "15د" }, "5m": { interval: "1h", label: "1س" },
+  "15m": { interval: "4h", label: "4س" }, "30m": { interval: "4h", label: "4س" }, "1h": { interval: "1day", label: "يومي" },
+};
+async function computeHtfBias(pair: string, tf: string): Promise<string> {
+  const h = HTF_MAP[tf];
+  if (!h) return "";
+  try {
+    const d = await fetchMarket(pair, { interval: h.interval, outputsize: 60, label: h.label });
+    const bull = d.price > d.SMA20 && d.SMA20 >= d.SMA50;
+    const bear = d.price < d.SMA20 && d.SMA20 <= d.SMA50;
+    const trend = bull ? "📈 صاعد" : bear ? "📉 هابط" : "↔️ عرضي";
+    return `الإطار الأعلى (${h.label}): <b>${trend}</b>${bull ? " — يفضّل الشراء/المسايرة" : bear ? " — يفضّل البيع/المسايرة" : " — حذر أكبر"}`;
+  } catch { return ""; }
+}
+
 // ─── Consensus Calculator ─────────────────────────────────────────────
 function calcConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; pct: number } {
   const buys  = strategies.filter(s=>s.signal==="BUY").length;
@@ -362,7 +379,7 @@ function calcConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; 
 }
 
 // ─── Economic News Fetcher (cached 30 min) ───────────────────────────
-interface NewsEvent { currency: string; title: string; impact: string; time: string; forecast: string; previous: string; actual: string }
+interface NewsEvent { currency: string; title: string; impact: string; time: string; forecast: string; previous: string; actual: string; minutesUntil: number | null }
 
 const PAIR_CURRENCIES: Record<string, string[]> = {
   EURUSD: ["EUR","USD"], USDJPY: ["USD","JPY"], GBPUSD: ["GBP","USD"],
@@ -394,15 +411,18 @@ async function fetchEconomicNews(pair: string): Promise<NewsEvent[]> {
         (e.impact === "High" || e.impact === "Medium") &&
         related.includes(e.country)
       )
-      .map((e:any) => ({
-        currency: e.country, title: e.title, impact: e.impact,
-        time: e.time, forecast: e.forecast||"—", previous: e.previous||"—", actual: e.actual||"لم يُعلن",
-      }))
-      .filter((e:any) => {
-        const t = new Date(`${new Date().toDateString()} ${e.time}`);
-        return Math.abs(t.getTime() - now.getTime()) < 12 * 3600000;
+      .map((e:any) => {
+        const whenMs = Date.parse(e.date);
+        const minutesUntil = Number.isNaN(whenMs) ? null : Math.round((whenMs - now.getTime()) / 60000);
+        return {
+          currency: e.country, title: e.title, impact: e.impact,
+          time: e.time, forecast: e.forecast||"—", previous: e.previous||"—", actual: e.actual||"لم يُعلن",
+          minutesUntil,
+        };
       })
-      .slice(0, 5);
+      .filter((e:any) => e.minutesUntil === null ? true : Math.abs(e.minutesUntil) < 12 * 60)
+      .sort((a:any,b:any) => (a.minutesUntil ?? 1e9) - (b.minutesUntil ?? 1e9))
+      .slice(0, 6);
   } catch { return []; }
 }
 
@@ -575,6 +595,7 @@ function buildAIMsg(
   aiResults: any[],
   isAutoSignal = false,
   news: NewsEvent[] = [],
+  htfBias = "",
 ) {
   const p = PAIRS[pair];
   const buys  = d.strategies.filter(s=>s.signal==="BUY").length;
@@ -586,6 +607,20 @@ function buildAIMsg(
   const aiCons  = aiBuys>aiSells?"🟢 شراء":aiSells>aiBuys?"🔴 بيع":"🟡 انتظار";
   const avgConf = validAll.length ? Math.round(validAll.reduce((a:number,r:any)=>a+r.confidence,0)/validAll.length) : 0;
   const highImpactNews = news.filter(e=>e.impact==="High");
+  // Live news countdown: nearest high-impact event + a danger/caution gate.
+  const fmtCd = (m: number|null) => {
+    if (m === null) return "";
+    const a = Math.abs(m), h = Math.floor(a/60), mm = a%60, dur = h>0?`${h}س${mm}د`:`${mm}د`;
+    return m >= 0 ? ` ⏳بعد ${dur}` : ` ✅منذ ${dur}`;
+  };
+  const nextHigh = highImpactNews.filter(e=>e.minutesUntil!==null).sort((a,b)=>Math.abs(a.minutesUntil!)-Math.abs(b.minutesUntil!))[0];
+  const newsGate = nextHigh
+    ? (Math.abs(nextHigh.minutesUntil!) <= 15
+        ? `🚫 <b>منطقة خطر</b>: ${nextHigh.currency} ${nextHigh.title}${fmtCd(nextHigh.minutesUntil)} — تجنّب الدخول`
+        : Math.abs(nextHigh.minutesUntil!) <= 60
+        ? `⚠️ <b>حذر</b>: ${nextHigh.currency} ${nextHigh.title}${fmtCd(nextHigh.minutesUntil)} — قلّل المخاطرة`
+        : `🟢 أقرب خبر عالي التأثير: ${nextHigh.currency} ${nextHigh.title}${fmtCd(nextHigh.minutesUntil)}`)
+    : "";
 
   return [
     isAutoSignal ? `🔔 <b>إشارة تلقائية!</b>` : "",
@@ -602,15 +637,16 @@ function buildAIMsg(
     ``,
     `<b>━━ 🔍 الفلاتر ━━</b>`,
     ...d.filters.map(f=>`${f.passed?"✅":"⚠️"} ${f.emoji} ${f.name}: <i>${f.desc.split("—")[0].trim()}</i>`),
-    // News warning
+    ...(htfBias ? [``, `<b>━━ 🧭 الإطار الأعلى (MTF) ━━</b>`, `🧭 ${htfBias}`] : []),
+    // News — live countdown + gate
     ...(highImpactNews.length>0 ? [
       ``,
-      `<b>━━ 📰 أخبار عالية التأثير ━━</b>`,
-      ...highImpactNews.map(e=>`🔴 ${e.currency} — ${e.title}`),
-      `<i>⚠️ تحذير: حذار من التداول قبل/بعد هذه الأخبار!</i>`,
+      `<b>━━ 📰 أخبار عالية التأثير (حي) ━━</b>`,
+      ...highImpactNews.map(e=>`🔴 ${e.currency} — ${e.title}${fmtCd(e.minutesUntil)}`),
+      newsGate ? `🕒 ${newsGate}` : "",
     ] : news.length>0 ? [
       ``,
-      `📰 أخبار متوسطة التأثير: ${news.map(e=>e.currency+"—"+e.title.slice(0,25)).join(" | ")}`,
+      `📰 أخبار متوسطة: ${news.map(e=>e.currency+"—"+e.title.slice(0,22)+fmtCd(e.minutesUntil)).join(" | ")}`,
     ] : []),
     ``,
     `<b>━━ 🤖 الذكاء الاصطناعي (5 نماذج) ━━</b>`,
@@ -676,7 +712,8 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         console.log(`[AutoScan] 🚨 Signal: ${pair} ${tf} ${cons.direction} — consensus ${cons.pct}%, AI conf ${avgConf}%`);
         lastSignalTimeLocal.set(key, Date.now());
 
-        const msg = buildAIMsg(pair, tf, d, aiResults, true, news);
+        const htfBias = await computeHtfBias(pair, tf);
+        const msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias);
         await bot.sendMessage(ownerChatId, msg, {
           parse_mode: "HTML",
           reply_markup: {
@@ -1665,8 +1702,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
             { chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML" }
           );
           const news = await fetchEconomicNews(pair);
-          const aiResults = await runAI(pair, tf, marketData, news);
-          await bot.editMessageText(buildAIMsg(pair, tf, marketData, aiResults, false, news), {
+          const [aiResults, htfBias] = await Promise.all([runAI(pair, tf, marketData, news), computeHtfBias(pair, tf)]);
+          await bot.editMessageText(buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias), {
             chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML", reply_markup:afterResultKeyboard(),
           });
         }
