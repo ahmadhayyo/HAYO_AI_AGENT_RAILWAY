@@ -4595,11 +4595,17 @@ ${scanSummary}
         const symbol = symbolMap[input.pair];
         const relatedCurrencies = pairCurrencies[input.pair] || ["USD"];
 
-        // Fetch OHLCV + Economic News in parallel
-        const [tdRes, newsRes] = await Promise.allSettled([
+        // Higher-timeframe map for MTF bias (does NOT replace the selected TF —
+        // adds top-down context on top of it; all timeframes remain available).
+        const htfMap: Record<string, string> = { "1min": "15min", "5min": "1h", "15min": "4h", "30min": "4h", "1h": "1day" };
+        const htfInterval = htfMap[input.timeframe] || "4h";
+
+        // Fetch OHLCV + Economic News + Higher-TF in parallel
+        const [tdRes, newsRes, htfRes] = await Promise.allSettled([
           fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=100&apikey=__API_KEY__`),
           fetch("https://nfs.faireconomy.media/ff_calendar_thisweek.json",
             { signal: AbortSignal.timeout(8000) }).then(r => r.json()).catch(() => []),
+          fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${htfInterval}&outputsize=60&apikey=__API_KEY__`).catch(() => null),
         ]);
 
         if (tdRes.status === "rejected") {
@@ -4711,6 +4717,23 @@ ${scanSummary}
         const lows    = candles.map(c => parseFloat(c.low));
         const opens   = candles.map(c => parseFloat(c.open));
         const currentPrice = closes[closes.length - 1];
+
+        // ── Higher-timeframe (HTF) bias — top-down context ──────────────────
+        let htf: { interval: string; trend: "صاعد" | "هابط" | "عرضي"; bias: "BUY" | "SELL" | "NEUTRAL"; note: string } = {
+          interval: htfInterval, trend: "عرضي", bias: "NEUTRAL", note: "الإطار الأعلى غير متاح",
+        };
+        {
+          const htfData = htfRes.status === "fulfilled" ? (htfRes.value as any) : null;
+          if (htfData && htfData.values && Array.isArray(htfData.values) && htfData.values.length >= 20) {
+            const hc = [...htfData.values].reverse().map((c: any) => parseFloat(c.close));
+            const hprice = hc[hc.length - 1];
+            const hs20 = calcSMA(hc, 20);
+            const hs50 = hc.length >= 50 ? calcSMA(hc, 50) : hs20;
+            if (hprice > hs20 && hs20 >= hs50) { htf = { interval: htfInterval, trend: "صاعد", bias: "BUY", note: `الإطار الأعلى (${htfInterval}) صاعد: السعر فوق SMA20>${hs50 <= hs20 ? "SMA50" : ""} — يفضّل الشراء أو مسايرة الاتجاه` }; }
+            else if (hprice < hs20 && hs20 <= hs50) { htf = { interval: htfInterval, trend: "هابط", bias: "SELL", note: `الإطار الأعلى (${htfInterval}) هابط: السعر تحت SMA20<SMA50 — يفضّل البيع أو مسايرة الاتجاه` }; }
+            else { htf = { interval: htfInterval, trend: "عرضي", bias: "NEUTRAL", note: `الإطار الأعلى (${htfInterval}) عرضي/متذبذب — تعامل مع الإشارة بحذر أكبر` }; }
+          }
+        }
         const decimals = input.pair === "BTCUSD" ? 1 : input.pair === "XAUUSD" ? 2 : input.pair === "XAGUSD" ? 3 : input.pair.includes("JPY") ? 3 : 5;
         const fmt = (n: number) => n.toFixed(decimals);
 
@@ -4773,6 +4796,11 @@ ${!volFilter?.passed ? "⚠️ تحذير: تقلب مفرط — خطر متزا
 📈 آخر 5 شموع:
 ${last5}
 ${newsContext}
+
+🧭 انحياز الإطار الأعلى (Multi-Timeframe): ${htf.trend === "صاعد" ? "📈 صاعد" : htf.trend === "هابط" ? "📉 هابط" : "↔️ عرضي"} على ${htf.interval}
+${htf.note}
+⚖️ قاعدة MTF: الإشارات المتوافقة مع انحياز الإطار الأعلى أعلى احتمالاً؛ إشارة معاكسة للإطار الأعلى تحتاج تأكيداً أقوى (اعتبرها ارتداداً/سكالب قصير فقط).
+
 ملاحظة: الاتجاه الرئيسي ${trendFilter?.allowsBuy ? "📈 صاعد" : "📉 هابط"} — ${trendFilter?.allowsBuy ? "يفضّل الشراء" : "يفضّل البيع"}.`.trim();
 
         const systemPrompt = `أنت محلل أسواق مالية خبير ومتخصص في الفوركس والذهب والعملات الرقمية. ستحصل على تحليل شامل يتضمن مؤشرات تقنية متقدمة + إشارات من 7 استراتيجيات تداول + نتائج 4 فلاتر تأكيد + أخبار اقتصادية عالية التأثير.
@@ -4856,6 +4884,7 @@ ${newsContext}
           filterResults,
           economicNews: economicNewsItems,
           newsRisk,
+          htf,
           results: settled.map((r, i) => {
             if (r.status === "fulfilled") return r.value;
             return {

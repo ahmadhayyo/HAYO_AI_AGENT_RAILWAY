@@ -97,6 +97,12 @@ interface TradingData {
     cautionZone: boolean;
     label: string;
   };
+  htf?: {
+    interval: string;
+    trend: string;
+    bias: "BUY" | "SELL" | "NEUTRAL";
+    note: string;
+  };
   results: AnalysisResult[];
 }
 
@@ -1443,6 +1449,29 @@ export default function TradingAnalysis() {
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Higher-timeframe (MTF) bias banner — top-down context */}
+              {tradingData && !analyzeMutation.isPending && tradingData.htf && (
+                <div
+                  className={`rounded-xl border px-4 py-3 flex items-center gap-3 ${
+                    tradingData.htf.bias === "BUY"
+                      ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-300"
+                      : tradingData.htf.bias === "SELL"
+                      ? "bg-red-500/10 border-red-500/40 text-red-300"
+                      : "bg-white/5 border-white/15 text-white/70"
+                  }`}
+                >
+                  <span className="text-lg shrink-0">🧭</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[11px] uppercase tracking-wide opacity-70">
+                      انحياز الإطار الأعلى · {tradingData.htf.interval}
+                    </div>
+                    <div className="text-sm font-semibold leading-snug">
+                      {tradingData.htf.trend === "صاعد" ? "📈 صاعد" : tradingData.htf.trend === "هابط" ? "📉 هابط" : "↔️ عرضي"} — {tradingData.htf.note}
+                    </div>
+                  </div>
                 </div>
               )}
 
