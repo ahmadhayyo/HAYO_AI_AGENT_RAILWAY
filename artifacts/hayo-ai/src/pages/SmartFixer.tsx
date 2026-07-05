@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 interface Issue {
@@ -46,15 +48,15 @@ function api(path: string, body: object) {
     body: JSON.stringify(body),
   }).then(async (r) => {
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error || "فشل الطلب");
+    if (!r.ok) throw new Error(d.error || i18n.t("smartFixer.requestFailed"));
     return d;
   });
 }
 
 const SEV_CFG = {
-  critical: { label: "حرج",      color: "text-red-400",    bg: "bg-red-500/15 border-red-500/30",    icon: AlertCircle },
-  warning:  { label: "تحذير",    color: "text-orange-400", bg: "bg-orange-500/15 border-orange-500/30", icon: AlertTriangle },
-  info:     { label: "معلومة",   color: "text-blue-400",   bg: "bg-blue-500/15 border-blue-500/30",  icon: Info },
+  critical: { labelKey: "smartFixer.sev_critical", color: "text-red-400",    bg: "bg-red-500/15 border-red-500/30",    icon: AlertCircle },
+  warning:  { labelKey: "smartFixer.sev_warning",  color: "text-orange-400", bg: "bg-orange-500/15 border-orange-500/30", icon: AlertTriangle },
+  info:     { labelKey: "smartFixer.sev_info",     color: "text-blue-400",   bg: "bg-blue-500/15 border-blue-500/30",  icon: Info },
 } as const;
 
 const CAT_ICONS: Record<string, React.ElementType> = {
@@ -67,11 +69,12 @@ const CAT_ICONS: Record<string, React.ElementType> = {
 };
 
 function SevBadge({ sev }: { sev: Issue["severity"] }) {
+  const { t } = useTranslation();
   const c = SEV_CFG[sev];
   const Icon = c.icon;
   return (
     <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded border ${c.bg} ${c.color}`}>
-      <Icon className="w-2.5 h-2.5" />{c.label}
+      <Icon className="w-2.5 h-2.5" />{t(c.labelKey)}
     </span>
   );
 }
@@ -122,10 +125,10 @@ export default function SmartFixer() {
   );
 
   const statsCards = [
-    { label: "إجمالي",    value: summary?.total ?? 0,    icon: Activity,       color: "text-primary",    bg: "from-primary/20 to-primary/5" },
-    { label: "حرجة",      value: summary?.critical ?? 0, icon: AlertCircle,    color: "text-red-400",    bg: "from-red-500/20 to-red-500/5" },
-    { label: "تحذيرات",   value: summary?.warnings ?? 0, icon: AlertTriangle,  color: "text-orange-400", bg: "from-orange-500/20 to-orange-500/5" },
-    { label: "مُصلحة",    value: fixedIds.size,           icon: CheckCircle,    color: "text-emerald-400",bg: "from-emerald-500/20 to-emerald-500/5" },
+    { label: t("smartFixer.statTotal"),    value: summary?.total ?? 0,    icon: Activity,       color: "text-primary",    bg: "from-primary/20 to-primary/5" },
+    { label: t("smartFixer.statCritical"), value: summary?.critical ?? 0, icon: AlertCircle,    color: "text-red-400",    bg: "from-red-500/20 to-red-500/5" },
+    { label: t("smartFixer.statWarnings"), value: summary?.warnings ?? 0, icon: AlertTriangle,  color: "text-orange-400", bg: "from-orange-500/20 to-orange-500/5" },
+    { label: t("smartFixer.statFixed"),    value: fixedIds.size,           icon: CheckCircle,    color: "text-emerald-400",bg: "from-emerald-500/20 to-emerald-500/5" },
   ];
 
   // ── Actions ─────────────────────────────────────────────────────────────────
@@ -135,8 +138,8 @@ export default function SmartFixer() {
       const d = await api("/scan", {});
       setIssues(d.issues || []);
       setSummary(d.summary);
-      if (!d.issues?.length) toast.success("لا توجد مشكلات — المشروع نظيف!");
-      else toast.info(`تم اكتشاف ${d.issues.length} مشكلة`);
+      if (!d.issues?.length) toast.success(t("smartFixer.noIssues"));
+      else toast.info(t("smartFixer.issuesFound", { n: d.issues.length }));
     } catch (e: any) { toast.error(e.message); }
     finally { setScanning(false); }
   }
@@ -146,7 +149,7 @@ export default function SmartFixer() {
     try {
       await api("/fix", { issueId: issue.id, file: issue.file, line: issue.line, message: issue.message, suggestion: issue.suggestion });
       setFixedIds(p => new Set([...p, issue.id]));
-      toast.success(`تم إصلاح: ${issue.file}`);
+      toast.success(t("smartFixer.fixedFile", { file: issue.file }));
       if (selIssue?.id === issue.id) setSelIssue(null);
     } catch (e: any) { toast.error(e.message); }
     finally { setFixingId(null); }
@@ -158,7 +161,7 @@ export default function SmartFixer() {
       const d = await api("/fix-all", { issues: issues.filter(i => !fixedIds.has(i.id)) });
       const ids = new Set([...fixedIds, ...(d.fixedIds || [])]);
       setFixedIds(ids);
-      toast.success(`تم إصلاح ${d.fixed ?? 0} مشكلة`);
+      toast.success(t("smartFixer.fixedCount", { n: d.fixed ?? 0 }));
     } catch (e: any) { toast.error(e.message); }
     finally { setFixingAll(false); }
   }
@@ -167,8 +170,8 @@ export default function SmartFixer() {
     setBuildChecking(true); setBuildOutput(""); setShowBuild(true);
     try {
       const d = await api("/build-check", {});
-      setBuildOutput(d.output || "✅ لا أخطاء في البناء");
-      toast.success(d.passed ? "البناء ناجح" : `${d.errorCount} خطأ في البناء`);
+      setBuildOutput(d.output || t("smartFixer.noBuildErrors"));
+      toast.success(d.passed ? t("smartFixer.buildSuccess") : t("smartFixer.buildErrorCount", { n: d.errorCount }));
     } catch (e: any) { toast.error(e.message); setBuildOutput(e.message); }
     finally { setBuildChecking(false); }
   }
@@ -187,7 +190,7 @@ export default function SmartFixer() {
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <DashboardLayout>
-      <div className="h-full flex flex-col gap-3 p-3 overflow-hidden" dir="rtl">
+      <div className="h-full flex flex-col gap-3 p-3 overflow-hidden" dir={i18n.dir()}>
 
         {/* ── HEADER ── */}
         <div className="bg-card/70 backdrop-blur-sm border border-border rounded-2xl p-4 shrink-0">
@@ -197,34 +200,35 @@ export default function SmartFixer() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="text-lg font-bold">المصلح الذكي</h1>
+                <h1 className="text-lg font-bold">{t("smartFixer.title")}</h1>
                 <span className="text-xs text-muted-foreground/70 font-normal">Smart Bug Fixer</span>
                 <span className="text-[10px] px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 rounded-full font-mono">Powered by Claude Opus 4.6</span>
               </div>
-              <p className="text-xs text-muted-foreground mt-0.5">اكتشاف وإصلاح أخطاء المشروع تلقائياً باستخدام الذكاء الاصطناعي</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{t("smartFixer.subtitle")}</p>
             </div>
             {/* Action bar */}
             <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+              <LanguageSwitcher />
               <Button size="sm" onClick={scanProject} disabled={scanning}
                 className="gap-1.5 bg-primary/80 hover:bg-primary text-xs">
                 {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                {scanning ? "جارٍ المسح…" : "مسح المشروع"}
+                {scanning ? t("smartFixer.scanning") : t("smartFixer.scanProject")}
               </Button>
               <Button size="sm" variant="outline" onClick={fixAll}
                 disabled={fixingAll || unfixedCount === 0}
                 className="gap-1.5 text-xs border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10">
                 {fixingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                {fixingAll ? "إصلاح…" : `إصلاح الكل (${unfixedCount})`}
+                {fixingAll ? t("smartFixer.fixingAllBtn") : t("smartFixer.fixAllCount", { n: unfixedCount })}
               </Button>
               <Button size="sm" variant="outline" onClick={buildCheck}
                 disabled={buildChecking} className="gap-1.5 text-xs">
                 {buildChecking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                فحص البناء
+                {t("smartFixer.buildCheck")}
               </Button>
               <Button size="sm" variant="outline" onClick={runDiagnosis}
                 disabled={diagnosing} className="gap-1.5 text-xs border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10">
                 {diagnosing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <TrendingUp className="w-3.5 h-3.5" />}
-                تشخيص شامل
+                {t("smartFixer.fullDiagnosis")}
               </Button>
             </div>
           </div>
@@ -262,7 +266,7 @@ export default function SmartFixer() {
                       ? "bg-primary/20 text-primary border border-primary/30"
                       : "text-muted-foreground hover:text-foreground"
                   }`}>
-                  {f === "all" ? "الكل" : SEV_CFG[f].label}
+                  {f === "all" ? t("smartFixer.all") : t(SEV_CFG[f].labelKey)}
                 </button>
               ))}
             </div>
@@ -272,7 +276,7 @@ export default function SmartFixer() {
               {scanning ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground p-6">
                   <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                  <p className="text-sm">جارٍ مسح المشروع…</p>
+                  <p className="text-sm">{t("smartFixer.scanningProject")}</p>
                 </div>
               ) : visibleIssues.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
@@ -281,9 +285,9 @@ export default function SmartFixer() {
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-muted-foreground">
-                      {issues.length === 0 ? "اضغط «مسح المشروع» للبدء" : "لا توجد مشكلات بهذا الفلتر"}
+                      {issues.length === 0 ? t("smartFixer.pressToScan") : t("smartFixer.noIssuesFilter")}
                     </p>
-                    <p className="text-[11px] text-muted-foreground/50 mt-1">يستخدم Claude Opus 4.6 لتحليل الكود</p>
+                    <p className="text-[11px] text-muted-foreground/50 mt-1">{t("smartFixer.poweredByClaude")}</p>
                   </div>
                 </div>
               ) : (
@@ -301,7 +305,7 @@ export default function SmartFixer() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
                             <SevBadge sev={issue.severity} />
-                            {isFixed && <span className="text-[9px] text-emerald-400 font-bold">✓ مُصلح</span>}
+                            {isFixed && <span className="text-[9px] text-emerald-400 font-bold">✓ {t("smartFixer.fixed")}</span>}
                           </div>
                           <p className="text-xs text-foreground/90 leading-snug line-clamp-2">{issue.message}</p>
                           <p className="text-[10px] text-muted-foreground/60 mt-0.5 font-mono truncate">
@@ -329,12 +333,12 @@ export default function SmartFixer() {
                         <SevBadge sev={selIssue.severity} />
                         <span className="text-[10px] px-1.5 py-0.5 bg-muted/30 rounded text-muted-foreground font-mono">{selIssue.category}</span>
                         {fixedIds.has(selIssue.id) && (
-                          <span className="text-[10px] px-2 py-0.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 rounded">✓ مُصلح</span>
+                          <span className="text-[10px] px-2 py-0.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 rounded">✓ {t("smartFixer.fixed")}</span>
                         )}
                       </div>
                       <h2 className="text-sm font-semibold leading-snug">{selIssue.message}</h2>
                       <p className="text-[11px] text-muted-foreground/70 mt-1 font-mono">
-                        📄 {selIssue.file} — سطر {selIssue.line}
+                        📄 {selIssue.file} — {t("smartFixer.lineLabel")} {selIssue.line}
                       </p>
                     </div>
                     <button onClick={() => setSelIssue(null)} className="text-muted-foreground hover:text-foreground shrink-0">
@@ -347,7 +351,7 @@ export default function SmartFixer() {
                 <div className="bg-card/70 backdrop-blur-sm border border-emerald-500/20 rounded-xl p-4 flex-1 min-h-0 overflow-y-auto">
                   <div className="flex items-center gap-2 mb-3">
                     <Sparkles className="w-4 h-4 text-emerald-400" />
-                    <span className="text-sm font-semibold text-emerald-300">اقتراح الإصلاح</span>
+                    <span className="text-sm font-semibold text-emerald-300">{t("smartFixer.fixSuggestion")}</span>
                     <span className="text-[10px] text-muted-foreground/50 mr-auto font-mono">Claude Opus 4.6</span>
                   </div>
                   <p className="text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">{selIssue.suggestion}</p>
@@ -358,8 +362,8 @@ export default function SmartFixer() {
                   <Button onClick={() => fixIssue(selIssue)} disabled={!!fixingId}
                     className="w-full gap-2 bg-emerald-600/80 hover:bg-emerald-600 shrink-0">
                     {fixingId === selIssue.id
-                      ? <><Loader2 className="w-4 h-4 animate-spin" />جارٍ الإصلاح…</>
-                      : <><Zap className="w-4 h-4" />إصلاح هذه المشكلة</>}
+                      ? <><Loader2 className="w-4 h-4 animate-spin" />{t("smartFixer.fixingNow")}</>
+                      : <><Zap className="w-4 h-4" />{t("smartFixer.fixThisIssue")}</>}
                   </Button>
                 )}
               </>
@@ -369,12 +373,12 @@ export default function SmartFixer() {
                   <Code2 className="w-8 h-8 text-emerald-400 opacity-60" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-muted-foreground">اختر مشكلة من القائمة</p>
-                  <p className="text-[11px] text-muted-foreground/50 mt-1">لعرض تفاصيل الخطأ واقتراح الإصلاح</p>
+                  <p className="text-sm font-semibold text-muted-foreground">{t("smartFixer.selectIssue")}</p>
+                  <p className="text-[11px] text-muted-foreground/50 mt-1">{t("smartFixer.selectIssueDesc")}</p>
                 </div>
                 {issues.length === 0 && !scanning && (
                   <Button onClick={scanProject} size="sm" variant="outline" className="gap-1.5 text-xs mt-2">
-                    <RefreshCw className="w-3.5 h-3.5" />ابدأ بمسح المشروع
+                    <RefreshCw className="w-3.5 h-3.5" />{t("smartFixer.startScan")}
                   </Button>
                 )}
               </div>
@@ -385,18 +389,18 @@ export default function SmartFixer() {
 
       {/* ── DIAGNOSIS DIALOG ── */}
       <Dialog open={showDiag} onOpenChange={setShowDiag}>
-        <DialogContent className="max-w-lg" dir="rtl">
+        <DialogContent className="max-w-lg" dir={i18n.dir()}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 flex-wrap">
               <TrendingUp className="w-5 h-5 text-cyan-400" />
-              التشخيص الشامل
-              <span className="text-[10px] px-2 py-0.5 bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 rounded-full font-normal font-mono">مدعوم بـ Claude Opus 4.6</span>
+              {t("smartFixer.fullDiagnosisTitle")}
+              <span className="text-[10px] px-2 py-0.5 bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 rounded-full font-normal font-mono">{t("smartFixer.poweredByClaudeBadge")}</span>
             </DialogTitle>
           </DialogHeader>
           {diagnosing ? (
             <div className="flex flex-col items-center justify-center py-12 gap-3">
               <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
-              <p className="text-sm text-muted-foreground">Claude Opus 4.6 يحلل المشروع…</p>
+              <p className="text-sm text-muted-foreground">{t("smartFixer.analyzingProject")}</p>
             </div>
           ) : diagnosis ? (
             <div className="space-y-4">
@@ -404,7 +408,7 @@ export default function SmartFixer() {
               <div className="flex items-center gap-4 p-4 bg-card/50 rounded-xl border border-border">
                 <HealthRing score={diagnosis.healthScore} />
                 <div className="flex-1">
-                  <p className="font-bold text-lg">{diagnosis.healthScore}% صحة المشروع</p>
+                  <p className="font-bold text-lg">{t("smartFixer.healthScore", { n: diagnosis.healthScore })}</p>
                   <p className="text-sm text-muted-foreground">{diagnosis.summary}</p>
                   <span className={`text-[11px] mt-1 inline-block font-mono px-2 py-0.5 rounded ${
                     diagnosis.buildStatus === "pass"
@@ -420,7 +424,7 @@ export default function SmartFixer() {
               {/* Recommendations */}
               {diagnosis.recommendations.length > 0 && (
                 <div className="space-y-1.5">
-                  <p className="text-xs font-semibold text-muted-foreground">التوصيات</p>
+                  <p className="text-xs font-semibold text-muted-foreground">{t("smartFixer.recommendations")}</p>
                   {diagnosis.recommendations.map((r, i) => (
                     <div key={i} className="text-xs p-2.5 bg-muted/20 rounded-lg border border-border text-right">
                       <span className="text-primary ml-2">{i + 1}.</span>{r}
@@ -435,21 +439,21 @@ export default function SmartFixer() {
 
       {/* ── BUILD CHECK DIALOG ── */}
       <Dialog open={showBuild} onOpenChange={setShowBuild}>
-        <DialogContent className="max-w-2xl" dir="rtl">
+        <DialogContent className="max-w-2xl" dir={i18n.dir()}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Play className="w-5 h-5 text-cyan-400" />
-              نتيجة فحص البناء
+              {t("smartFixer.buildResult")}
             </DialogTitle>
           </DialogHeader>
           {buildChecking ? (
             <div className="flex items-center justify-center py-10 gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
-              <p className="text-sm text-muted-foreground">جارٍ تشغيل TypeScript compiler…</p>
+              <p className="text-sm text-muted-foreground">{t("smartFixer.runningCompiler")}</p>
             </div>
           ) : (
             <pre className="bg-[#0d1117] rounded-xl p-4 text-xs font-mono text-emerald-300/80 max-h-96 overflow-y-auto whitespace-pre-wrap leading-relaxed">
-              {buildOutput || "لا يوجد خرج"}
+              {buildOutput || t("smartFixer.noOutput")}
             </pre>
           )}
         </DialogContent>
