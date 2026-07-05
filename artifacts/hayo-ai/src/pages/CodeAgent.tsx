@@ -231,25 +231,25 @@ export default function CodeAgent() {
 
   // Categories (with i18n)
   const CATEGORIES = useMemo(() => [
-    { id: "web", name: "تطوير الويب", nameEn: "WEB DEV", icon: Globe, color: "#6366f1" },
-    { id: "scripts", name: "سكربتات", nameEn: "SCRIPTS", icon: FileCode, color: "#22c55e" },
-    { id: "data", name: "بيانات", nameEn: "DATA", icon: Database, color: "#3b82f6" },
-    { id: "ai", name: "ذكاء اصطناعي", nameEn: "AI & ML", icon: Cpu, color: "#a855f7" },
-    { id: "api", name: "واجهات API", nameEn: "API", icon: Code2, color: "#f59e0b" },
-    { id: "mobile", name: "تطبيقات", nameEn: "MOBILE", icon: Smartphone, color: "#06b6d4" },
-    { id: "defense", name: "أمن دفاعي", nameEn: "DEFENSE", icon: Shield, color: "#10b981" },
-    { id: "pentest", name: "اختبار اختراق تعليمي", nameEn: "SECURITY EDU", icon: Bug, color: "#ef4444" },
-    { id: "network", name: "شبكات", nameEn: "NETWORK", icon: Wifi, color: "#f97316" },
-    { id: "forensics", name: "تحليل جنائي", nameEn: "FORENSICS", icon: Search, color: "#8b5cf6" },
-    { id: "general", name: "عام", nameEn: "GENERAL", icon: Sparkles, color: "#ec4899" },
+    { id: "web", name: t("codeAgent.cat_web"), nameEn: "WEB DEV", icon: Globe, color: "#6366f1" },
+    { id: "scripts", name: t("codeAgent.cat_scripts"), nameEn: "SCRIPTS", icon: FileCode, color: "#22c55e" },
+    { id: "data", name: t("codeAgent.cat_data"), nameEn: "DATA", icon: Database, color: "#3b82f6" },
+    { id: "ai", name: t("codeAgent.cat_ai"), nameEn: "AI & ML", icon: Cpu, color: "#a855f7" },
+    { id: "api", name: t("codeAgent.cat_api"), nameEn: "API", icon: Code2, color: "#f59e0b" },
+    { id: "mobile", name: t("codeAgent.cat_mobile"), nameEn: "MOBILE", icon: Smartphone, color: "#06b6d4" },
+    { id: "defense", name: t("codeAgent.cat_defense"), nameEn: "DEFENSE", icon: Shield, color: "#10b981" },
+    { id: "pentest", name: t("codeAgent.cat_pentest"), nameEn: "SECURITY EDU", icon: Bug, color: "#ef4444" },
+    { id: "network", name: t("codeAgent.cat_network"), nameEn: "NETWORK", icon: Wifi, color: "#f97316" },
+    { id: "forensics", name: t("codeAgent.cat_forensics"), nameEn: "FORENSICS", icon: Search, color: "#8b5cf6" },
+    { id: "general", name: t("codeAgent.cat_general"), nameEn: "GENERAL", icon: Sparkles, color: "#ec4899" },
   ], [t]);
 
   const WORKFLOW_STEPS: { id: WorkflowStep; label: string }[] = pipelineMode
     ? [
-        { id: "plan",    label: "Sonnet: تحليل" },
-        { id: "code",    label: "Opus: كود" },
-        { id: "test",    label: "DeepSeek: مراجعة" },
-        { id: "edit",    label: "Gemini: تحسين" },
+        { id: "plan",    label: t("codeAgent.step_plan") },
+        { id: "code",    label: t("codeAgent.step_code") },
+        { id: "test",    label: t("codeAgent.step_test") },
+        { id: "edit",    label: t("codeAgent.step_edit") },
         { id: "deliver", label: t("codeAgent.deliver") },
       ]
     : [
@@ -331,12 +331,12 @@ export default function CodeAgent() {
     const isZip = name.endsWith(".zip");
     const isRar = name.endsWith(".rar");
     if (!isZip && !isRar) {
-      toast.error("يرجى رفع ملف ZIP أو RAR فقط");
+      toast.error(t("codeAgent.onlyZipRar"));
       return;
     }
     const zipMax = user?.role === "admin" ? 500 * 1024 * 1024 : 50 * 1024 * 1024;
     if (file.size > zipMax) {
-      toast.error(user?.role === "admin" ? "الحجم يتجاوز 500MB" : "الحجم يتجاوز 50MB");
+      toast.error(user?.role === "admin" ? t("codeAgent.sizeExceedsAdmin") : t("codeAgent.sizeExceeds"));
       return;
     }
 
@@ -387,7 +387,7 @@ export default function CodeAgent() {
       }
 
       if (extractedFiles.length === 0) {
-        toast.error("لم يتم العثور على ملفات كود في الأرشيف");
+        toast.error(t("codeAgent.noCodeFiles"));
         setUploadingZip(false);
         return;
       }
@@ -399,14 +399,14 @@ export default function CodeAgent() {
       setWorkflowStep("idle");
       setShowCompletion(false);
       setEditorView("code");
-      setPrompt(`لدي مشروع مكون من ${extractedFiles.length} ملف مستخرج من ${file.name}، حللهم وصحح الأخطاء وحسّن الكود`);
+      setPrompt(t("codeAgent.archivePrompt", { n: extractedFiles.length, name: file.name }));
 
       addLog(`[UPLOAD] ✅ Extracted ${extractedFiles.length} files from ${file.name}`, "success");
       addLog("[UPLOAD] Files loaded into editor. Describe what to fix or click Execute.", "info");
-      toast.success(`تم تحميل ${extractedFiles.length} ملف من ${file.name}`);
+      toast.success(t("codeAgent.filesLoaded", { n: extractedFiles.length, name: file.name }));
     } catch (err: any) {
       addLog(`[UPLOAD ERROR] ${err.message}`, "error");
-      toast.error(`فشل استخراج الملفات: ${err.message}`);
+      toast.error(t("codeAgent.extractFailed", { msg: err.message }));
     }
 
     setUploadingZip(false);
@@ -498,11 +498,11 @@ export default function CodeAgent() {
     try {
       if (pipelineMode) {
         // ── 4-Model Pipeline ──────────────────────────────────────────
-        addLog("[PIPELINE] تشغيل خط الإنتاج المتعدد النماذج...", "system");
-        addLog("[PHASE 1/4] Claude Sonnet: تحليل الطلب وبناء الخطة...", "info");
+        addLog(t("codeAgent.pipelineStart"), "system");
+        addLog(t("codeAgent.phase1"), "info");
 
         await progressWorkflow("code", 800);
-        addLog("[PHASE 2/4] GPT-4o: كتابة الكود الكامل...", "info");
+        addLog(t("codeAgent.phase2"), "info");
 
         // Fire the single pipeline mutation (runs all 4 models server-side)
         const pipelinePromise = pipelineMutation.mutateAsync({
@@ -514,19 +514,19 @@ export default function CodeAgent() {
         const reviewDelay = new Promise<void>((r) => setTimeout(r, 12000));
         await Promise.race([reviewDelay, pipelinePromise.then(() => {})]);
         await progressWorkflow("test", 0);
-        addLog("[PHASE 3/4] DeepSeek: مراجعة الكود وإصلاح الأخطاء...", "info");
+        addLog(t("codeAgent.phase3"), "info");
 
         const enhanceDelay = new Promise<void>((r) => setTimeout(r, 8000));
         await Promise.race([enhanceDelay, pipelinePromise.then(() => {})]);
         await progressWorkflow("edit", 0);
-        addLog("[PHASE 4/4] Gemini: إضافة الملفات الناقصة وإنهاء المشروع...", "info");
+        addLog(t("codeAgent.phase4"), "info");
 
         const result = await pipelinePromise;
 
         if (result.files && result.files.length > 0) {
           await saveAndNavigate(result.files, result.summary);
         } else {
-          addLog("[ERROR] لم يتم إنشاء ملفات. حاول بطلب أكثر تفصيلاً.", "error");
+          addLog(t("codeAgent.noFilesGenerated"), "error");
           setWorkflowStep("idle");
         }
       } else {
@@ -595,7 +595,7 @@ export default function CodeAgent() {
   const handleFixAll = useCallback(async () => {
     if (files.length === 0 || isFixing || isGenerating) return;
     setIsFixing(true);
-    addLog(`[FIX ALL] إصلاح ${files.length} ملف بالذكاء الاصطناعي...`, "system");
+    addLog(t("codeAgent.fixAllRunning", { n: files.length }), "system");
     try {
       const result = await fixAllMutation.mutateAsync({
         files: files.map(f => ({ name: f.name, content: f.content })),
@@ -606,13 +606,13 @@ export default function CodeAgent() {
         setFiles(result.files.map((f: any) => ({
           name: f.name, content: f.content, language: detectLanguage(f.name),
         })));
-        addLog(`[FIX ALL] ✅ تم إصلاح ${result.totalFixes} مشكلة في ${result.files.length} ملف`, "success");
+        addLog(t("codeAgent.fixAllDone", { fixes: result.totalFixes, n: result.files.length }), "success");
         result.fixes.forEach((f: string) => addLog(`  🔧 ${f}`, "info"));
-        toast.success(`✅ تم إصلاح ${result.totalFixes} مشكلة`);
+        toast.success(t("codeAgent.fixAllToast", { fixes: result.totalFixes }));
       }
     } catch (error: any) {
       addLog(`[FIX ALL ERROR] ${error.message}`, "error");
-      toast.error(`فشل: ${error.message}`);
+      toast.error(t("codeAgent.fixAllFailed", { msg: error.message }));
     }
     setIsFixing(false);
   }, [files, isFixing, isGenerating, fixDescription, selectedModel, fixAllMutation, addLog]);
@@ -641,10 +641,10 @@ export default function CodeAgent() {
         setActiveFileIndex(idx);
         setFixDescription("");
         addLog(`[FIX] Applied fix successfully`, "success");
-        toast.success("تم الإصلاح بنجاح");
+        toast.success(t("codeAgent.fixSuccess"));
       }
     } catch {
-      toast.error("فشل الإصلاح، حاول مجدداً");
+      toast.error(t("codeAgent.fixFailed"));
     }
     setIsAiFixing(false);
   }, [fixDescription, isAiFixing, files, activeFileIndex, selectedCategory, selectedModel, fixMutation, addLog, t]);
@@ -961,7 +961,7 @@ export default function CodeAgent() {
               value={fixDescription}
               onChange={e => setFixDescription(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleOverlayFix(); } }}
-              placeholder={t("codeAgent.aiFixPlaceholder") || "اطلب إصلاحاً أو تحسيناً... (مثال: أصلح الزر الأحمر، غيّر الخط)"}
+              placeholder={t("codeAgent.aiFixPlaceholder")}
               className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-violet-500/50 text-right"
               dir="rtl"
               disabled={isAiFixing}
@@ -1079,10 +1079,10 @@ export default function CodeAgent() {
 
           {/* Action Buttons */}
           <Button variant="outline" size="sm" className="text-[10px] gap-1 h-7 px-2 text-amber-400 border-amber-400/30 hover:bg-amber-400/10" onClick={handleAiFix} disabled={files.length === 0 || isFixing || isGenerating}>
-            {isFixing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wrench className="w-3 h-3" />} إصلاح الملف
+            {isFixing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wrench className="w-3 h-3" />} {t("codeAgent.fixFile")}
           </Button>
           <Button variant="outline" size="sm" className="text-[10px] gap-1 h-7 px-2 text-primary border-primary/30 hover:bg-primary/10" onClick={handleFixAll} disabled={files.length === 0 || isFixing || isGenerating}>
-            {fixAllMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />} إصلاح الكل
+            {fixAllMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />} {t("codeAgent.fixAllBtn")}
           </Button>
           <Button variant="outline" size="sm" className="text-[10px] gap-1 h-7 px-2" onClick={handleCopyAll} disabled={files.length === 0}>
             <Copy className="w-3 h-3" /> {t("common.copy")}
@@ -1241,7 +1241,7 @@ export default function CodeAgent() {
                 onClick={() => zipInputRef.current?.click()}
                 disabled={isGenerating || uploadingZip}>
                 {uploadingZip ? <Loader2 className="w-3 h-3 animate-spin" /> : <FolderArchive className="w-3 h-3" />}
-                {uploadingZip ? "جاري الاستخراج..." : "رفع ZIP/RAR"}
+                {uploadingZip ? t("codeAgent.extracting") : t("codeAgent.uploadZip")}
               </Button>
               <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handleUploadDesign} />
               <input ref={zipInputRef} type="file" accept=".zip,.rar,application/zip,application/x-zip-compressed,application/x-rar-compressed,application/vnd.rar" className="hidden" onChange={handleUploadZip} />
@@ -1259,7 +1259,7 @@ export default function CodeAgent() {
             >
               <span className="flex items-center gap-1.5">
                 <Sparkles className="w-3 h-3" />
-                Pipeline Mode (4 نماذج)
+                {t("codeAgent.pipelineModeLabel")}
               </span>
               {pipelineMode && (
                 <span className="text-[9px] bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full flex items-center gap-1">
@@ -1273,8 +1273,8 @@ export default function CodeAgent() {
               className={`w-full mt-2 gap-2 font-bold text-base h-10 text-white ${pipelineMode ? "bg-violet-700 hover:bg-violet-800" : "bg-emerald-600 hover:bg-emerald-700"}`} size="lg">
               {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
               {isGenerating
-                ? (pipelineMode ? "جارٍ تشغيل الـ Pipeline..." : t("codeAgent.generating"))
-                : (pipelineMode ? "تشغيل Pipeline" : t("codeAgent.execute"))}
+                ? (pipelineMode ? t("codeAgent.runningPipeline") : t("codeAgent.generating"))
+                : (pipelineMode ? t("codeAgent.runPipeline") : t("codeAgent.execute"))}
             </Button>
           </div>
 
