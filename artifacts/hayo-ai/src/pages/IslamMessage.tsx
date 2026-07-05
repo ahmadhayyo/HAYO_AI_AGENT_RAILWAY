@@ -21,7 +21,7 @@ type Section = "quran" | "hadith" | "madhahib" | "miracles";
 
 export default function IslamMessage() {
   const { isAuthenticated } = useAuth();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("quran");
 
   // ═══ Quran State ═══
@@ -61,7 +61,7 @@ export default function IslamMessage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white" dir="rtl">
+    <div className="min-h-screen bg-[#0a0a0f] text-white" dir={i18n.dir()}>
       {/* Header */}
       <header className="h-14 bg-[#0f0f1a] border-b border-white/5 flex items-center justify-between px-4 sticky top-0 z-30 backdrop-blur-xl">
         <div className="flex items-center gap-3">
@@ -163,8 +163,8 @@ export default function IslamMessage() {
             {/* Book Selection */}
             <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
               <button onClick={() => setHadithBook("all")} className={`p-2 rounded-xl border text-center text-xs ${hadithBook === "all" ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "border-white/5 text-gray-400"}`}>{t("islam.all")}</button>
-              {Object.entries({ bukhari: "البخاري", muslim: "مسلم", tirmidhi: "الترمذي", abudawud: "أبو داود", nasai: "النسائي", ibnmajah: "ابن ماجه", malik: "مالك", ahmad: "أحمد", darimi: "الدارمي" }).map(([id, name]) => (
-                <button key={id} onClick={() => setHadithBook(id)} className={`p-2 rounded-xl border text-center text-xs ${hadithBook === id ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "border-white/5 text-gray-400"}`}>{name}</button>
+              {["bukhari", "muslim", "tirmidhi", "abudawud", "nasai", "ibnmajah", "malik", "ahmad", "darimi"].map((id) => (
+                <button key={id} onClick={() => setHadithBook(id)} className={`p-2 rounded-xl border text-center text-xs ${hadithBook === id ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "border-white/5 text-gray-400"}`}>{t(`islam.book_${id}`)}</button>
               ))}
             </div>
 
@@ -179,9 +179,13 @@ export default function IslamMessage() {
               </div>
               {/* Quick Topics */}
               <div className="flex flex-wrap gap-2">
-                {["الوضوء", "الصلاة", "الصيام", "الزكاة", "الحج", "بر الوالدين", "الصدقة", "الصبر", "التوبة", "الدعاء"].map(topic => (
-                  <button key={topic} onClick={() => { setHadithSearch(topic); searchHadithMut.mutate({ query: topic, book: hadithBook }); }}
-                    className="text-[10px] px-2.5 py-1 rounded-lg border border-white/5 text-gray-400 hover:border-amber-500/30 hover:text-amber-400">{topic}</button>
+                {[
+                  { key: "topic_wudu", ar: "الوضوء" }, { key: "topic_salah", ar: "الصلاة" }, { key: "topic_sawm", ar: "الصيام" },
+                  { key: "topic_zakah", ar: "الزكاة" }, { key: "topic_hajj", ar: "الحج" }, { key: "topic_birrParents", ar: "بر الوالدين" },
+                  { key: "topic_sadaqah", ar: "الصدقة" }, { key: "topic_sabr", ar: "الصبر" }, { key: "topic_tawbah", ar: "التوبة" }, { key: "topic_dua", ar: "الدعاء" },
+                ].map(topic => (
+                  <button key={topic.key} onClick={() => { setHadithSearch(topic.ar); searchHadithMut.mutate({ query: topic.ar, book: hadithBook }); }}
+                    className="text-[10px] px-2.5 py-1 rounded-lg border border-white/5 text-gray-400 hover:border-amber-500/30 hover:text-amber-400">{t(`islam.${topic.key}`)}</button>
                 ))}
               </div>
             </div>
@@ -213,9 +217,14 @@ export default function IslamMessage() {
               <input value={madhabTopic} onChange={e => setMadhabTopic(e.target.value)} placeholder={t("islam.madhabPh")}
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-violet-500/50" onKeyDown={e => { if (e.key === "Enter") compareMut.mutate({ topic: madhabTopic }); }} />
               <div className="flex flex-wrap gap-2">
-                {["صلاة المسافر", "القنوت في الفجر", "مسح الخفين", "قراءة الفاتحة خلف الإمام", "التشهد الأول", "زكاة الفطر", "صيام المسافر", "النية في الصيام"].map(t => (
-                  <button key={t} onClick={() => { setMadhabTopic(t); compareMut.mutate({ topic: t }); }}
-                    className="text-[10px] px-2.5 py-1 rounded-lg border border-white/5 text-gray-400 hover:border-violet-500/30 hover:text-violet-400">{t}</button>
+                {[
+                  { key: "fiqh_travelerPrayer", ar: "صلاة المسافر" }, { key: "fiqh_qunut", ar: "القنوت في الفجر" },
+                  { key: "fiqh_wipingSocks", ar: "مسح الخفين" }, { key: "fiqh_fatihaBehindImam", ar: "قراءة الفاتحة خلف الإمام" },
+                  { key: "fiqh_firstTashahhud", ar: "التشهد الأول" }, { key: "fiqh_zakatFitr", ar: "زكاة الفطر" },
+                  { key: "fiqh_travelerFasting", ar: "صيام المسافر" }, { key: "fiqh_intentionFasting", ar: "النية في الصيام" },
+                ].map(topic => (
+                  <button key={topic.key} onClick={() => { setMadhabTopic(topic.ar); compareMut.mutate({ topic: topic.ar }); }}
+                    className="text-[10px] px-2.5 py-1 rounded-lg border border-white/5 text-gray-400 hover:border-violet-500/30 hover:text-violet-400">{t(`islam.${topic.key}`)}</button>
                 ))}
               </div>
               <Button onClick={() => compareMut.mutate({ topic: madhabTopic })} disabled={compareMut.isPending || !madhabTopic.trim()} className="w-full gap-2 bg-gradient-to-r from-violet-600 to-purple-600">
@@ -245,9 +254,14 @@ export default function IslamMessage() {
               <input value={miracleTopic} onChange={e => setMiracleTopic(e.target.value)} placeholder={t("islam.miraclePh")}
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-cyan-500/50" onKeyDown={e => { if (e.key === "Enter") miracleMut.mutate({ topic: miracleTopic }); }} />
               <div className="flex flex-wrap gap-2">
-                {["خلق الإنسان من طين", "توسع الكون", "الجبال أوتاد", "ظلمات البحر", "دورة الماء", "الحديد أنزلناه", "البصمة والأصابع", "النحل والشفاء"].map(t => (
-                  <button key={t} onClick={() => { setMiracleTopic(t); miracleMut.mutate({ topic: t }); }}
-                    className="text-[10px] px-2.5 py-1 rounded-lg border border-white/5 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-400">{t}</button>
+                {[
+                  { key: "miracle_humanClay", ar: "خلق الإنسان من طين" }, { key: "miracle_universeExpansion", ar: "توسع الكون" },
+                  { key: "miracle_mountainsPegs", ar: "الجبال أوتاد" }, { key: "miracle_seaDarkness", ar: "ظلمات البحر" },
+                  { key: "miracle_waterCycle", ar: "دورة الماء" }, { key: "miracle_ironSentDown", ar: "الحديد أنزلناه" },
+                  { key: "miracle_fingerprint", ar: "البصمة والأصابع" }, { key: "miracle_beesHealing", ar: "النحل والشفاء" },
+                ].map(topic => (
+                  <button key={topic.key} onClick={() => { setMiracleTopic(topic.ar); miracleMut.mutate({ topic: topic.ar }); }}
+                    className="text-[10px] px-2.5 py-1 rounded-lg border border-white/5 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-400">{t(`islam.${topic.key}`)}</button>
                 ))}
               </div>
               <Button onClick={() => miracleMut.mutate({ topic: miracleTopic })} disabled={miracleMut.isPending || !miracleTopic.trim()} className="w-full gap-2 bg-gradient-to-r from-blue-600 to-cyan-600">
