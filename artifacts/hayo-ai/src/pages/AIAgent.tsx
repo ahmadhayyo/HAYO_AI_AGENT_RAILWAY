@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "framer-motion";
+import { useTranslation } from "react-i18next";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 import {
   Bot, Send, Loader2, Home, CheckCircle2, XCircle,
   FileCode, FilePlus, Trash2, Eye, Terminal, ChevronDown,
@@ -38,12 +40,12 @@ interface StreamMessage {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const NODE_LABELS: Record<NodeType, string> = {
-  planner:  "المخطط",
-  coder:    "المبرمج",
-  executor: "المنفذ",
-  reviewer: "المراجع",
-  system:   "النظام",
+const NODE_LABEL_KEYS: Record<NodeType, string> = {
+  planner:  "aiAgent.planner",
+  coder:    "aiAgent.coder",
+  executor: "aiAgent.executor",
+  reviewer: "aiAgent.reviewer",
+  system:   "aiAgent.system",
 };
 
 const NODE_COLORS: Record<NodeType, string> = {
@@ -72,17 +74,12 @@ const EVENT_ICONS: Record<EventType, React.ComponentType<{ className?: string }>
   done:        CheckCircle2,
 };
 
-const EXAMPLES = [
-  "أنشئ صفحة إحصائيات جديدة مع رسوم بيانية وأضفها للقائمة الجانبية",
-  "اقرأ ملف App.tsx وأخبرني بكل المسارات المسجلة",
-  "أضف endpoint جديد في tRPC router لجلب بيانات المستخدم",
-  "شغّل pnpm build وأصلح أي أخطاء TypeScript تظهر",
-  "أنشئ مكون StatCard يعرض رقماً وعنواناً وأيقونة مع تأثير hover",
-];
+const EXAMPLE_KEYS = ["aiAgent.ex1", "aiAgent.ex2", "aiAgent.ex3", "aiAgent.ex4", "aiAgent.ex5"];
 
 // ─── EventLine component ──────────────────────────────────────────────────────
 
 function EventLine({ event }: { event: AgentStreamEvent }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(event.type === "error" || event.type === "done");
   const Icon = EVENT_ICONS[event.type] || Wrench;
   const nodeColor = NODE_COLORS[event.node];
@@ -109,7 +106,7 @@ function EventLine({ event }: { event: AgentStreamEvent }) {
       <div className="flex items-center gap-2 mb-1">
         <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${nodeColor}`}>
           <Icon className="w-3 h-3" />
-          {NODE_LABELS[event.node]}
+          {t(NODE_LABEL_KEYS[event.node])}
         </span>
         <span className="opacity-50 capitalize">{event.type.replace("_", " ")}</span>
       </div>
@@ -128,7 +125,7 @@ function EventLine({ event }: { event: AgentStreamEvent }) {
           className="mt-1 flex items-center gap-1 text-[10px] text-white/40 hover:text-white/70"
         >
           {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-          {expanded ? "طيّ" : "توسعة"}
+          {expanded ? t("aiAgent.collapse") : t("aiAgent.expandLabel")}
         </button>
       )}
     </motion.div>
@@ -138,9 +135,10 @@ function EventLine({ event }: { event: AgentStreamEvent }) {
 // ─── PlanBadges component ─────────────────────────────────────────────────────
 
 function PlanBadges({ plan }: { plan: string[] }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-1">
-      <p className="text-[10px] text-white/40 font-semibold uppercase tracking-wider">خطة التنفيذ</p>
+      <p className="text-[10px] text-white/40 font-semibold uppercase tracking-wider">{t("aiAgent.executionPlan")}</p>
       {plan.map((step, i) => (
         <div key={i} className="flex items-start gap-2 text-xs text-white/60">
           <span className="shrink-0 w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-[10px] font-bold">
@@ -156,6 +154,7 @@ function PlanBadges({ plan }: { plan: string[] }) {
 // ─── StreamMessage component ──────────────────────────────────────────────────
 
 function StreamMessageCard({ msg }: { msg: StreamMessage }) {
+  const { t } = useTranslation();
   const [showEvents, setShowEvents] = useState(true);
 
   if (msg.role === "user") {
@@ -202,7 +201,7 @@ function StreamMessageCard({ msg }: { msg: StreamMessage }) {
               className="flex items-center gap-2 text-[11px] text-white/40 hover:text-white/70 transition-colors"
             >
               {showEvents ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-              {showEvents ? "إخفاء" : "عرض"} تفاصيل التنفيذ ({msg.events.length} حدث)
+              {showEvents ? t("aiAgent.hideDetails") : t("aiAgent.showDetails")} {t("aiAgent.eventCount", { n: msg.events.length })}
             </button>
 
             <AnimatePresence>
@@ -226,7 +225,7 @@ function StreamMessageCard({ msg }: { msg: StreamMessage }) {
         {!msg.done && !msg.error && (
           <div className="flex items-center gap-2 text-xs text-white/40">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>الوكيل يعمل…</span>
+            <span>{t("aiAgent.agentWorking")}</span>
           </div>
         )}
 
@@ -234,7 +233,7 @@ function StreamMessageCard({ msg }: { msg: StreamMessage }) {
           <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-3 text-sm text-emerald-300">
             <div className="flex items-center gap-2 mb-1">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span className="font-semibold">اكتملت المهمة</span>
+              <span className="font-semibold">{t("aiAgent.taskComplete")}</span>
             </div>
             <p className="text-xs leading-relaxed opacity-80">{finalEvent.content}</p>
           </div>
@@ -244,7 +243,7 @@ function StreamMessageCard({ msg }: { msg: StreamMessage }) {
           <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-sm text-red-300">
             <div className="flex items-center gap-2 mb-1">
               <XCircle className="w-4 h-4 shrink-0" />
-              <span className="font-semibold">فشلت المهمة</span>
+              <span className="font-semibold">{t("aiAgent.taskFailed")}</span>
             </div>
             <p className="text-xs leading-relaxed opacity-80">{errorEvent.content}</p>
           </div>
@@ -257,6 +256,7 @@ function StreamMessageCard({ msg }: { msg: StreamMessage }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function AIAgent() {
+  const { t } = useTranslation();
   const { isAuthenticated, user, loading: authLoading } = useAuth();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<StreamMessage[]>([]);
@@ -399,7 +399,7 @@ export default function AIAgent() {
       }
     } catch (err: any) {
       if (err.name !== "AbortError") {
-        toast.error(`خطأ في الاتصال: ${err.message}`);
+        toast.error(t("aiAgent.connError", { msg: err.message }));
         setMessages(prev =>
           prev.map(m =>
             m.id === asstMsgId
@@ -449,10 +449,10 @@ export default function AIAgent() {
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-6">
         <div className="text-center space-y-4">
           <Bot className="w-16 h-16 text-violet-400 mx-auto" />
-          <h2 className="text-2xl font-bold text-white">وكيل البرمجة الذكي</h2>
-          <p className="text-white/50">يجب تسجيل الدخول لاستخدام هذه الميزة</p>
+          <h2 className="text-2xl font-bold text-white">{t("aiAgent.title")}</h2>
+          <p className="text-white/50">{t("aiAgent.loginDesc")}</p>
           <Link href={getLoginUrl()}>
-            <Button className="bg-violet-600 hover:bg-violet-700 text-white">تسجيل الدخول</Button>
+            <Button className="bg-violet-600 hover:bg-violet-700 text-white">{t("common.login")}</Button>
           </Link>
         </div>
       </div>
@@ -475,7 +475,7 @@ export default function AIAgent() {
               <Bot className="w-4 h-4 text-white" />
             </div>
             <div>
-              <h1 className="text-sm font-bold text-white">وكيل البرمجة الذكي</h1>
+              <h1 className="text-sm font-bold text-white">{t("aiAgent.title")}</h1>
               <p className="text-[10px] text-white/40">Claude Sonnet 4.6 • LangGraph</p>
             </div>
           </div>
@@ -483,6 +483,7 @@ export default function AIAgent() {
 
         {/* Status indicator */}
         <div className="flex items-center gap-3">
+          <LanguageSwitcher />
           {isStreaming && currentNode && (
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
@@ -490,7 +491,7 @@ export default function AIAgent() {
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${NODE_COLORS[currentNode]}`}
             >
               <Loader2 className="w-3 h-3 animate-spin" />
-              {NODE_LABELS[currentNode]}
+              {t(NODE_LABEL_KEYS[currentNode])}
             </motion.div>
           )}
 
@@ -500,7 +501,7 @@ export default function AIAgent() {
               size="icon"
               onClick={handleStop}
               className="w-8 h-8 text-red-400 hover:text-red-300 hover:bg-red-500/10"
-              title="إيقاف"
+              title={t("aiAgent.stop")}
             >
               <XCircle className="w-4 h-4" />
             </Button>
@@ -510,7 +511,7 @@ export default function AIAgent() {
               size="icon"
               onClick={() => setMessages([])}
               className="w-8 h-8 text-white/30 hover:text-white/60"
-              title="مسح المحادثة"
+              title={t("aiAgent.clearChat")}
               disabled={messages.length === 0}
             >
               <Trash2 className="w-4 h-4" />
@@ -527,19 +528,19 @@ export default function AIAgent() {
               <Bot className="w-8 h-8 text-white" />
             </div>
             <div className="space-y-2">
-              <h2 className="text-xl font-bold text-white">وكيل البرمجة الذكي</h2>
+              <h2 className="text-xl font-bold text-white">{t("aiAgent.title")}</h2>
               <p className="text-white/40 text-sm max-w-sm">
-                أعطني أي مهمة برمجية وسأقوم بتحليلها وتنفيذها خطوة بخطوة باستخدام Claude Sonnet 4.6
+                {t("aiAgent.heroDesc")}
               </p>
             </div>
             <div className="grid grid-cols-1 gap-2 w-full max-w-lg">
-              {EXAMPLES.map((ex, i) => (
+              {EXAMPLE_KEYS.map((key, i) => (
                 <button
                   key={i}
-                  onClick={() => { setInput(ex); inputRef.current?.focus(); }}
+                  onClick={() => { setInput(t(key)); inputRef.current?.focus(); }}
                   className="text-right text-xs text-white/50 hover:text-white/80 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 rounded-xl px-4 py-2.5 transition-all"
                 >
-                  {ex}
+                  {t(key)}
                 </button>
               ))}
             </div>
@@ -563,7 +564,7 @@ export default function AIAgent() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="اكتب مهمتك البرمجية هنا… (Enter للإرسال، Shift+Enter لسطر جديد)"
+              placeholder={t("aiAgent.placeholder")}
               rows={1}
               disabled={isStreaming}
               className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 resize-none focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/30 disabled:opacity-50 transition-all"
@@ -589,7 +590,7 @@ export default function AIAgent() {
           </Button>
         </div>
         <p className="text-center text-[10px] text-white/20 mt-2">
-          وكيل ذكي يعمل بـ Claude Sonnet 4.6 • LangGraph • متعدد المراحل
+          {t("aiAgent.footer")}
         </p>
       </div>
     </div>
