@@ -12,7 +12,9 @@ import {
   FileCode, FilePlus, Trash2, Eye, Terminal, ChevronDown,
   ChevronUp, Copy, RotateCcw, Zap, ListChecks, Search,
   Play, AlertTriangle, Brain, Wrench, ShieldCheck,
+  Rocket, RefreshCw, ExternalLink,
 } from "lucide-react";
+import { trpc } from "@/lib/trpc";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -250,6 +252,106 @@ function StreamMessageCard({ msg }: { msg: StreamMessage }) {
         )}
       </div>
     </motion.div>
+  );
+}
+
+// ─── Deploy Center: guarded review → commit → live deploy (owner-only) ─────────
+
+function DeployCenter() {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const [result, setResult] = useState<{ ok: boolean; text: string; url?: string } | null>(null);
+  const pending = trpc.aiAgent.pendingDeploy.useQuery(undefined, {
+    refetchInterval: open ? 5000 : false,
+  });
+  const files = pending.data?.files ?? [];
+  const deploy = trpc.aiAgent.deploy.useMutation({
+    onSuccess: (d) => {
+      if (d.success) {
+        setResult({ ok: true, text: t("aiAgent.deploySuccess", { n: d.committed }), url: d.commitUrl });
+        setMessage("");
+        pending.refetch();
+      } else {
+        setResult({ ok: false, text: d.error || t("aiAgent.deployFailed") });
+      }
+    },
+    onError: (e) => setResult({ ok: false, text: e.message }),
+  });
+
+  return (
+    <div className="shrink-0 border-b border-white/10 bg-black/20">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-2 text-xs hover:bg-white/[0.03] transition-colors"
+      >
+        <span className="flex items-center gap-2 text-white/70">
+          <Rocket className="w-3.5 h-3.5 text-violet-400" />
+          {t("aiAgent.deployCenter")}
+          {files.length > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-300 text-[10px] font-bold">{files.length}</span>
+          )}
+        </span>
+        <ChevronDown className={`w-4 h-4 text-white/40 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="px-4 pb-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] text-white/40">{t("aiAgent.deployHint")}</p>
+            <button onClick={() => pending.refetch()} className="text-white/40 hover:text-white/70" title={t("aiAgent.refresh")}>
+              <RefreshCw className={`w-3.5 h-3.5 ${pending.isFetching ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+
+          {files.length === 0 ? (
+            <p className="text-xs text-white/30 py-3 text-center">{t("aiAgent.noPendingChanges")}</p>
+          ) : (
+            <div className="max-h-48 overflow-y-auto space-y-1 rounded-lg bg-black/30 border border-white/5 p-2">
+              {files.map((f) => (
+                <div key={f.filePath} className="flex items-center gap-2 text-[11px]">
+                  <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${f.action === "delete" ? "bg-red-500/20 text-red-300" : "bg-emerald-500/20 text-emerald-300"}`}>
+                    {f.action === "delete" ? "DEL" : "MOD"}
+                  </span>
+                  <FileCode className="w-3 h-3 text-white/40 shrink-0" />
+                  <span className="font-mono text-white/70 truncate">{f.filePath}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {result && (
+            <div className={`text-xs rounded-lg px-3 py-2 flex items-center gap-2 ${result.ok ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20" : "bg-red-500/10 text-red-300 border border-red-500/20"}`}>
+              {result.ok ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <AlertTriangle className="w-3.5 h-3.5 shrink-0" />}
+              <span className="flex-1">{result.text}</span>
+              {result.url && (
+                <a href={result.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline shrink-0">
+                  {t("aiAgent.viewCommit")} <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <input
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder={t("aiAgent.commitMessagePlaceholder")}
+              className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder:text-white/30 focus:outline-none focus:border-violet-500/50"
+            />
+            <Button
+              onClick={() => { setResult(null); deploy.mutate({ message: message.trim() || "chore: deploy platform changes" }); }}
+              disabled={files.length === 0 || deploy.isPending}
+              size="sm"
+              className="bg-gradient-to-r from-violet-500 to-blue-600 hover:from-violet-600 hover:to-blue-700 text-white gap-1.5 text-xs h-9"
+            >
+              {deploy.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Rocket className="w-3.5 h-3.5" />}
+              {t("aiAgent.commitDeploy")}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -519,6 +621,9 @@ export default function AIAgent() {
           )}
         </div>
       </div>
+
+      {/* ── Deploy Center (guarded self-deploy) ── */}
+      <DeployCenter />
 
       {/* ── Chat Area ── */}
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6">

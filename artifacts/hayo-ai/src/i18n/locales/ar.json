@@ -1305,7 +1305,16 @@
   "clearChat": "مسح المحادثة",
   "heroDesc": "أعطني أي مهمة برمجية وسأقوم بتحليلها وتنفيذها خطوة بخطوة باستخدام Claude Sonnet 4.6",
   "placeholder": "اكتب مهمتك البرمجية هنا… (Enter للإرسال، Shift+Enter لسطر جديد)",
-  "footer": "وكيل ذكي يعمل بـ Claude Sonnet 4.6 • LangGraph • متعدد المراحل"
+  "footer": "وكيل ذكي يعمل بـ Claude Sonnet 4.6 • LangGraph • متعدد المراحل",
+  "deployCenter": "مركز النشر",
+  "deployHint": "راجع تعديلات المنصة المُعلّقة ثم انشرها للنسخة الحيّة.",
+  "noPendingChanges": "لا توجد تعديلات مُعلّقة.",
+  "refresh": "تحديث",
+  "commitMessagePlaceholder": "وصف التعديل (رسالة الـ commit)",
+  "commitDeploy": "نشر",
+  "deploySuccess": "تم نشر {{n}} ملف — Railway يعيد البناء الآن.",
+  "deployFailed": "فشل النشر",
+  "viewCommit": "عرض الـ commit"
  },
  "pentest": {
   "sev_critical": "حرجة",

@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { router, adminProcedure } from "./trpc";
 import { executeAgentCommand } from "./services/ai-agent";
+import { stageChange, getPending, commitAndDeploy } from "./services/self-deploy";
 
 const PROJECT_ROOT = path.resolve(process.cwd(), "../..");
 
@@ -52,10 +53,12 @@ export const aiAgentRouter = router({
             const dir = path.dirname(abs);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(abs, op.content || "", "utf-8");
+            stageChange(op.filePath, "write", op.description);
             results.push({ action: op.action, filePath: op.filePath, success: true });
           } else if (op.action === "delete") {
             if (fs.existsSync(abs)) {
               fs.unlinkSync(abs);
+              stageChange(op.filePath, "delete", op.description);
               results.push({ action: op.action, filePath: op.filePath, success: true });
             } else {
               results.push({ action: op.action, filePath: op.filePath, success: false, error: "الملف غير موجود" });
@@ -116,4 +119,23 @@ export const aiAgentRouter = router({
       backend: tree(BACKEND),
     };
   }),
+
+  // ── Guarded self-deploy bridge (owner-only) ───────────────────────────────
+  // Review the pending changeset the agent/maintenance produced, then commit +
+  // deploy it to the live platform via GitHub (which triggers Railway rebuild).
+
+  pendingDeploy: adminProcedure.query(async () => {
+    return { files: getPending() };
+  }),
+
+  deploy: adminProcedure
+    .input(z.object({ message: z.string().min(3).max(300) }))
+    .mutation(async ({ input }) => {
+      try {
+        const result = await commitAndDeploy(input.message);
+        return { success: true as const, ...result };
+      } catch (e: any) {
+        return { success: false as const, error: e?.message || "فشل النشر" };
+      }
+    }),
 });

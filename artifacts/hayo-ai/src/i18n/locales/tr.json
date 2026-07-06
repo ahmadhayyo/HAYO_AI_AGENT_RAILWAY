@@ -1305,7 +1305,16 @@
   "clearChat": "Sohbeti temizle",
   "heroDesc": "Bana herhangi bir kodlama görevi ver, Claude Sonnet 4.6 kullanarak adım adım analiz edip yürüteyim",
   "placeholder": "Kodlama görevinizi buraya yazın… (Göndermek için Enter, yeni satır için Shift+Enter)",
-  "footer": "Claude Sonnet 4.6 • LangGraph • çok aşamalı akıllı ajan"
+  "footer": "Claude Sonnet 4.6 • LangGraph • çok aşamalı akıllı ajan",
+  "deployCenter": "Dağıtım Merkezi",
+  "deployHint": "Platformun bekleyen değişikliklerini gözden geçirin ve canlıya alın.",
+  "noPendingChanges": "Bekleyen değişiklik yok.",
+  "refresh": "Yenile",
+  "commitMessagePlaceholder": "Değişikliği açıklayın (commit mesajı)",
+  "commitDeploy": "Dağıt",
+  "deploySuccess": "{{n}} dosya dağıtıldı — Railway şimdi yeniden derliyor.",
+  "deployFailed": "Dağıtım başarısız",
+  "viewCommit": "Commit'i gör"
  },
  "pentest": {
   "sev_critical": "Kritik",

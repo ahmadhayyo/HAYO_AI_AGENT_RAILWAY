@@ -1305,7 +1305,16 @@
   "clearChat": "Очистить чат",
   "heroDesc": "Дайте мне любую задачу по программированию, и я проанализирую и выполню её пошагово с помощью Claude Sonnet 4.6",
   "placeholder": "Введите вашу задачу по программированию здесь… (Enter отправить, Shift+Enter новая строка)",
-  "footer": "Умный агент на базе Claude Sonnet 4.6 • LangGraph • многоэтапный"
+  "footer": "Умный агент на базе Claude Sonnet 4.6 • LangGraph • многоэтапный",
+  "deployCenter": "Центр развёртывания",
+  "deployHint": "Просмотрите ожидающие изменения платформы и разверните их вживую.",
+  "noPendingChanges": "Нет ожидающих изменений.",
+  "refresh": "Обновить",
+  "commitMessagePlaceholder": "Опишите изменение (сообщение коммита)",
+  "commitDeploy": "Развернуть",
+  "deploySuccess": "Развёрнуто файлов: {{n}} — Railway пересобирается.",
+  "deployFailed": "Ошибка развёртывания",
+  "viewCommit": "Открыть коммит"
  },
  "pentest": {
   "sev_critical": "Критическая",

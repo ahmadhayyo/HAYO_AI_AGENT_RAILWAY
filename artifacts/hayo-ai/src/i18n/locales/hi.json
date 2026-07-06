@@ -1305,7 +1305,16 @@
   "clearChat": "चैट साफ़ करें",
   "heroDesc": "मुझे कोई भी कोडिंग कार्य दें और मैं Claude Sonnet 4.6 का उपयोग करके इसे चरण दर चरण विश्लेषण और निष्पादित करूंगा",
   "placeholder": "अपना कोडिंग कार्य यहाँ लिखें… (भेजने के लिए Enter, नई लाइन के लिए Shift+Enter)",
-  "footer": "Claude Sonnet 4.6 • LangGraph • बहु-चरणीय स्मार्ट एजेंट"
+  "footer": "Claude Sonnet 4.6 • LangGraph • बहु-चरणीय स्मार्ट एजेंट",
+  "deployCenter": "डिप्लॉय केंद्र",
+  "deployHint": "प्लेटफ़ॉर्म के लंबित बदलावों की समीक्षा करें, फिर उन्हें लाइव डिप्लॉय करें।",
+  "noPendingChanges": "कोई लंबित बदलाव नहीं।",
+  "refresh": "रिफ्रेश",
+  "commitMessagePlaceholder": "बदलाव का वर्णन करें (कमिट संदेश)",
+  "commitDeploy": "डिप्लॉय",
+  "deploySuccess": "{{n}} फ़ाइल(ें) डिप्लॉय हुईं — Railway अब पुनर्निर्माण कर रहा है।",
+  "deployFailed": "डिप्लॉय विफल",
+  "viewCommit": "कमिट देखें"
  },
  "pentest": {
   "sev_critical": "गंभीर",

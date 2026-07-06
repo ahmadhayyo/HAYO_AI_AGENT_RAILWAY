@@ -1305,7 +1305,16 @@
   "clearChat": "Clear chat",
   "heroDesc": "Give me any coding task and I'll analyze and execute it step by step using Claude Sonnet 4.6",
   "placeholder": "Type your coding task here… (Enter to send, Shift+Enter for new line)",
-  "footer": "Smart agent powered by Claude Sonnet 4.6 • LangGraph • multi-stage"
+  "footer": "Smart agent powered by Claude Sonnet 4.6 • LangGraph • multi-stage",
+  "deployCenter": "Deploy Center",
+  "deployHint": "Review the platform's pending changes, then deploy them live.",
+  "noPendingChanges": "No pending changes.",
+  "refresh": "Refresh",
+  "commitMessagePlaceholder": "Describe the change (commit message)",
+  "commitDeploy": "Deploy",
+  "deploySuccess": "Deployed {{n}} file(s) — Railway is rebuilding now.",
+  "deployFailed": "Deploy failed",
+  "viewCommit": "View commit"
  },
  "pentest": {
   "sev_critical": "Critical",

@@ -162,6 +162,11 @@ setTimeout(() => { evaluateSignalJournal().catch(() => {}); }, 60 * 1000);
 export const desktopDownloadMap = new Map<string, { zipPath: string; filename: string; expiresAt: number }>();
 
 export const appRouter = router({
+  // ==================== Executive AI Agent (owner-only) ====================
+  // File read/write/delete + project tree + the guarded self-deploy bridge
+  // (pendingDeploy / deploy). All procedures are adminProcedure.
+  aiAgent: aiAgentRouter,
+
   // ==================== Auth ====================
   auth: router({
     me: publicProcedure.query(({ ctx }) => ctx.user ?? null),

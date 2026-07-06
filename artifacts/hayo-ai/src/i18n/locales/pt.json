@@ -1305,7 +1305,16 @@
   "clearChat": "Limpar conversa",
   "heroDesc": "Me dê qualquer tarefa de código e eu vou analisá-la e executá-la passo a passo usando Claude Sonnet 4.6",
   "placeholder": "Digite sua tarefa de código aqui… (Enter para enviar, Shift+Enter nova linha)",
-  "footer": "Agente inteligente com Claude Sonnet 4.6 • LangGraph • multi-etapas"
+  "footer": "Agente inteligente com Claude Sonnet 4.6 • LangGraph • multi-etapas",
+  "deployCenter": "Central de implantação",
+  "deployHint": "Revise as alterações pendentes da plataforma e implante-as ao vivo.",
+  "noPendingChanges": "Nenhuma alteração pendente.",
+  "refresh": "Atualizar",
+  "commitMessagePlaceholder": "Descreva a alteração (mensagem de commit)",
+  "commitDeploy": "Implantar",
+  "deploySuccess": "{{n}} arquivo(s) implantado(s) — Railway está reconstruindo.",
+  "deployFailed": "Falha na implantação",
+  "viewCommit": "Ver commit"
  },
  "pentest": {
   "sev_critical": "Crítica",

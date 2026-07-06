@@ -5,6 +5,7 @@
 import { callPowerAI, callOfficeAI } from "../providers.js";
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from "fs";
 import { join, relative, extname } from "path";
+import { stageChange } from "./self-deploy.js";
 
 // ─── Types ──────────────────────────────────────────────────────
 export interface DiagnosticResult {
@@ -259,6 +260,7 @@ export async function aiFix(
 
       // Write fixed code
       writeFileSync(fullPath, fixedCode, "utf-8");
+      stageChange(filePath, "write", "Maintenance auto-fix");
       applied = true;
     } catch (e: any) {
       explanation += `\n⚠️ فشل الكتابة التلقائية: ${e.message}`;

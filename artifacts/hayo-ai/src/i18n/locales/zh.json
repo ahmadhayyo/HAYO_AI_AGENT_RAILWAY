@@ -1305,7 +1305,16 @@
   "clearChat": "清除对话",
   "heroDesc": "给我任何编码任务，我将使用 Claude Sonnet 4.6 逐步分析并执行",
   "placeholder": "在此输入您的编码任务…（按 Enter 发送，Shift+Enter 换行）",
-  "footer": "由 Claude Sonnet 4.6 驱动的智能体 • LangGraph • 多阶段"
+  "footer": "由 Claude Sonnet 4.6 驱动的智能体 • LangGraph • 多阶段",
+  "deployCenter": "部署中心",
+  "deployHint": "查看平台的待处理更改，然后上线部署。",
+  "noPendingChanges": "没有待处理的更改。",
+  "refresh": "刷新",
+  "commitMessagePlaceholder": "描述更改（提交信息）",
+  "commitDeploy": "部署",
+  "deploySuccess": "已部署 {{n}} 个文件 — Railway 正在重新构建。",
+  "deployFailed": "部署失败",
+  "viewCommit": "查看提交"
  },
  "pentest": {
   "sev_critical": "严重",

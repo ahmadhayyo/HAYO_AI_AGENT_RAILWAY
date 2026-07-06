@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { createAnthropicClient } from "../llm";
+import { stageChange } from "./self-deploy";
 
 const PROJECT_ROOT = path.resolve(process.cwd(), "../..");
 const HAYO_FRONTEND = path.join(PROJECT_ROOT, "artifacts/hayo-ai/src");
@@ -116,12 +117,14 @@ function executeOps(ops: FileOp[]): AgentResponse["executedOps"] {
           const dir = path.dirname(abs);
           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
           fs.writeFileSync(abs, op.content || "", "utf-8");
+          stageChange(op.filePath, "write", op.description);
           results.push({ action: op.action, filePath: op.filePath, success: true });
           break;
         }
         case "delete": {
           if (fs.existsSync(abs)) {
             fs.unlinkSync(abs);
+            stageChange(op.filePath, "delete", op.description);
             results.push({ action: op.action, filePath: op.filePath, success: true });
           } else {
             results.push({ action: op.action, filePath: op.filePath, success: false, error: "الملف غير موجود" });

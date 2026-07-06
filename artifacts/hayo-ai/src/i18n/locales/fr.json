@@ -1305,7 +1305,16 @@
   "clearChat": "Effacer la discussion",
   "heroDesc": "Donnez-moi n'importe quelle tâche de code et je l'analyserai et l'exécuterai étape par étape avec Claude Sonnet 4.6",
   "placeholder": "Écrivez votre tâche de code ici… (Entrée pour envoyer, Maj+Entrée nouvelle ligne)",
-  "footer": "Agent intelligent propulsé par Claude Sonnet 4.6 • LangGraph • multi-étapes"
+  "footer": "Agent intelligent propulsé par Claude Sonnet 4.6 • LangGraph • multi-étapes",
+  "deployCenter": "Centre de déploiement",
+  "deployHint": "Passez en revue les changements en attente de la plateforme, puis déployez-les.",
+  "noPendingChanges": "Aucun changement en attente.",
+  "refresh": "Actualiser",
+  "commitMessagePlaceholder": "Décrivez le changement (message de commit)",
+  "commitDeploy": "Déployer",
+  "deploySuccess": "{{n}} fichier(s) déployé(s) — Railway reconstruit maintenant.",
+  "deployFailed": "Échec du déploiement",
+  "viewCommit": "Voir le commit"
  },
  "pentest": {
   "sev_critical": "Critique",
