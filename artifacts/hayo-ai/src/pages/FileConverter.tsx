@@ -211,6 +211,7 @@ export default function FileConverter() {
                   {targets.map((fmt) => (
                     <button
                       key={fmt}
+                      dir="ltr"
                       onClick={() => setTarget(fmt)}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${
                         target === fmt
@@ -220,7 +221,7 @@ export default function FileConverter() {
                     >
                       <span className="uppercase text-xs text-muted-foreground">{sourceExt}</span>
                       <ArrowRight className="w-3.5 h-3.5" />
-                      <span className="uppercase">{fmt}</span>
+                      <span className="uppercase text-primary">{fmt}</span>
                     </button>
                   ))}
                 </div>

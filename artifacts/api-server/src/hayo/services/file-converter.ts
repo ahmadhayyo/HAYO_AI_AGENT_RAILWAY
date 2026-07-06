@@ -511,7 +511,12 @@ export async function convertFile(
   from: string,
   to: string
 ): Promise<{ buffer: Buffer; mime: string; ext: string }> {
-  const key = `${from.toLowerCase()}->${to.toLowerCase()}`;
+  // Callers may pass a full filename ("report.xlsx") or a bare extension
+  // ("xlsx") as `from` — normalise to the extension so the lookup key is right
+  // (a full name produced "report.xlsx->csv" → "not supported" for everything).
+  from = (from.includes(".") ? from.split(".").pop()! : from).toLowerCase().trim();
+  to = (to.includes(".") ? to.split(".").pop()! : to).toLowerCase().trim();
+  const key = `${from}->${to}`;
 
   const mimes: Record<string, string> = {
     txt:  "text/plain",
