@@ -72,7 +72,8 @@
   "unlimitedFiles": "असीमित अपलोड आकार",
   "unlimitedCredits": "असीमित क्रेडिट",
   "allModels": "सभी मॉडल",
-  "priorityProcessing": "प्राथमिकता प्रसंस्करण"
+  "priorityProcessing": "प्राथमिकता प्रसंस्करण",
+  "generating": "जनरेट हो रहा है..."
  },
  "home": {
   "title": "HAYO AI",
@@ -436,7 +437,20 @@
   "uploadZip": "ZIP/RAR अपलोड करें",
   "pipelineModeLabel": "Pipeline मोड (4 मॉडल)",
   "runningPipeline": "Pipeline चल रहा है...",
-  "runPipeline": "Pipeline चलाएं"
+  "runPipeline": "Pipeline चलाएं",
+  "githubPushSuccess": "GitHub पर पुश किया गया",
+  "githubPushFailed": "GitHub पुश विफल",
+  "vercelDeploySuccess": "Vercel पर तैनात",
+  "vercelDeployFailed": "Vercel तैनाती विफल",
+  "imageOnly": "कृपया एक छवि फ़ाइल अपलोड करें",
+  "imageTooLarge": "छवि बहुत बड़ी है",
+  "designUploaded": "डिज़ाइन अपलोड हुआ",
+  "openInBYOC": "BYOC संपादक में खोला गया",
+  "codeView": "कोड",
+  "livePreview": "लाइव पूर्वावलोकन",
+  "previewEmpty": "यहाँ लाइव पूर्वावलोकन देखने के लिए कोड जनरेट करें",
+  "pasteCode": "कोड पेस्ट करें",
+  "uploadDesign": "डिज़ाइन अपलोड करें"
  },
  "byoc": {
   "title": "अपना तैयार कोड जोड़ें",

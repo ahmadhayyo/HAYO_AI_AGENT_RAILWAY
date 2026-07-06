@@ -72,7 +72,8 @@
   "unlimitedFiles": "Unlimited file upload size",
   "unlimitedCredits": "Unlimited credits",
   "allModels": "All models",
-  "priorityProcessing": "Priority processing"
+  "priorityProcessing": "Priority processing",
+  "generating": "Oluşturuluyor..."
  },
  "home": {
   "title": "HAYO AI",
@@ -436,7 +437,20 @@
   "uploadZip": "ZIP/RAR yükle",
   "pipelineModeLabel": "Pipeline Modu (4 model)",
   "runningPipeline": "Pipeline çalışıyor...",
-  "runPipeline": "Pipeline'ı Çalıştır"
+  "runPipeline": "Pipeline'ı Çalıştır",
+  "githubPushSuccess": "GitHub'a gönderildi",
+  "githubPushFailed": "GitHub'a gönderme başarısız",
+  "vercelDeploySuccess": "Vercel'e dağıtıldı",
+  "vercelDeployFailed": "Vercel dağıtımı başarısız",
+  "imageOnly": "Lütfen bir resim dosyası yükleyin",
+  "imageTooLarge": "Resim çok büyük",
+  "designUploaded": "Tasarım yüklendi",
+  "openInBYOC": "BYOC düzenleyicisinde açıldı",
+  "codeView": "Kod",
+  "livePreview": "Canlı Önizleme",
+  "previewEmpty": "Burada canlı önizleme görmek için kod oluşturun",
+  "pasteCode": "Kod yapıştır",
+  "uploadDesign": "Tasarım yükle"
  },
  "byoc": {
   "title": "Geliştirme Ortamı",

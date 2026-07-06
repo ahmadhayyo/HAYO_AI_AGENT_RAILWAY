@@ -72,7 +72,8 @@
   "unlimitedFiles": "无限上传大小",
   "unlimitedCredits": "无限额度",
   "allModels": "所有模型",
-  "priorityProcessing": "优先处理"
+  "priorityProcessing": "优先处理",
+  "generating": "生成中..."
  },
  "home": {
   "title": "HAYO AI",
@@ -436,7 +437,20 @@
   "uploadZip": "上传 ZIP/RAR",
   "pipelineModeLabel": "流水线模式（4 个模型）",
   "runningPipeline": "正在运行流水线...",
-  "runPipeline": "运行流水线"
+  "runPipeline": "运行流水线",
+  "githubPushSuccess": "已推送到 GitHub",
+  "githubPushFailed": "推送到 GitHub 失败",
+  "vercelDeploySuccess": "已部署到 Vercel",
+  "vercelDeployFailed": "部署到 Vercel 失败",
+  "imageOnly": "请上传图片文件",
+  "imageTooLarge": "图片过大",
+  "designUploaded": "设计已上传",
+  "openInBYOC": "已在 BYOC 编辑器中打开",
+  "codeView": "代码",
+  "livePreview": "实时预览",
+  "previewEmpty": "生成代码后可在此查看实时预览",
+  "pasteCode": "粘贴代码",
+  "uploadDesign": "上传设计"
  },
  "byoc": {
   "title": "添加您的现成代码",

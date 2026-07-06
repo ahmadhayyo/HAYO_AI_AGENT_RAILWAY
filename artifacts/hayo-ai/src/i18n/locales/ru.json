@@ -72,7 +72,8 @@
   "unlimitedFiles": "Безлимитный размер загрузки",
   "unlimitedCredits": "Безлимитные кредиты",
   "allModels": "Все модели",
-  "priorityProcessing": "Приоритетная обработка"
+  "priorityProcessing": "Приоритетная обработка",
+  "generating": "Генерация..."
  },
  "home": {
   "title": "HAYO AI",
@@ -436,7 +437,20 @@
   "uploadZip": "Загрузить ZIP/RAR",
   "pipelineModeLabel": "Режим Pipeline (4 модели)",
   "runningPipeline": "Выполняется pipeline...",
-  "runPipeline": "Запустить Pipeline"
+  "runPipeline": "Запустить Pipeline",
+  "githubPushSuccess": "Отправлено в GitHub",
+  "githubPushFailed": "Не удалось отправить в GitHub",
+  "vercelDeploySuccess": "Развёрнуто на Vercel",
+  "vercelDeployFailed": "Не удалось развернуть на Vercel",
+  "imageOnly": "Загрузите файл изображения",
+  "imageTooLarge": "Изображение слишком большое",
+  "designUploaded": "Дизайн загружен",
+  "openInBYOC": "Открыто в редакторе BYOC",
+  "codeView": "Код",
+  "livePreview": "Живой предпросмотр",
+  "previewEmpty": "Сгенерируйте код, чтобы увидеть предпросмотр здесь",
+  "pasteCode": "Вставить код",
+  "uploadDesign": "Загрузить дизайн"
  },
  "byoc": {
   "title": "Добавьте свой готовый код",

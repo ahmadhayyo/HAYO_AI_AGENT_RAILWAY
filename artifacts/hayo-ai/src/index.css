@@ -210,6 +210,66 @@ section.monaco-editor {
   .animate-slide-up {
     animation: slide-up 0.6s ease-out forwards;
   }
+
+  /* ── Premium ambient layers (used on the landing/intro page) ────────── */
+
+  /* Faint technical grid that fades toward the edges — a subtle enterprise
+     backdrop. Pair with `position: absolute; inset: 0` behind content. */
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, oklch(0.7 0.05 285 / 0.06) 1px, transparent 1px),
+      linear-gradient(to bottom, oklch(0.7 0.05 285 / 0.06) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 40%, transparent 100%);
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 40%, transparent 100%);
+  }
+
+  /* Soft drifting aurora blobs for depth behind the hero. */
+  .aurora {
+    position: absolute;
+    inset: -20% -10% auto -10%;
+    height: 70%;
+    background:
+      radial-gradient(40% 50% at 20% 30%, oklch(0.585 0.233 277 / 0.20), transparent 70%),
+      radial-gradient(35% 45% at 80% 20%, oklch(0.65 0.25 320 / 0.16), transparent 70%),
+      radial-gradient(30% 40% at 60% 60%, oklch(0.7 0.18 230 / 0.12), transparent 70%);
+    filter: blur(30px);
+    animation: aurora-drift 18s ease-in-out infinite alternate;
+    pointer-events: none;
+  }
+
+  @keyframes aurora-drift {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    50%  { transform: translate3d(2%, 2%, 0) scale(1.06); }
+    100% { transform: translate3d(-2%, 1%, 0) scale(1.02); }
+  }
+
+  /* Animated gradient hairline border for feature/stat cards. */
+  .gradient-border {
+    position: relative;
+    background: oklch(0.17 0.012 285 / 0.6);
+  }
+  .gradient-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, oklch(0.585 0.233 277 / 0.5), transparent 40%, transparent 60%, oklch(0.65 0.25 320 / 0.4));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  .animate-shimmer {
+    background-size: 200% 100%;
+    animation: shimmer 3s linear infinite;
+  }
 }
 
 /* Hide external watermark badges */

@@ -72,7 +72,8 @@
   "unlimitedFiles": "Tamaño de subida ilimitado",
   "unlimitedCredits": "Créditos ilimitados",
   "allModels": "Todos los modelos",
-  "priorityProcessing": "Procesamiento prioritario"
+  "priorityProcessing": "Procesamiento prioritario",
+  "generating": "Generando..."
  },
  "home": {
   "title": "HAYO AI",
@@ -436,7 +437,20 @@
   "uploadZip": "Subir ZIP/RAR",
   "pipelineModeLabel": "Modo Pipeline (4 modelos)",
   "runningPipeline": "Ejecutando pipeline...",
-  "runPipeline": "Ejecutar Pipeline"
+  "runPipeline": "Ejecutar Pipeline",
+  "githubPushSuccess": "Subido a GitHub",
+  "githubPushFailed": "Error al subir a GitHub",
+  "vercelDeploySuccess": "Desplegado en Vercel",
+  "vercelDeployFailed": "Error al desplegar en Vercel",
+  "imageOnly": "Sube un archivo de imagen",
+  "imageTooLarge": "La imagen es demasiado grande",
+  "designUploaded": "Diseño subido",
+  "openInBYOC": "Abierto en el editor BYOC",
+  "codeView": "Código",
+  "livePreview": "Vista previa en vivo",
+  "previewEmpty": "Genera código para ver una vista previa aquí",
+  "pasteCode": "Pegar código",
+  "uploadDesign": "Subir diseño"
  },
  "byoc": {
   "title": "Agrega Tu Código Listo",

@@ -29,6 +29,16 @@ export const LANGUAGES = [
 // language for investors). On first visit everyone lands in English; if a user
 // explicitly picks another language it's remembered and honored afterwards.
 // Fallback is also English so a missing key never bleeds another language.
+//
+// One-time migration: older builds auto-saved the *browser* language (usually
+// "ar" for the owner), so returning visitors were still stuck on Arabic. Reset
+// the stored choice to English exactly once, then honor any deliberate future
+// selection. Bump LANG_BASE_VERSION only if we ever need to re-baseline again.
+const LANG_BASE_VERSION = "2026-07-en";
+if (localStorage.getItem("hayo-lang-base") !== LANG_BASE_VERSION) {
+  localStorage.setItem("hayo-lang", "en");
+  localStorage.setItem("hayo-lang-base", LANG_BASE_VERSION);
+}
 const savedLang = localStorage.getItem("hayo-lang") || "en";
 
 i18n.use(initReactI18next).init({

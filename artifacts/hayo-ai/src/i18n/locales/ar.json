@@ -72,7 +72,8 @@
   "unlimitedFiles": "رفع ملفات بلا حدود حجم",
   "unlimitedCredits": "نقاط غير محدودة",
   "allModels": "جميع النماذج",
-  "priorityProcessing": "معالجة بأولوية"
+  "priorityProcessing": "معالجة بأولوية",
+  "generating": "جارٍ الإنشاء..."
  },
  "home": {
   "title": "HAYO AI",
@@ -436,7 +437,20 @@
   "uploadZip": "رفع ZIP/RAR",
   "pipelineModeLabel": "Pipeline Mode (4 نماذج)",
   "runningPipeline": "جارٍ تشغيل الـ Pipeline...",
-  "runPipeline": "تشغيل Pipeline"
+  "runPipeline": "تشغيل Pipeline",
+  "githubPushSuccess": "تم الرفع إلى GitHub",
+  "githubPushFailed": "فشل الرفع إلى GitHub",
+  "vercelDeploySuccess": "تم النشر على Vercel",
+  "vercelDeployFailed": "فشل النشر على Vercel",
+  "imageOnly": "يُرجى رفع ملف صورة فقط",
+  "imageTooLarge": "حجم الصورة كبير جداً",
+  "designUploaded": "تم رفع التصميم",
+  "openInBYOC": "تم الفتح في محرر BYOC",
+  "codeView": "الكود",
+  "livePreview": "معاينة حيّة",
+  "previewEmpty": "أنشئ الكود لعرض معاينة حيّة هنا",
+  "pasteCode": "لصق كود",
+  "uploadDesign": "رفع تصميم"
  },
  "byoc": {
   "title": "بيئة التطوير",

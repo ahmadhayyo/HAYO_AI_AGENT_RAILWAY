@@ -428,7 +428,7 @@ export default function WarRoom() {
           <div className="bg-gradient-to-r from-amber-500/5 to-yellow-500/5 border border-amber-500/20 rounded-2xl p-5 space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-sm flex items-center gap-2"><Trophy className="w-4 h-4 text-amber-400" /> {t('warRoom.aiJudgeEvaluation')}</h3>
-              <button onClick={() => { navigator.clipboard.writeText(judgeResult); toast.success(t('warRoom.copied')); }} className="text-xs text-primary hover:underline">{t('smartFixer.copy')}</button>
+              <button onClick={() => { navigator.clipboard.writeText(judgeResult); toast.success(t('warRoom.copied')); }} className="text-xs text-primary hover:underline">{t('common.copy')}</button>
             </div>
             <div className="text-sm text-foreground/85 leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto">{judgeResult}</div>
           </div>

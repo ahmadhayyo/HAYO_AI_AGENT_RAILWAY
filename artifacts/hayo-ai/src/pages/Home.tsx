@@ -383,16 +383,21 @@ export default function Home() {
       </nav>
 
       {/* ─── Hero Section ───────────────────────────────────────────── */}
-      <section className="relative min-h-screen flex items-center pt-16">
+      <section className="relative min-h-screen flex items-center pt-16 overflow-hidden">
         <div className="absolute inset-0 z-0">
-          <img src={HERO_BG} alt="" className="w-full h-full object-cover opacity-40" />
-          <div className="absolute inset-0 bg-gradient-to-b from-background/60 via-background/80 to-background" />
+          <img src={HERO_BG} alt="" className="w-full h-full object-cover opacity-30" />
+          <div className="absolute inset-0 bg-gradient-to-b from-background/70 via-background/85 to-background" />
+          <div className="aurora" />
+          <div className="absolute inset-0 bg-grid" />
         </div>
 
         <div className="container relative z-10 grid lg:grid-cols-2 gap-12 items-center py-20">
           <motion.div initial="hidden" animate="visible" className="space-y-8">
-            <motion.div custom={0} variants={fadeUp} className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-400 text-sm font-medium">
-              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+            <motion.div custom={0} variants={fadeUp} className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 text-sm font-medium backdrop-blur-sm shadow-lg shadow-indigo-500/10">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-400" />
+              </span>
               {t("home.poweredBy")}
             </motion.div>
 
@@ -426,14 +431,18 @@ export default function Home() {
               </Link>
             </motion.div>
 
-            <motion.div custom={4} variants={fadeUp} className="flex items-center gap-6 pt-4">
-              <div className="text-center"><div className="text-2xl font-heading font-bold">6+</div><div className="text-xs text-muted-foreground">{t("home.statModels")}</div></div>
-              <div className="w-px h-8 bg-border" />
-              <div className="text-center"><div className="text-2xl font-heading font-bold">22+</div><div className="text-xs text-muted-foreground">{t("home.statTools")}</div></div>
-              <div className="w-px h-8 bg-border" />
-              <div className="text-center"><div className="text-2xl font-heading font-bold">10</div><div className="text-xs text-muted-foreground">{t("home.statLangs")}</div></div>
-              <div className="w-px h-8 bg-border" />
-              <div className="text-center"><div className="text-2xl font-heading font-bold">35+</div><div className="text-xs text-muted-foreground">{t("home.statIntegrations")}</div></div>
+            <motion.div custom={4} variants={fadeUp} className="grid grid-cols-4 gap-3 pt-4 max-w-lg">
+              {[
+                { value: "6+",  label: t("home.statModels") },
+                { value: "25+", label: t("home.statTools") },
+                { value: "10",  label: t("home.statLangs") },
+                { value: "35+", label: t("home.statIntegrations") },
+              ].map((stat) => (
+                <div key={stat.label} className="gradient-border rounded-xl px-2 py-3 text-center backdrop-blur-sm">
+                  <div className="text-2xl font-heading font-bold gradient-text">{stat.value}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5 leading-tight">{stat.label}</div>
+                </div>
+              ))}
             </motion.div>
           </motion.div>
 
