@@ -10,6 +10,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
+import { useAuth } from "@/_core/hooks/useAuth";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import {
   Brain, Zap, Shield, MessageSquare, GitBranch, Layers, ArrowRight, Bot, Cpu, Globe,
@@ -28,6 +29,15 @@ const DASHBOARD_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663136108263/
 const fadeUp = {
   hidden: { opacity: 0, y: 30 },
   visible: (i: number) => ({ opacity: 1, y: 0, transition: { delay: i * 0.1, duration: 0.6 } }),
+};
+
+// Grid columns scale down to the actual item count so short sections (e.g. 2 items)
+// don't leave a half-empty row on wide screens.
+const GRID_COLS_BY_COUNT: Record<2 | 3 | 4 | 5, string> = {
+  2: "sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-2",
+  3: "sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3",
+  4: "sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4",
+  5: "sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5",
 };
 
 function TypeWriter({ text, speed = 50 }: { text: string; speed?: number }) {
@@ -152,7 +162,7 @@ function CategorySection({
           <p className="text-xs text-muted-foreground">{subtitle}</p>
         </div>
       </div>
-      <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className={`grid gap-3 ${GRID_COLS_BY_COUNT[Math.min(items.length, 5) as 2 | 3 | 4 | 5] ?? GRID_COLS_BY_COUNT[5]}`}>
         {items.map((item, i) => (
           <motion.div
             key={item.href + item.title}
@@ -180,6 +190,11 @@ function CategorySection({
 export default function Home() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { t } = useTranslation();
+  // Owner-only control panels (subscription/codes management, model config,
+  // executive agent, maintenance) must never surface to guests or investors —
+  // they only appear once the owner/admin is signed in.
+  const { user } = useAuth();
+  const isAdmin = (user as { role?: string } | null)?.role === "admin";
   // "/" is the public welcome/intro landing page and it should always render here
   // (for both guests and logged-in users) — the owner wants the intro to show when
   // opening the platform link, not flash-and-redirect. Auth resilience + the
@@ -221,8 +236,10 @@ export default function Home() {
     {
       title: t("home.grpTrade"),
       items: [
-        { href: "/trading",    icon: TrendingUp, label: t("home.t_trading"),   desc: t("home.d_trading") },
-        { href: "/ea-factory", icon: Cpu,        label: t("home.t_eaFactory"), desc: t("home.d_eaFactory") },
+        { href: "/trading",         icon: TrendingUp, label: t("home.t_trading"),        desc: t("home.d_trading") },
+        { href: "/trading-brokers", icon: BarChart3,  label: t("home.t_tradingBrokers"), desc: t("home.d_tradingBrokers") },
+        { href: "/ea-factory",      icon: Cpu,        label: t("home.t_eaFactory"),      desc: t("home.d_eaFactory") },
+        { href: "/telegram",        icon: Send,       label: t("home.t_telegram"),       desc: t("home.d_telegram") },
       ],
     },
   ];
@@ -237,16 +254,18 @@ export default function Home() {
         { href: "/payment",    icon: CreditCard,    label: t("home.t_payment"),   desc: t("home.d_payment") },
       ],
     },
-    {
-      title: t("home.grpAdmin"),
-      items: [
-        { href: "/model-settings", icon: Settings,      label: t("home.t_modelSettings"), desc: t("home.d_modelSettings") },
-        { href: "/ai-agent",      icon: Bot,           label: t("home.t_aiAgent"),       desc: t("home.d_aiAgent") },
-        { href: "/admin",          icon: ShieldCheck,   label: t("home.t_admin"),         desc: t("home.d_admin") },
-        { href: "/maintenance",    icon: Wrench,        label: t("home.t_maintenance"),   desc: t("home.d_maintenance") },
-        { href: "/telegram",       icon: Send,          label: t("home.t_telegram"),      desc: t("home.d_telegram") },
-      ],
-    },
+    // Admin control panels stay hidden from guests/investors — only the owner sees them.
+    ...(isAdmin
+      ? [{
+          title: t("home.grpAdmin"),
+          items: [
+            { href: "/model-settings", icon: Settings,      label: t("home.t_modelSettings"), desc: t("home.d_modelSettings") },
+            { href: "/ai-agent",      icon: Bot,           label: t("home.t_aiAgent"),       desc: t("home.d_aiAgent") },
+            { href: "/admin",          icon: ShieldCheck,   label: t("home.t_admin"),         desc: t("home.d_admin") },
+            { href: "/maintenance",    icon: Wrench,        label: t("home.t_maintenance"),   desc: t("home.d_maintenance") },
+          ],
+        }]
+      : []),
   ];
 
   // ─── Quick Access Sections ─────────────────────────────────────────
@@ -262,8 +281,11 @@ export default function Home() {
     { icon: Code2,      title: t("home.t_byoc"),         desc: t("home.d_byoc"),         href: "/byoc",         iconBg: "bg-orange-500/20" },
     { icon: Smartphone, title: t("home.t_appBuilder"),   desc: t("home.d_appBuilder"),   href: "/app-builder",  iconBg: "bg-pink-500/20" },
     { icon: ScanSearch, title: t("home.t_reverse"),      desc: t("home.d_reverse"),      href: "/reverse",      iconBg: "bg-amber-500/20" },
+    { icon: Shield,     title: t("home.t_pentest"),      desc: t("home.d_pentest"),      href: "/pentest",      iconBg: "bg-rose-500/20" },
+    { icon: Wrench,     title: t("home.t_smartFixer"),   desc: t("home.d_smartFixer"),   href: "/smart-fixer",  iconBg: "bg-teal-500/20" },
     { icon: Plug,       title: t("home.t_integrations"), desc: t("home.d_integrations"), href: "/integrations", iconBg: "bg-green-500/20" },
     { icon: Search,     title: t("home.t_osint"),        desc: t("home.d_osint"),        href: "/osint",        iconBg: "bg-slate-500/20" },
+    { icon: FolderOpen, title: t("home.t_projects"),     desc: t("home.d_projects"),     href: "/projects",     iconBg: "bg-zinc-500/20" },
   ];
 
   const businessSection = [
@@ -271,12 +293,20 @@ export default function Home() {
     { icon: GraduationCap, title: t("home.t_studies"),       desc: t("home.d_studies"),       href: "/studies",        iconBg: "bg-purple-500/20" },
     { icon: BookOpen,      title: t("home.t_islam"),         desc: t("home.d_islam"),         href: "/islam",          iconBg: "bg-emerald-700/30" },
     { icon: FileType,      title: t("home.t_converter"),     desc: t("home.d_converter"),     href: "/converter",      iconBg: "bg-sky-500/20" },
-    { icon: Settings,      title: t("home.t_modelSettings"), desc: t("home.d_modelSettings"), href: "/model-settings", iconBg: "bg-indigo-500/20" },
   ];
 
   const tradingSection = [
-    { icon: TrendingUp, title: t("home.t_trading"),   desc: t("home.d_trading"),   href: "/trading",    iconBg: "bg-emerald-500/20" },
-    { icon: Cpu,        title: t("home.t_eaFactory"), desc: t("home.d_eaFactory"), href: "/ea-factory", iconBg: "bg-amber-500/20" },
+    { icon: TrendingUp, title: t("home.t_trading"),         desc: t("home.d_trading"),         href: "/trading",         iconBg: "bg-emerald-500/20" },
+    { icon: BarChart3,  title: t("home.t_tradingBrokers"),  desc: t("home.d_tradingBrokers"),  href: "/trading-brokers", iconBg: "bg-blue-500/20" },
+    { icon: Cpu,        title: t("home.t_eaFactory"),       desc: t("home.d_eaFactory"),       href: "/ea-factory",      iconBg: "bg-amber-500/20" },
+    { icon: Send,       title: t("home.t_telegram"),        desc: t("home.d_telegram"),        href: "/telegram",        iconBg: "bg-cyan-500/20" },
+  ];
+
+  const adminSection = [
+    { icon: Settings,   title: t("home.t_modelSettings"), desc: t("home.d_modelSettings"), href: "/model-settings", iconBg: "bg-indigo-500/20" },
+    { icon: Bot,        title: t("home.t_aiAgent"),       desc: t("home.d_aiAgent"),       href: "/ai-agent",       iconBg: "bg-violet-500/20" },
+    { icon: ShieldCheck,title: t("home.t_admin"),         desc: t("home.d_admin"),         href: "/admin",          iconBg: "bg-amber-500/20" },
+    { icon: Wrench,     title: t("home.t_maintenance"),   desc: t("home.d_maintenance"),   href: "/maintenance",    iconBg: "bg-red-500/20" },
   ];
 
   const agents = [
@@ -420,7 +450,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ─── Quick Access — 4 Category Sections ─────────────────────── */}
+      {/* ─── Quick Access — 5 Category Sections ─────────────────────── */}
       <section id="quick-access" className="py-24 relative">
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-indigo-500/[0.02] to-transparent" />
         <div className="container relative">
@@ -462,6 +492,15 @@ export default function Home() {
               items={tradingSection}
               delay={3}
             />
+            {isAdmin && (
+              <CategorySection
+                title={t("home.secAdminTitle")}
+                subtitle={t("home.secAdminSub")}
+                color="from-slate-500 to-zinc-500"
+                items={adminSection}
+                delay={4}
+              />
+            )}
           </div>
         </div>
       </section>
@@ -586,7 +625,7 @@ export default function Home() {
           </p>
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
             <Link href="/pricing" className="hover:text-foreground transition-colors">{t("nav.pricing")}</Link>
-            <Link href="/admin" className="hover:text-foreground transition-colors">{t("nav.admin")}</Link>
+            {isAdmin && <Link href="/admin" className="hover:text-foreground transition-colors">{t("nav.admin")}</Link>}
             <Link href="/dashboard" className="hover:text-foreground transition-colors">{t("nav.dashboard")}</Link>
           </div>
         </div>

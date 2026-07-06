@@ -8,11 +8,12 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
-  MessageSquare, Zap, User, ArrowRight, Loader2, Bot, Brain, Cpu,
+  MessageSquare, Zap, User, ArrowRight, Loader2, Bot, Network, Cpu,
   Shield, Upload, BarChart3, Clock, Sparkles, ChevronRight,
   LogOut, Home, Plus, Terminal, Code2, Swords, FileCode,
   Building2, TrendingUp, Lightbulb, Wand2, Link as LinkIcon,
   Rocket, Crown, Settings, Activity, CreditCard, BookOpen,
+  Wrench, FolderOpen, FileType,
 } from "lucide-react";
 import { Link } from "wouter";
 import { useTranslation } from "react-i18next";
@@ -59,7 +60,7 @@ export default function Dashboard() {
         { href: "/agent", icon: Terminal, name: t("dashboard.codeAgent"), desc: t("dashboard.codeAgentDesc"), color: "from-emerald-500 to-teal-500", badge: t("common.advanced") },
         { href: "/war-room", icon: Swords, name: t("dashboard.warRoom"), desc: t("dashboard.warRoomDesc"), color: "from-red-500 to-orange-500" },
         { href: "/prompt-factory", icon: Wand2, name: t("dashboard.promptFactory"), desc: t("dashboard.promptFactoryDesc"), color: "from-violet-500 to-purple-600" },
-        { href: "/mindmap", icon: Brain, name: t("dashboard.mindMap"), desc: t("dashboard.mindMapDesc"), color: "from-cyan-500 to-blue-500", badge: "🎁" },
+        { href: "/mindmap", icon: Network, name: t("dashboard.mindMap"), desc: t("dashboard.mindMapDesc"), color: "from-cyan-500 to-blue-500", badge: "🎁" },
       ],
     },
     {
@@ -71,6 +72,8 @@ export default function Dashboard() {
         { href: "/reverse", icon: FileCode, name: t("dashboard.reverseEng"), desc: t("dashboard.reverseEngDesc"), color: "from-amber-500 to-orange-500" },
         { href: "/integrations", icon: LinkIcon, name: t("dashboard.integrationsPage"), desc: t("dashboard.integrationsDesc"), color: "from-blue-500 to-indigo-500" },
         { href: "/osint", icon: Shield, name: t("dashboard.osint"), desc: t("dashboard.osintDesc"), color: "from-red-500 to-orange-500" },
+        { href: "/smart-fixer", icon: Wrench, name: t("dashboard.smartFixerPage"), desc: t("dashboard.smartFixerPageDesc"), color: "from-teal-500 to-cyan-600" },
+        { href: "/projects", icon: FolderOpen, name: t("dashboard.projectsPage"), desc: t("dashboard.projectsPageDesc"), color: "from-slate-500 to-zinc-600" },
       ],
     },
     {
@@ -80,6 +83,7 @@ export default function Dashboard() {
         { href: "/office", icon: Building2, name: t("dashboard.officeSuite"), desc: t("dashboard.officeSuiteDesc"), color: "from-blue-600 to-cyan-500" },
         { href: "/studies", icon: Lightbulb, name: t("dashboard.studies"), desc: t("dashboard.studiesDesc"), color: "from-amber-500 to-orange-500" },
         { href: "/islam", icon: BookOpen, name: t("dashboard.islam"), desc: t("dashboard.islamDesc"), color: "from-emerald-600 to-teal-600" },
+        { href: "/converter", icon: FileType, name: t("dashboard.converter"), desc: t("dashboard.converterDesc"), color: "from-sky-500 to-blue-600" },
       ],
     },
     {
@@ -99,6 +103,8 @@ export default function Dashboard() {
       pages: [
         { href: "/admin", icon: Crown, name: t("dashboard.adminPanel"), desc: t("dashboard.adminDesc"), color: "from-amber-500 to-yellow-500" },
         { href: "/maintenance", icon: Activity, name: t("dashboard.maintenance"), desc: t("dashboard.maintenanceDesc"), color: "from-red-500 to-pink-500" },
+        { href: "/model-settings", icon: Settings, name: t("dashboard.modelSettings"), desc: t("dashboard.modelSettingsDesc"), color: "from-indigo-500 to-violet-600" },
+        { href: "/ai-agent", icon: Bot, name: t("dashboard.aiAgentExec"), desc: t("dashboard.aiAgentExecDesc"), color: "from-violet-500 to-purple-600" },
       ],
     },
   ];
@@ -172,7 +178,7 @@ export default function Dashboard() {
               <div className="flex items-center gap-2">
                 <span className="text-lg">{section.emoji}</span>
                 <h2 className="text-lg font-bold">{section.title}</h2>
-                <div className="flex-1 h-px bg-border mr-2" />
+                <div className="flex-1 h-px bg-border me-2" />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 {(section.pages as Array<{ href: string; icon: any; name: string; desc: string; color: string; badge?: string }>).map(page => (
@@ -205,7 +211,7 @@ export default function Dashboard() {
                 <span className="text-lg">💬</span>
                 <h2 className="text-lg font-bold">{t("dashboard.recentChats")}</h2>
               </div>
-              <Link href="/chat"><Button variant="ghost" size="sm" className="text-xs">{t("dashboard.viewAll")} <ChevronRight className="size-3.5 mr-1 rtl:rotate-180" /></Button></Link>
+              <Link href="/chat"><Button variant="ghost" size="sm" className="text-xs">{t("dashboard.viewAll")} <ChevronRight className="size-3.5 ms-1 rtl:rotate-180" /></Button></Link>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {conversations.slice(0, 6).map((conv: any) => (

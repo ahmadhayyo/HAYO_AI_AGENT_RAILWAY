@@ -10,6 +10,9 @@ import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarGroupContent,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
@@ -23,14 +26,15 @@ import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
 import {
   MessageSquare, Terminal, Code2, LayoutDashboard, FolderOpen,
-  FileText, Plug, CreditCard, ShieldCheck, User, Swords, LogOut, PanelLeft, Smartphone, Briefcase, TrendingUp, ScanSearch, Wand2, GraduationCap, Wrench, GitBranch, Brain, Shield, Bot,
-  ArrowRight, ArrowLeft, Home, ChevronUp
+  FileText, Plug, CreditCard, ShieldCheck, User, Swords, LogOut, PanelLeft, Smartphone, Briefcase, TrendingUp, ScanSearch, Wand2, GraduationCap, Wrench, Network, Brain, Shield, Bot,
+  ArrowRight, ArrowLeft, Home, ChevronUp, Search, Cpu, BarChart3, FileType, BookOpen, Send,
 } from "lucide-react";
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { Button } from "./ui/button";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 280;
@@ -107,29 +111,67 @@ function DashboardLayoutContent({
   setSidebarWidth,
 }: DashboardLayoutContentProps) {
   const { t } = useTranslation();
-  const menuItems = [
-    { icon: MessageSquare, label: t("nav.chat"), path: "/chat" },
-    { icon: Terminal, label: t("nav.agent"), path: "/agent" },
-    { icon: Code2, label: t("nav.byoc"), path: "/byoc" },
-    { icon: Swords, label: t("nav.warRoom"), path: "/war-room" },
-    { icon: TrendingUp, label: t("nav.trading"), path: "/trading" },
-    { icon: Smartphone, label: t("nav.appBuilder"), path: "/app-builder" },
-    { icon: ScanSearch, label: t("nav.reverse"), path: "/reverse" },
-    { icon: Wrench, label: "المصلح الذكي", path: "/smart-fixer" },
-    { icon: Wand2, label: t("nav.promptFactory"), path: "/prompt-factory" },
-    { icon: GraduationCap, label: t("nav.studies"), path: "/studies" },
-    { icon: GitBranch, label: t("nav.mindmap"), path: "/mindmap" },
-    { icon: Briefcase, label: t("nav.office"), path: "/office" },
-    { icon: Plug, label: t("nav.integrations"), path: "/integrations" },
-    { icon: FolderOpen, label: t("nav.projects"), path: "/projects" },
-    { icon: CreditCard, label: t("nav.pricing"), path: "/pricing" },
-    { icon: LayoutDashboard, label: t("nav.dashboard"), path: "/dashboard" },
-    { icon: Shield, label: "صيانة النظام", path: "/maintenance" },
-    { icon: Brain, label: "إعدادات النماذج", path: "/model-settings" },
-    { icon: Bot, label: "AI Agent التنفيذي", path: "/ai-agent" },
-    { icon: ShieldCheck, label: t("nav.admin"), path: "/admin" },
-    { icon: User, label: t("nav.account"), path: "/account" },
+  const menuGroups = [
+    {
+      label: t("home.grpAI"),
+      items: [
+        { icon: MessageSquare, label: t("nav.chat"), path: "/chat" },
+        { icon: Terminal, label: t("nav.agent"), path: "/agent" },
+        { icon: Swords, label: t("nav.warRoom"), path: "/war-room" },
+        { icon: Wand2, label: t("nav.promptFactory"), path: "/prompt-factory" },
+        { icon: Network, label: t("home.t_mindmap"), path: "/mindmap" },
+        { icon: Wrench, label: t("smartFixer.title"), path: "/smart-fixer" },
+      ],
+    },
+    {
+      label: t("home.grpDev"),
+      items: [
+        { icon: Code2, label: t("nav.byoc"), path: "/byoc" },
+        { icon: Smartphone, label: t("nav.appBuilder"), path: "/app-builder" },
+        { icon: ScanSearch, label: t("nav.reverse"), path: "/reverse" },
+        { icon: Plug, label: t("nav.integrations"), path: "/integrations" },
+        { icon: Search, label: t("home.t_osint"), path: "/osint" },
+        { icon: FolderOpen, label: t("nav.projects"), path: "/projects" },
+      ],
+    },
+    {
+      label: t("home.grpBiz"),
+      items: [
+        { icon: Briefcase, label: t("nav.office"), path: "/office" },
+        { icon: GraduationCap, label: t("nav.studies"), path: "/studies" },
+        { icon: BookOpen, label: t("home.t_islam"), path: "/islam" },
+        { icon: FileType, label: t("nav.converter"), path: "/converter" },
+      ],
+    },
+    {
+      label: t("home.grpTrade"),
+      items: [
+        { icon: TrendingUp, label: t("nav.trading"), path: "/trading" },
+        { icon: BarChart3, label: t("dashboard.brokers"), path: "/trading-brokers" },
+        { icon: Cpu, label: t("home.t_eaFactory"), path: "/ea-factory" },
+        { icon: Send, label: t("home.t_telegram"), path: "/telegram" },
+      ],
+    },
+    {
+      label: t("home.grpAccount"),
+      items: [
+        { icon: User, label: t("nav.account"), path: "/account" },
+        { icon: LayoutDashboard, label: t("nav.dashboard"), path: "/dashboard" },
+        { icon: CreditCard, label: t("nav.pricing"), path: "/pricing" },
+        { icon: CreditCard, label: t("home.t_payment"), path: "/payment" },
+      ],
+    },
+    {
+      label: t("home.grpAdmin"),
+      items: [
+        { icon: Brain, label: t("home.t_modelSettings"), path: "/model-settings" },
+        { icon: Bot, label: t("home.t_aiAgent"), path: "/ai-agent" },
+        { icon: ShieldCheck, label: t("nav.admin"), path: "/admin" },
+        { icon: Shield, label: t("home.t_maintenance"), path: "/maintenance" },
+      ],
+    },
   ];
+  const menuItems = menuGroups.flatMap(g => g.items);
   const { user, logout } = useAuth();
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar } = useSidebar();
@@ -223,26 +265,33 @@ function DashboardLayoutContent({
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
-            <SidebarMenu className="px-2 py-1">
-              {menuItems.map(item => {
-                const isActive = location === item.path;
-                return (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={isActive}
-                      onClick={() => setLocation(item.path)}
-                      tooltip={item.label}
-                      className={`h-10 transition-all font-normal`}
-                    >
-                      <item.icon
-                        className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
-                      />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
+            {menuGroups.map(group => (
+              <SidebarGroup key={group.label} className="py-1">
+                <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {group.items.map(item => {
+                      const isActive = location === item.path;
+                      return (
+                        <SidebarMenuItem key={item.path}>
+                          <SidebarMenuButton
+                            isActive={isActive}
+                            onClick={() => setLocation(item.path)}
+                            tooltip={item.label}
+                            className={`h-10 transition-all font-normal`}
+                          >
+                            <item.icon
+                              className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
+                            />
+                            <span>{item.label}</span>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      );
+                    })}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            ))}
           </SidebarContent>
 
           <SidebarFooter className="p-3">
@@ -287,20 +336,19 @@ function DashboardLayoutContent({
       </div>
 
       <SidebarInset>
-        {isMobile && (
-          <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
-            <div className="flex items-center gap-2">
-              <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
-              <div className="flex items-center gap-3">
-                <div className="flex flex-col gap-1">
-                  <span className="tracking-tight text-foreground">
-                    {activeMenuItem?.label ?? "Menu"}
-                  </span>
-                </div>
+        <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
+          <div className="flex items-center gap-2">
+            {isMobile && <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />}
+            <div className="flex items-center gap-3">
+              <div className="flex flex-col gap-1">
+                <span className="tracking-tight text-foreground">
+                  {activeMenuItem?.label ?? "Menu"}
+                </span>
               </div>
             </div>
           </div>
-        )}
+          <LanguageSwitcher />
+        </div>
         <main ref={mainRef} className="flex-1 p-4">{children}</main>
 
         {currentIndex >= 0 && (

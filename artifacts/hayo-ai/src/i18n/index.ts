@@ -25,12 +25,11 @@ export const LANGUAGES = [
   { code: "hi", label: "हिन्दी", flag: "🇮🇳", dir: "ltr" },
 ] as const;
 
-// International-first: default to the browser language when supported, else the
-// saved choice, else English (universal business language). Fallback is English
-// so a missing key never shows Arabic to a non-Arabic investor.
-const supported = ["ar", "en", "es", "fr", "de", "pt", "ru", "tr", "zh", "hi"];
-const browserLang = (navigator.language || "en").slice(0, 2).toLowerCase();
-const savedLang = localStorage.getItem("hayo-lang") || (supported.includes(browserLang) ? browserLang : "en");
+// English-first: the platform's base language is English (the universal business
+// language for investors). On first visit everyone lands in English; if a user
+// explicitly picks another language it's remembered and honored afterwards.
+// Fallback is also English so a missing key never bleeds another language.
+const savedLang = localStorage.getItem("hayo-lang") || "en";
 
 i18n.use(initReactI18next).init({
   resources: {
@@ -47,12 +46,12 @@ i18n.use(initReactI18next).init({
 i18n.on("languageChanged", (lang) => {
   localStorage.setItem("hayo-lang", lang);
   const langConfig = LANGUAGES.find((l) => l.code === lang);
-  document.documentElement.dir = langConfig?.dir || "rtl";
+  document.documentElement.dir = langConfig?.dir || "ltr";
   document.documentElement.lang = lang;
 });
 
 const initialLang = LANGUAGES.find((l) => l.code === savedLang);
-document.documentElement.dir = initialLang?.dir || "rtl";
+document.documentElement.dir = initialLang?.dir || "ltr";
 document.documentElement.lang = savedLang;
 
 export default i18n;
