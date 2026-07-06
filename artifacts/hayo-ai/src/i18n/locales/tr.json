@@ -1314,7 +1314,9 @@
   "commitDeploy": "Dağıt",
   "deploySuccess": "{{n}} dosya dağıtıldı — Railway şimdi yeniden derliyor.",
   "deployFailed": "Dağıtım başarısız",
-  "viewCommit": "Commit'i gör"
+  "viewCommit": "Commit'i gör",
+  "stageTest": "Test (AI'siz)",
+  "stageTestHint": "Dağıtımı yapay zeka olmadan test etmek için zararsız bir işaret değişikliği hazırla"
  },
  "pentest": {
   "sev_critical": "Kritik",

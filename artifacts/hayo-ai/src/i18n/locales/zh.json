@@ -1314,7 +1314,9 @@
   "commitDeploy": "部署",
   "deploySuccess": "已部署 {{n}} 个文件 — Railway 正在重新构建。",
   "deployFailed": "部署失败",
-  "viewCommit": "查看提交"
+  "viewCommit": "查看提交",
+  "stageTest": "测试（无需 AI）",
+  "stageTestHint": "暂存一个无害的标记更改，无需 AI 即可测试部署"
  },
  "pentest": {
   "sev_critical": "严重",

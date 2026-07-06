@@ -128,6 +128,28 @@ export const aiAgentRouter = router({
     return { files: getPending() };
   }),
 
+  // Owner-only: stage a harmless marker file so the whole deploy pipeline
+  // (GITHUB_TOKEN → GitHub commit → Railway rebuild) can be verified end-to-end
+  // WITHOUT invoking any AI model. The file is inert (never imported/built).
+  stageTest: adminProcedure.mutation(async () => {
+    const rel = "deploy-check.md";
+    const abs = resolveSafe(rel);
+    if (!abs) return { success: false as const, error: "تعذّر تحديد المسار" };
+    const stamp = new Date().toISOString();
+    const content =
+      `# HAYO — Self-Deploy Check\n\n` +
+      `This marker file verifies the guarded self-deploy bridge:\n` +
+      `Executive Agent / Maintenance → GitHub API → Railway rebuild.\n\n` +
+      `Last verified: ${stamp}\n`;
+    try {
+      fs.writeFileSync(abs, content, "utf-8");
+      stageChange(rel, "write", "Deploy bridge self-test");
+      return { success: true as const, filePath: rel, at: stamp };
+    } catch (e: any) {
+      return { success: false as const, error: e?.message || "فشل إنشاء ملف الاختبار" };
+    }
+  }),
+
   deploy: adminProcedure
     .input(z.object({ message: z.string().min(3).max(300) }))
     .mutation(async ({ input }) => {

@@ -1314,7 +1314,9 @@
   "commitDeploy": "نشر",
   "deploySuccess": "تم نشر {{n}} ملف — Railway يعيد البناء الآن.",
   "deployFailed": "فشل النشر",
-  "viewCommit": "عرض الـ commit"
+  "viewCommit": "عرض الـ commit",
+  "stageTest": "اختبار (بدون AI)",
+  "stageTestHint": "إنشاء تعديل تجريبي بسيط لاختبار النشر دون الحاجة للذكاء الاصطناعي"
  },
  "pentest": {
   "sev_critical": "حرجة",

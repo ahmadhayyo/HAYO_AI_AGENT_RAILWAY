@@ -1314,7 +1314,9 @@
   "commitDeploy": "Implantar",
   "deploySuccess": "{{n}} arquivo(s) implantado(s) — Railway está reconstruindo.",
   "deployFailed": "Falha na implantação",
-  "viewCommit": "Ver commit"
+  "viewCommit": "Ver commit",
+  "stageTest": "Testar (sem IA)",
+  "stageTestHint": "Prepara uma alteração de marcador inofensiva para testar a implantação sem IA"
  },
  "pentest": {
   "sev_critical": "Crítica",

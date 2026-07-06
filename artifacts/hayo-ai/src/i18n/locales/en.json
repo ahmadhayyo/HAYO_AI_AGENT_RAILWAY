@@ -1314,7 +1314,9 @@
   "commitDeploy": "Deploy",
   "deploySuccess": "Deployed {{n}} file(s) — Railway is rebuilding now.",
   "deployFailed": "Deploy failed",
-  "viewCommit": "View commit"
+  "viewCommit": "View commit",
+  "stageTest": "Test (no AI)",
+  "stageTestHint": "Stage a harmless marker change to test deploy without any AI"
  },
  "pentest": {
   "sev_critical": "Critical",

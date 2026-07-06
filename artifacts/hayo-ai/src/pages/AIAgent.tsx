@@ -278,6 +278,13 @@ function DeployCenter() {
     },
     onError: (e) => setResult({ ok: false, text: e.message }),
   });
+  const stageTest = trpc.aiAgent.stageTest.useMutation({
+    onSuccess: (d) => {
+      if (d.success) { setResult(null); pending.refetch(); }
+      else setResult({ ok: false, text: d.error || t("aiAgent.deployFailed") });
+    },
+    onError: (e) => setResult({ ok: false, text: e.message }),
+  });
 
   return (
     <div className="shrink-0 border-b border-white/10 bg-black/20">
@@ -297,11 +304,22 @@ function DeployCenter() {
 
       {open && (
         <div className="px-4 pb-3 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] text-white/40">{t("aiAgent.deployHint")}</p>
-            <button onClick={() => pending.refetch()} className="text-white/40 hover:text-white/70" title={t("aiAgent.refresh")}>
-              <RefreshCw className={`w-3.5 h-3.5 ${pending.isFetching ? "animate-spin" : ""}`} />
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => stageTest.mutate()}
+                disabled={stageTest.isPending}
+                className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border border-white/10 text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors"
+                title={t("aiAgent.stageTestHint")}
+              >
+                {stageTest.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                {t("aiAgent.stageTest")}
+              </button>
+              <button onClick={() => pending.refetch()} className="text-white/40 hover:text-white/70" title={t("aiAgent.refresh")}>
+                <RefreshCw className={`w-3.5 h-3.5 ${pending.isFetching ? "animate-spin" : ""}`} />
+              </button>
+            </div>
           </div>
 
           {files.length === 0 ? (

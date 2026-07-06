@@ -1314,7 +1314,9 @@
   "commitDeploy": "Déployer",
   "deploySuccess": "{{n}} fichier(s) déployé(s) — Railway reconstruit maintenant.",
   "deployFailed": "Échec du déploiement",
-  "viewCommit": "Voir le commit"
+  "viewCommit": "Voir le commit",
+  "stageTest": "Tester (sans IA)",
+  "stageTestHint": "Préparer un changement marqueur inoffensif pour tester le déploiement sans IA"
  },
  "pentest": {
   "sev_critical": "Critique",

@@ -1314,7 +1314,9 @@
   "commitDeploy": "डिप्लॉय",
   "deploySuccess": "{{n}} फ़ाइल(ें) डिप्लॉय हुईं — Railway अब पुनर्निर्माण कर रहा है।",
   "deployFailed": "डिप्लॉय विफल",
-  "viewCommit": "कमिट देखें"
+  "viewCommit": "कमिट देखें",
+  "stageTest": "परीक्षण (बिना AI)",
+  "stageTestHint": "बिना AI के डिप्लॉय जाँचने के लिए एक हानिरहित मार्कर बदलाव स्टेज करें"
  },
  "pentest": {
   "sev_critical": "गंभीर",

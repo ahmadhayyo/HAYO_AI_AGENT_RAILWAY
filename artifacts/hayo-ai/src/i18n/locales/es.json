@@ -1314,7 +1314,9 @@
   "commitDeploy": "Desplegar",
   "deploySuccess": "Se desplegaron {{n}} archivo(s) — Railway se está reconstruyendo.",
   "deployFailed": "Fallo el despliegue",
-  "viewCommit": "Ver commit"
+  "viewCommit": "Ver commit",
+  "stageTest": "Probar (sin IA)",
+  "stageTestHint": "Prepara un cambio de marcador inofensivo para probar el despliegue sin IA"
  },
  "pentest": {
   "sev_critical": "Crítica",

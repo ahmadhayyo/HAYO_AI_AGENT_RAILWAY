@@ -1314,7 +1314,9 @@
   "commitDeploy": "Deployen",
   "deploySuccess": "{{n}} Datei(en) deployed — Railway baut jetzt neu.",
   "deployFailed": "Deploy fehlgeschlagen",
-  "viewCommit": "Commit ansehen"
+  "viewCommit": "Commit ansehen",
+  "stageTest": "Test (ohne KI)",
+  "stageTestHint": "Eine harmlose Markierungsänderung stagen, um das Deployment ohne KI zu testen"
  },
  "pentest": {
   "sev_critical": "Kritisch",
