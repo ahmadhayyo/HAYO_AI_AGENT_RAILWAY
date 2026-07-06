@@ -17,7 +17,7 @@ import {
   RefreshCw, Shield, AlertTriangle, ChevronDown, ChevronUp,
   Activity, Target, StopCircle, Zap, Trophy, Send,
   Newspaper, Scan, CheckCircle2, XCircle, Clock, ToggleLeft, ToggleRight,
-  Crosshair, Radio,
+  Crosshair, Radio, Brain,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import LanguageSwitcher from "@/components/LanguageSwitcher";

@@ -111,6 +111,11 @@ function DashboardLayoutContent({
   setSidebarWidth,
 }: DashboardLayoutContentProps) {
   const { t } = useTranslation();
+  const { user, logout } = useAuth();
+  // Owner-only service sections (subscription/admin panel, executive AI agent,
+  // system maintenance, model settings) are for running/maintaining the platform
+  // and must never appear for subscribers — only for the owner/admin.
+  const isAdmin = (user as { role?: string } | null)?.role === "admin";
   const menuGroups = [
     {
       label: t("home.grpAI"),
@@ -161,18 +166,20 @@ function DashboardLayoutContent({
         { icon: CreditCard, label: t("home.t_payment"), path: "/payment" },
       ],
     },
-    {
-      label: t("home.grpAdmin"),
-      items: [
-        { icon: Brain, label: t("home.t_modelSettings"), path: "/model-settings" },
-        { icon: Bot, label: t("home.t_aiAgent"), path: "/ai-agent" },
-        { icon: ShieldCheck, label: t("nav.admin"), path: "/admin" },
-        { icon: Shield, label: t("home.t_maintenance"), path: "/maintenance" },
-      ],
-    },
+    // Admin/engineering service group — owner only.
+    ...(isAdmin
+      ? [{
+          label: t("home.grpAdmin"),
+          items: [
+            { icon: Brain, label: t("home.t_modelSettings"), path: "/model-settings" },
+            { icon: Bot, label: t("home.t_aiAgent"), path: "/ai-agent" },
+            { icon: ShieldCheck, label: t("nav.admin"), path: "/admin" },
+            { icon: Shield, label: t("home.t_maintenance"), path: "/maintenance" },
+          ],
+        }]
+      : []),
   ];
   const menuItems = menuGroups.flatMap(g => g.items);
-  const { user, logout } = useAuth();
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar } = useSidebar();
   const isCollapsed = state === "collapsed";

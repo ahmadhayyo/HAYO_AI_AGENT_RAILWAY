@@ -92,7 +92,7 @@ function Router() {
           <ProtectedRoute><EAFactory /></ProtectedRoute>
         </Route>
         <Route path="/maintenance">
-          <ProtectedRoute><SystemMaintenance /></ProtectedRoute>
+          <ProtectedRoute requiredRole="admin"><SystemMaintenance /></ProtectedRoute>
         </Route>
         <Route path="/mindmap">
           <ProtectedRoute><MindMap /></ProtectedRoute>
