@@ -9,7 +9,7 @@ import telegramRouter from "./telegram";
 import extractArchiveRouter from "./extract-archive";
 import agentRouter from "./agent";
 import pentestRouter from "./pentest";
-import { requireAuth, requireFeature } from "../middlewares/requireAuth";
+import { requireAuth, requireFeature, requireAdmin } from "../middlewares/requireAuth";
 
 const router: IRouter = Router();
 
@@ -30,7 +30,10 @@ router.use(requireAuth, officeRouter);
 router.use(requireAuth, studiesRouter);
 router.use(requireAuth, promptFactoryRouter);
 router.use(requireAuth, extractArchiveRouter);
-// reverse engineering & code agent: higher-tier features → gated by plan flag.
+// reverse engineering: higher-tier feature → gated by plan flag.
 router.use("/reverse", requireAuth, requireFeature("canUseReverse"), reverseRouter);
-router.use(requireAuth, requireFeature("canUseCodeAgent"), agentRouter);
+// Executive self-modifying agent (/api/agent/*): writes the platform's own
+// source and runs shell commands — OWNER ONLY, never a subscriber feature.
+// (The user-facing code agent uses the trpc `agent.*` router, not these routes.)
+router.use(requireAuth, requireAdmin, agentRouter);
 export default router;

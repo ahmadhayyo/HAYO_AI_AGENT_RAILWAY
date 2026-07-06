@@ -536,6 +536,7 @@ export async function* executeAgentCommandStreaming(
               const dir = path.dirname(abs);
               if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
               fs.writeFileSync(abs, action.content || "", "utf-8");
+              stageChange(action.path, "write", "Executive Agent edit");
               const ok = `[OK] كُتب الملف: ${action.path} (${(action.content?.length || 0).toLocaleString()} حرف)`;
               yield { type: "tool_result", node: "coder", content: ok };
               agentMessages.push({ role: "user", content: ok });

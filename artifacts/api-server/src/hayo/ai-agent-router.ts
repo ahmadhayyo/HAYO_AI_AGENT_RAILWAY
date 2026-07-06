@@ -36,7 +36,7 @@ export const aiAgentRouter = router({
         filePath: z.string().max(500),
         content: z.string().max(500000).optional(),
         description: z.string().max(500),
-      })).max(20),
+      })).max(60),
     }))
     .mutation(async ({ input }) => {
       const results: { action: string; filePath: string; success: boolean; error?: string }[] = [];
