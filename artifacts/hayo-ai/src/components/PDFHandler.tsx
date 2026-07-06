@@ -7,6 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Upload, Download, Loader2, FileText, File } from "lucide-react";
 import { toast } from "sonner";
+// Bundle the pdf.js worker from the installed package (served from our own
+// origin) instead of a version-pinned CDN URL — the CDN path broke whenever the
+// installed pdfjs-dist version wasn't hosted on cdnjs, or when CSP blocked it,
+// which failed every PDF extraction.
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 type ConvertTarget = "text" | "word";
 
@@ -35,7 +40,7 @@ export default function PDFHandler() {
   const extractText = async (): Promise<string> => {
     if (!file) return "";
     const pdfjsLib = await import("pdfjs-dist");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;

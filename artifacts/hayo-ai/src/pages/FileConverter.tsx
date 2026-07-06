@@ -9,8 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useAuth } from "@/_core/hooks/useAuth";
 import { getLoginUrl } from "@/const";
 import { Link } from "wouter";
-import { Upload, Download, ArrowRight, Loader2 } from "lucide-react";
-import { toast } from "sonner";
+import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import ExcelHandler from "@/components/ExcelHandler";
 import WordHandler from "@/components/WordHandler";
@@ -20,7 +19,6 @@ export default function FileConverter() {
   const { t } = useTranslation();
   const { isAuthenticated } = useAuth();
   const [activeTab, setActiveTab] = useState<"excel" | "word" | "pdf">("excel");
-  const [isConverting, setIsConverting] = useState(false);
 
   if (!isAuthenticated) {
     return (
@@ -162,11 +160,11 @@ export default function FileConverter() {
             </Card>
 
             {/* Tips */}
-            <Card className="bg-blue-50 border-blue-200">
+            <Card className="bg-primary/5 border-primary/20">
               <CardHeader>
                 <CardTitle className="text-sm">💡 {t("converter.tips")}</CardTitle>
               </CardHeader>
-              <CardContent className="text-sm text-blue-900 space-y-2">
+              <CardContent className="text-sm text-muted-foreground space-y-2">
                 <p>✓ {t("converter.tip1")}</p>
                 <p>✓ {t("converter.tip2")}</p>
                 <p>✓ {t("converter.tip3")}</p>
