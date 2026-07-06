@@ -1426,5 +1426,13 @@
   "copy": "Copiar",
   "selectFile": "Selecciona un archivo para ver su contenido",
   "viewAllProjects": "Ver todos los proyectos"
+ },
+ "reverse": {
+  "lockedTitle": "Ingeniería inversa — función premium",
+  "lockedDesc": "La suite completa de ingeniería inversa está disponible solo para suscriptores de los planes Profesional y Empresa. Mejora tu plan para desbloquear análisis, descompilación, edición y reconstrucción.",
+  "lockedCta": "Mejorar plan",
+  "backDashboard": "Volver al panel",
+  "planPro": "Profesional",
+  "planBusiness": "Empresa"
  }
 }

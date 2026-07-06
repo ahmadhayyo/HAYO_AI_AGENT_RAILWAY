@@ -1426,5 +1426,13 @@
   "copy": "Kopieren",
   "selectFile": "Wählen Sie eine Datei aus, um ihren Inhalt anzuzeigen",
   "viewAllProjects": "Alle Projekte anzeigen"
+ },
+ "reverse": {
+  "lockedTitle": "Reverse Engineering — Premium-Funktion",
+  "lockedDesc": "Die vollständige Reverse-Engineering-Suite ist nur für Abonnenten der Professional- und Business-Pläne verfügbar. Upgraden Sie, um Analyse, Dekompilierung, Bearbeitung und Neuaufbau freizuschalten.",
+  "lockedCta": "Plan upgraden",
+  "backDashboard": "Zurück zum Dashboard",
+  "planPro": "Professional",
+  "planBusiness": "Business"
  }
 }

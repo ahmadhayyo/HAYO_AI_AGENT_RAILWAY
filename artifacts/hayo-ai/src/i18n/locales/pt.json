@@ -1426,5 +1426,13 @@
   "copy": "Copiar",
   "selectFile": "Selecione um arquivo para ver seu conteúdo",
   "viewAllProjects": "Ver todos os projetos"
+ },
+ "reverse": {
+  "lockedTitle": "Engenharia reversa — recurso premium",
+  "lockedDesc": "A suíte completa de engenharia reversa está disponível apenas para assinantes dos planos Profissional e Business. Faça upgrade para desbloquear análise, descompilação, edição e reconstrução.",
+  "lockedCta": "Fazer upgrade",
+  "backDashboard": "Voltar ao painel",
+  "planPro": "Profissional",
+  "planBusiness": "Business"
  }
 }

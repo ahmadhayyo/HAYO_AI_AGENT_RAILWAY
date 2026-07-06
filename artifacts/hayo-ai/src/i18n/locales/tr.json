@@ -1426,5 +1426,13 @@
   "copy": "Kopyala",
   "selectFile": "İçeriğini görmek için bir dosya seçin",
   "viewAllProjects": "Tüm projeleri görüntüle"
+ },
+ "reverse": {
+  "lockedTitle": "Tersine Mühendislik — premium özellik",
+  "lockedDesc": "Tam tersine mühendislik paketi yalnızca Profesyonel ve İşletme planı abonelerine sunulur. Analiz, decompile, düzenleme ve yeniden derlemeyi açmak için planınızı yükseltin.",
+  "lockedCta": "Planı yükselt",
+  "backDashboard": "Panele dön",
+  "planPro": "Profesyonel",
+  "planBusiness": "İşletme"
  }
 }

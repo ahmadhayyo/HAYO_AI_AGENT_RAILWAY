@@ -8,6 +8,9 @@ import Editor from "@monaco-editor/react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { Link } from "wouter";
+import { useTranslation } from "react-i18next";
+import { trpc } from "@/lib/trpc";
 import {
   Upload, FileCode2, FolderOpen, ChevronRight, ChevronDown,
   Download, Bot, Copy, Loader2, X, CheckCircle2,
@@ -501,6 +504,13 @@ function buildDeveloperMessageFallback(result: any): string {
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════
 export default function ReverseEngineer(){
+  const { t }=useTranslation();
+  // Reverse Engineering is a premium engineering suite — available only to
+  // Professional and Business plan subscribers (owner always has access).
+  const { data:sub }=trpc.usage.subscription.useQuery();
+  const planName=sub?.plan?.name;
+  const planResolved=sub!==undefined;
+  const planAllowed=planName==="pro"||planName==="business"||planName==="owner";
   const fRef=useRef<HTMLInputElement>(null);
   const efRef=useRef<HTMLInputElement>(null);
   const cfRef=useRef<HTMLInputElement>(null);
@@ -1191,6 +1201,37 @@ export default function ReverseEngineer(){
   const loadTools=async()=>{setShowTools(t=>!t);if(tools)return;try{const r=await fetch("/api/reverse/check-tools",{credentials:"include"});const d=await r.json();setTools(d);}catch{}};
 
   const tabs:{id:Tab;label:string;icon:any}[]=[{id:"analyze",label:"تحليل",icon:Eye},{id:"clone",label:"استنساخ",icon:GitBranch},{id:"edit",label:"تحرير & بناء",icon:Hammer},{id:"intel",label:"استخبارات",icon:Fingerprint},{id:"forensics",label:"طب شرعي",icon:Microscope},{id:"cloudpen",label:"اختراق سحابي",icon:Database}];
+
+  // ═══ PLAN GATE — Professional & Business subscribers only ═══
+  if(planResolved && !planAllowed){
+    return(<DashboardLayout>
+      <div className="flex items-center justify-center min-h-[70vh] px-4">
+        <div className="glass-card gradient-border rounded-2xl p-8 md:p-12 max-w-lg w-full text-center space-y-6">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500/20 to-orange-500/20 border border-amber-500/30 flex items-center justify-center mx-auto">
+            <Lock className="w-8 h-8 text-amber-400"/>
+          </div>
+          <div className="space-y-2">
+            <h2 className="font-heading text-2xl font-bold">{t("reverse.lockedTitle")}</h2>
+            <p className="text-muted-foreground leading-relaxed">{t("reverse.lockedDesc")}</p>
+          </div>
+          <div className="flex items-center justify-center gap-2 text-sm">
+            <span className="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300">🚀 {t("reverse.planPro")}</span>
+            <span className="px-3 py-1 rounded-full bg-violet-500/10 border border-violet-500/30 text-violet-300">🏢 {t("reverse.planBusiness")}</span>
+          </div>
+          <div className="flex flex-wrap gap-3 justify-center pt-2">
+            <Link href="/pricing">
+              <Button size="lg" className="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white gap-2">
+                <Rocket className="w-4 h-4"/>{t("reverse.lockedCta")}
+              </Button>
+            </Link>
+            <Link href="/dashboard">
+              <Button variant="outline" size="lg">{t("reverse.backDashboard")}</Button>
+            </Link>
+          </div>
+        </div>
+      </div>
+    </DashboardLayout>);
+  }
 
   return(<DashboardLayout>
     {/* Disclaimer */}

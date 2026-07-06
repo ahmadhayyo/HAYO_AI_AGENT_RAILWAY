@@ -1426,5 +1426,13 @@
   "copy": "Copy",
   "selectFile": "Select a file to view its content",
   "viewAllProjects": "View all projects"
+ },
+ "reverse": {
+  "lockedTitle": "Reverse Engineering — Premium feature",
+  "lockedDesc": "The full reverse-engineering suite is available to Professional and Business plan subscribers only. Upgrade to unlock analysis, decompilation, editing and rebuilding.",
+  "lockedCta": "Upgrade plan",
+  "backDashboard": "Back to dashboard",
+  "planPro": "Professional",
+  "planBusiness": "Business"
  }
 }

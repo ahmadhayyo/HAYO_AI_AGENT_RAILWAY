@@ -1426,5 +1426,13 @@
   "copy": "复制",
   "selectFile": "选择一个文件以查看其内容",
   "viewAllProjects": "查看所有项目"
+ },
+ "reverse": {
+  "lockedTitle": "逆向工程 — 高级功能",
+  "lockedDesc": "完整的逆向工程套件仅向专业版和企业版订阅者开放。升级即可解锁分析、反编译、编辑与重新构建。",
+  "lockedCta": "升级方案",
+  "backDashboard": "返回仪表板",
+  "planPro": "专业版",
+  "planBusiness": "企业版"
  }
 }
