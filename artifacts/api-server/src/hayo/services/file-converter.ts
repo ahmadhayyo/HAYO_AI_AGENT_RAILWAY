@@ -21,11 +21,12 @@ export function getSupportedConversions(): Record<string, string[]> {
     txt:  ["pdf", "docx", "html", "md"],
     md:   ["html", "pdf", "docx", "txt"],
     html: ["txt", "pdf", "docx", "md"],
-    png:  ["pdf", "jpg"],
-    jpg:  ["pdf", "png"],
-    jpeg: ["pdf", "png"],
-    gif:  ["pdf"],
-    webp: ["pdf", "jpg"],
+    png:  ["jpg", "webp", "gif", "tiff", "ico", "pdf"],
+    jpg:  ["png", "webp", "gif", "tiff", "ico", "pdf"],
+    jpeg: ["png", "webp", "gif", "tiff", "ico", "pdf"],
+    webp: ["png", "jpg", "gif", "tiff", "ico", "pdf"],
+    gif:  ["png", "jpg", "webp", "tiff", "ico", "pdf"],
+    tiff: ["png", "jpg", "webp", "gif", "ico", "pdf"],
     pptx: ["txt"],
   };
 }
@@ -428,22 +429,57 @@ function htmlToMd(html: string): string {
     .replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-// ── Image helpers ──
-async function imageToPdf(buf: Buffer, mime: string): Promise<Buffer> {
+// ── Image helpers (real pixel conversion via sharp) ──
+// sharp is externalized in build.mjs and installed on the (Linux) server; it
+// reads png/jpg/webp/gif/tiff and writes png/jpg/webp/gif/tiff. ICO is produced
+// by wrapping a 256×256 PNG in a minimal single-image ICO container (the ICO
+// format has embedded-PNG support since Windows Vista).
+type RasterFmt = "png" | "jpeg" | "webp" | "gif" | "tiff";
+
+async function convertImage(buf: Buffer, fmt: RasterFmt): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  let img = sharp(buf, { animated: fmt === "gif" });
+  switch (fmt) {
+    case "png":  img = img.png(); break;
+    case "jpeg": img = img.flatten({ background: "#ffffff" }).jpeg({ quality: 92 }); break;
+    case "webp": img = img.webp({ quality: 92 }); break;
+    case "gif":  img = img.gif(); break;
+    case "tiff": img = img.tiff(); break;
+  }
+  return img.toBuffer();
+}
+
+async function imageToIco(buf: Buffer): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  const png = await sharp(buf).resize(256, 256, { fit: "cover" }).png().toBuffer();
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // type = icon
+  header.writeUInt16LE(1, 4); // image count
+  const entry = Buffer.alloc(16);
+  entry.writeUInt8(0, 0);      // width  (0 = 256)
+  entry.writeUInt8(0, 1);      // height (0 = 256)
+  entry.writeUInt8(0, 2);      // palette count
+  entry.writeUInt8(0, 3);      // reserved
+  entry.writeUInt16LE(1, 4);   // color planes
+  entry.writeUInt16LE(32, 6);  // bits per pixel
+  entry.writeUInt32LE(png.length, 8);  // size of image data
+  entry.writeUInt32LE(22, 12); // offset (6 + 16)
+  return Buffer.concat([header, entry, png]);
+}
+
+async function imageToPdf(buf: Buffer): Promise<Buffer> {
+  // Normalise any supported raster to PNG first so gif/webp/tiff embed too.
+  const png = await convertImage(buf, "png");
   const { PDFDocument } = await import("pdf-lib");
   const pdfDoc = await PDFDocument.create();
-  const img = mime.includes("png") ? await pdfDoc.embedPng(buf) : await pdfDoc.embedJpg(buf);
+  const img = await pdfDoc.embedPng(png);
   const { width, height } = img.scale(1);
   const maxW = 595, maxH = 842;
   const scale = Math.min(maxW / width, maxH / height, 1);
   const page = pdfDoc.addPage([width * scale, height * scale]);
   page.drawImage(img, { x: 0, y: 0, width: width * scale, height: height * scale });
   return Buffer.from(await pdfDoc.save());
-}
-
-async function pngToJpg(buf: Buffer): Promise<Buffer> {
-  // Simple pass-through — browser handles display, just change extension
-  return buf;
 }
 
 // ── PPTX text extraction ──
@@ -488,6 +524,11 @@ export async function convertFile(
     xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     png:  "image/png",
     jpg:  "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif:  "image/gif",
+    tiff: "image/tiff",
+    ico:  "image/x-icon",
   };
 
   type ConvResult = { buffer: Buffer; mime: string; ext: string };
@@ -561,24 +602,27 @@ export async function convertFile(
     "html->docx": async () => R(await htmlToDocx(buf.toString()), "docx"),
     "html->md":   async () => R(htmlToMd(buf.toString()), "md"),
 
-    // ── Images ──
-    "png->pdf":  async () => R(await imageToPdf(buf, "image/png"), "pdf"),
-    "png->jpg":  async () => R(buf, "jpg"),
-    "jpg->pdf":  async () => R(await imageToPdf(buf, "image/jpeg"), "pdf"),
-    "jpg->png":  async () => R(buf, "png"),
-    "jpeg->pdf": async () => R(await imageToPdf(buf, "image/jpeg"), "pdf"),
-    "jpeg->png": async () => R(buf, "png"),
-    "gif->pdf":  async () => R(await textToPdf("[GIF image converted]"), "pdf"),
-    "webp->jpg": async () => R(buf, "jpg"),
-    "webp->pdf": async () => R(await imageToPdf(buf, "image/jpeg"), "pdf"),
-
     // ── PPTX ──
     "pptx->txt": async () => R(await pptxToText(buf), "txt"),
   };
 
   const fn = converters[key];
-  if (!fn) throw new Error(`التحويل من ${from.toUpperCase()} إلى ${to.toUpperCase()} غير مدعوم حالياً`);
-  return fn();
+  if (fn) return fn();
+
+  // ── Images: real conversion between any raster + ICO + PDF (via sharp) ──
+  const IMG_IN = new Set(["png", "jpg", "jpeg", "webp", "gif", "tiff"]);
+  const fromL = from.toLowerCase(), toL = to.toLowerCase();
+  if (IMG_IN.has(fromL)) {
+    if (toL === "pdf") return R(await imageToPdf(buf), "pdf");
+    if (toL === "ico") return R(await imageToIco(buf), "ico");
+    const outFmt: Record<string, RasterFmt> = {
+      png: "png", jpg: "jpeg", jpeg: "jpeg", webp: "webp", gif: "gif", tiff: "tiff",
+    };
+    const fmt = outFmt[toL];
+    if (fmt) return R(await convertImage(buf, fmt), toL);
+  }
+
+  throw new Error(`التحويل من ${from.toUpperCase()} إلى ${to.toUpperCase()} غير مدعوم حالياً`);
 }
 
 async function docxToDocx(buf: Buffer): Promise<Buffer> {

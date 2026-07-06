@@ -28,11 +28,12 @@ const FALLBACK_CONVERSIONS: Record<string, string[]> = {
   txt: ["pdf", "docx", "html", "md"],
   md: ["html", "pdf", "docx", "txt"],
   html: ["txt", "pdf", "docx", "md"],
-  png: ["pdf", "jpg"],
-  jpg: ["pdf", "png"],
-  jpeg: ["pdf", "png"],
-  gif: ["pdf"],
-  webp: ["pdf", "jpg"],
+  png: ["jpg", "webp", "gif", "tiff", "ico", "pdf"],
+  jpg: ["png", "webp", "gif", "tiff", "ico", "pdf"],
+  jpeg: ["png", "webp", "gif", "tiff", "ico", "pdf"],
+  webp: ["png", "jpg", "gif", "tiff", "ico", "pdf"],
+  gif: ["png", "jpg", "webp", "tiff", "ico", "pdf"],
+  tiff: ["png", "jpg", "webp", "gif", "ico", "pdf"],
 };
 
 function extOf(name: string): string {
@@ -180,7 +181,10 @@ export default function FileConverter() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-medium truncate">{file.name}</p>
-                  <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(0)} KB · {sourceExt.toUpperCase()}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-primary/15 text-primary">{sourceExt || "?"}</span>
+                    <span className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(0)} KB</span>
+                  </div>
                 </div>
                 <button onClick={() => { setFile(null); setTarget(""); }} className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-accent" title={t("converter.removeFile")}>
                   <X className="w-4 h-4" />
@@ -194,7 +198,10 @@ export default function FileConverter() {
         {file && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">{t("converter.selectTarget")}</CardTitle>
+              <CardTitle className="text-base flex items-center gap-2">
+                {t("converter.selectTarget")}
+                <span className="text-[11px] font-normal uppercase px-1.5 py-0.5 rounded bg-primary/15 text-primary">{sourceExt}</span>
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               {targets.length === 0 ? (

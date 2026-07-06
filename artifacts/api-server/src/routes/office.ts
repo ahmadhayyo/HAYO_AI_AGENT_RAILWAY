@@ -96,9 +96,11 @@ router.post("/office/convert", async (req, res) => {
     const buffer = Buffer.from(fileData, "base64");
     const result = await convertFile(buffer, fileName, targetFormat);
     const outName = `${fileName.split(".")[0]}.${targetFormat}`;
-    res.setHeader("Content-Type", getMimeType(targetFormat));
+    // convertFile returns { buffer, mime, ext } — send the raw bytes, not the
+    // object (res.send(object) serialises to JSON and corrupts the download).
+    res.setHeader("Content-Type", result.mime || getMimeType(targetFormat));
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(outName)}"`);
-    res.send(result);
+    res.send(result.buffer);
   } catch (e: any) {
     res.status(500).json({ error: e.message || "فشل تحويل الملف" });
   }
