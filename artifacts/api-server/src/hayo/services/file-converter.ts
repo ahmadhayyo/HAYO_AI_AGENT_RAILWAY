@@ -3,6 +3,7 @@
  * Supports 30+ conversion paths using pure JS libraries
  */
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 async function getXLSX() {
@@ -34,10 +35,13 @@ export function getSupportedConversions(): Record<string, string[]> {
 // ── PDF helpers ──
 async function pdfToText(buf: Buffer): Promise<string> {
   try {
-    const pdfParseModule = await import("pdf-parse");
-    const pdfParse = (pdfParseModule as any).default ?? pdfParseModule;
-    const data = await pdfParse(buf);
-    return data.text || "";
+    // pdf-parse v2 is class-based (the old `pdf(buffer)` default-function call
+    // no longer exists — that was why every PDF read failed).
+    const mod: any = await import("pdf-parse");
+    const PDFParse = mod.PDFParse ?? mod.default?.PDFParse ?? mod.default;
+    const parser = new PDFParse({ data: new Uint8Array(buf) });
+    const result = await parser.getText();
+    return result?.text || "";
   } catch (err: any) {
     throw new Error(`فشل قراءة PDF: ${err.message}`);
   }
@@ -107,9 +111,37 @@ async function docxToMd(buf: Buffer): Promise<string> {
   return htmlToMd(result.value);
 }
 
-// ── Arabic font path ──
+// ── Arabic font resolution ──
+// Find the Amiri TTF across dev (src) and bundled (dist) layouts; if it's
+// genuinely missing, fall back to Helvetica rather than crash (registering a
+// missing font then calling doc.font("Arabic") threw and failed every
+// Arabic → PDF conversion).
 const _dirname = path.dirname(fileURLToPath(import.meta.url));
-const ARABIC_FONT = path.join(_dirname, "../fonts/Amiri-Regular.ttf");
+let _arabicFont: string | null | undefined;
+function arabicFontPath(): string | null {
+  if (_arabicFont !== undefined) return _arabicFont;
+  const candidates = [
+    path.join(_dirname, "../fonts/Amiri-Regular.ttf"),
+    path.join(_dirname, "../../fonts/Amiri-Regular.ttf"),
+    path.join(process.cwd(), "fonts/Amiri-Regular.ttf"),
+    path.join(process.cwd(), "artifacts/api-server/fonts/Amiri-Regular.ttf"),
+  ];
+  _arabicFont = candidates.find((p) => { try { return fs.existsSync(p); } catch { return false; } }) ?? null;
+  return _arabicFont;
+}
+
+// Register the Arabic font on a PDFKit doc only if it really loads; return the
+// font names to use (Arabic when available, else Helvetica — never crashes).
+function pdfFonts(doc: any, isAr: boolean): { fontName: string; boldFont: string } {
+  if (isAr) {
+    const fp = arabicFontPath();
+    if (fp) {
+      try { doc.registerFont("Arabic", fp); return { fontName: "Arabic", boldFont: "Arabic" }; }
+      catch { /* fall back below */ }
+    }
+  }
+  return { fontName: "Helvetica", boldFont: "Helvetica-Bold" };
+}
 
 function hasArabic(text: string): boolean {
   return /[\u0600-\u06FF]/.test(text);
@@ -126,11 +158,7 @@ async function textToPdf(text: string, title?: string): Promise<Buffer> {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
-    if (isAr) {
-      try { doc.registerFont("Arabic", ARABIC_FONT); } catch {}
-    }
-    const fontName = isAr ? "Arabic" : "Helvetica";
-    const boldFont = isAr ? "Arabic" : "Helvetica-Bold";
+    const { fontName, boldFont } = pdfFonts(doc, isAr);
 
     if (title) {
       doc.fontSize(18).font(boldFont).text(title, { align: isAr ? "right" : "center" });
@@ -224,11 +252,7 @@ async function tableToPdf(headers: string[], rows: string[][], title?: string): 
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
-    if (isAr) {
-      try { doc.registerFont("Arabic", ARABIC_FONT); } catch {}
-    }
-    const normalFont = isAr ? "Arabic" : "Helvetica";
-    const boldFont   = isAr ? "Arabic" : "Helvetica-Bold";
+    const { fontName: normalFont, boldFont } = pdfFonts(doc, isAr);
 
     const pageW = doc.page.width - 80;
     const colW = pageW / Math.max(headers.length, 1);
