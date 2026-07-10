@@ -37,3 +37,13 @@ export const pentestRouter = router({
       return { status: "success", message: "Wallet scan started for " + input.address };
     })
 });
+
+/**
+ * Main App Router
+ */
+export const appRouter = router({
+  pentest: pentestRouter,
+  // Add other sub-routers here if needed
+});
+
+export type AppRouter = typeof appRouter;
