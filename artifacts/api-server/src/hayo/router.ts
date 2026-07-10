@@ -1,4 +1,4 @@
-import { router, publicProcedure } from "../_core/trpc.js";
+import { router, publicProcedure } from "./trpc.js";
 import { z } from "zod";
 import { runAndroidScan } from "./pentest/androidEngine";
 
