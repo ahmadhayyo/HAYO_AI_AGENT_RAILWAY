@@ -2681,6 +2681,15 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       .input(z.object({
         sessionId: z.string().min(3).max(200),
         authorized: z.boolean(),
+        // Optional captured HTTP traffic (e.g. from the Frida agent) → traffic DAST.
+        trafficLogs: z.array(z.object({
+          url: z.string(),
+          method: z.string(),
+          headers: z.record(z.string()).default({}),
+          body: z.string().optional(),
+          responseStatus: z.number().optional(),
+          responseBody: z.string().optional(),
+        })).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         await assertCredits(ctx.user, "reverse_analyze");
@@ -2690,7 +2699,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         });
         if (!auth.allowed) throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح" });
         const { runAndroidScan } = await import("./pentest/androidEngine.js");
-        return runAndroidScan(input.sessionId);
+        return runAndroidScan(input.sessionId, { trafficLogs: input.trafficLogs });
       }),
 
     // Authorized wallet scan (public on-chain data only).
