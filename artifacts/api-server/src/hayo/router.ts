@@ -2736,8 +2736,10 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         return {
           token,
           expiresAt,
-          command: `python agent.py --server ${server} --token ${token} --package ${input.package}`,
-          note: "شغّل هذا الأمر على جهازك مع محاكي أندرويد يعمل و frida-server نشط. النتائج تُدمج تلقائياً.",
+          // One-click: everything (device, frida-server, package) is auto-detected.
+          command: `python auto.py --token ${token}`,
+          manualCommand: `python agent.py --server ${server} --token ${token} --package ${input.package}`,
+          note: "الأسهل: انقر نقرًا مزدوجًا على HAYO-Dynamic.bat في مجلد pentest-agent والصق الرمز مرة واحدة — يكتشف المحاكي و frida-server واسم التطبيق تلقائيًا. أو شغّل الأمر أعلاه في المجلد نفسه. النتائج تُدمج في التقرير تلقائيًا.",
         };
       }),
 
