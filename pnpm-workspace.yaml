@@ -160,3 +160,10 @@ overrides:
   # drizzle-kit uses esbuild internally on an older version that's vulnerable, this overrides it
   "@esbuild-kit/esm-loader": "npm:tsx@^4.21.0"
   esbuild: "0.27.3"
+
+allowBuilds:
+  better-sqlite3: set this to true or false
+  esbuild: set this to true or false
+  puppeteer: set this to true or false
+  sharp: set this to true or false
+  tesseract.js: set this to true or false
