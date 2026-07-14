@@ -134,6 +134,7 @@ function DashboardLayoutContent({
         { icon: Code2, label: t("nav.byoc"), path: "/byoc" },
         { icon: Smartphone, label: t("nav.appBuilder"), path: "/app-builder" },
         { icon: ScanSearch, label: t("nav.reverse"), path: "/reverse" },
+        { icon: Shield, label: t("nav.pentest", "محرك الاختراق (Pentest)"), path: "/pentest" },
         { icon: Plug, label: t("nav.integrations"), path: "/integrations" },
         { icon: Search, label: t("home.t_osint"), path: "/osint" },
         { icon: FolderOpen, label: t("nav.projects"), path: "/projects" },
