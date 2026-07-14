@@ -57,6 +57,7 @@ export interface EditSession {
   apkToolAvailable: boolean; usedApkTool: boolean; fileType?: string;
   decompDir: string; origFile: string; fileBackups: Map<string, string>;
   createdAt: number; lastActivity: number;
+  apkHash?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -813,9 +814,27 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
   const workDir = path.join(os.tmpdir(), `edit_${sessionId}`);
   const inputPath = path.join(workDir, "original.apk");
   const decompDir = path.join(workDir, "decompiled");
+
+  // Clean stale edit_* dirs to free disk (Railway /tmp is limited)
+  try {
+    const tmpBase = os.tmpdir();
+    const OLD_THRESHOLD = 2 * 3_600_000; // 2 hours
+    for (const entry of fs.readdirSync(tmpBase)) {
+      if (!entry.startsWith("edit_") && !entry.startsWith("unified_apk_") && !entry.startsWith("hayo_decomp_") && !entry.startsWith("fullautoclone_")) continue;
+      const full = path.join(tmpBase, entry);
+      try {
+        const st = fs.statSync(full);
+        if (st.isDirectory() && Date.now() - st.mtimeMs > OLD_THRESHOLD) {
+          fs.rmSync(full, { recursive: true, force: true });
+        }
+      } catch {}
+    }
+  } catch {}
+
   fs.mkdirSync(workDir, { recursive: true });
   fs.writeFileSync(inputPath, buffer);
 
+  const apkHash = crypto.createHash("sha256").update(buffer.subarray(0, Math.min(buffer.length, 1_048_576))).digest("hex");
   const apktoolAvailable = isApkToolAvailable();
   const ext = fileName.split(".").pop()?.toLowerCase() || "apk";
 
@@ -835,6 +854,11 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
 
     const structure = buildTree(decompDir, decompDir);
     const allFiles = readDirRecursive(decompDir);
+
+    if (allFiles.length < 3) {
+      throw new Error(`فشل التفكيك — المجلد فارغ أو ناقص (${allFiles.length} ملفات فقط). تأكد أن ملف APK سليم.`);
+    }
+
     const now = Date.now();
     const session: EditSession = {
       sessionId, structure,
@@ -846,6 +870,7 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
       origFile: inputPath,
       fileBackups: new Map(),
       createdAt: now, lastActivity: now,
+      apkHash,
     };
     editSessions.set(sessionId, session);
 
@@ -3370,7 +3395,11 @@ function memoryAwareDecompile(
       return { success: false, details, error: "فشل APKTool (Xmx2G Railway): " + r.stderr.slice(0, 300) };
     }
   }
-  details.push("تم تفكيك APK بنجاح (Railway PaaS optimized)");
+  const fileCount = readDirRecursive(decompDir).length;
+  if (fileCount < 3) {
+    return { success: false, details, error: `التفكيك أنتج ${fileCount} ملفات فقط — APK قد يكون تالفاً أو /tmp ممتلئ` };
+  }
+  details.push(`تم تفكيك APK بنجاح (Railway PaaS optimized) — ${fileCount} ملف`);
   return { success: true, details };
 }
 
@@ -4003,6 +4032,22 @@ export async function runUnifiedAPKScan(
   let firebaseConfigs: any[] = [];
   let riskLevel = "none";
 
+  // Clean stale unified_apk_* dirs to free disk before starting
+  try {
+    const tmpBase = os.tmpdir();
+    const OLD_THRESHOLD = 2 * 3_600_000;
+    for (const entry of fs.readdirSync(tmpBase)) {
+      if (!entry.startsWith("unified_apk_") && !entry.startsWith("fullautoclone_") && !entry.startsWith("hayo_decomp_") && !entry.startsWith("hayo_clone_")) continue;
+      const full = path.join(tmpBase, entry);
+      try {
+        const st = fs.statSync(full);
+        if (st.isDirectory() && Date.now() - st.mtimeMs > OLD_THRESHOLD) {
+          fs.rmSync(full, { recursive: true, force: true });
+        }
+      } catch {}
+    }
+  } catch {}
+
   const workDir = path.join(os.tmpdir(), `unified_apk_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`);
   const inputPath = path.join(workDir, "input.apk");
   const decompDir = path.join(workDir, "decompiled");
@@ -4110,30 +4155,33 @@ export async function runUnifiedAPKScan(
     // ── PHASE 5: اكتشاف Firebase العميق (12 طبقة) ──
     const p5Start = Date.now();
     const p5d: string[] = [];
-    try {
+    {
       const tempSessId = `unified_apk_${Date.now()}`;
-      editSessions.set(tempSessId, {
-        sessionId: tempSessId, decompDir, origFile: inputPath, structure: [], fileCount: 0,
-        apkToolAvailable: true, usedApkTool: true, fileType: "apk", fileBackups: new Map(),
-        createdAt: Date.now(), lastActivity: Date.now(),
-      } as EditSession);
-      const deepResult = await extractFirebaseConfigDeep(tempSessId);
-      deepFirebaseResult = deepResult;
-      firebaseConfigs = deepResult.configs;
-      riskLevel = deepResult.summary.riskLevel;
-      for (const cfg of deepResult.configs) {
-        if (cfg.apiKey) { allApiKeys.push(cfg.apiKey); addSecret({ type: `Firebase API Key (Layer ${cfg.layer})`, value: cfg.apiKey, file: cfg.source, line: 0 }); }
-        if (cfg.databaseUrl) { allDbUrls.push(cfg.databaseUrl); addSecret({ type: `Firebase DB URL (Layer ${cfg.layer})`, value: cfg.databaseUrl, file: cfg.source, line: 0 }); }
-        if (cfg.projectId) { allProjectIds.push(cfg.projectId); addSecret({ type: `Firebase Project ID (Layer ${cfg.layer})`, value: cfg.projectId, file: cfg.source, line: 0 }); }
+      try {
+        editSessions.set(tempSessId, {
+          sessionId: tempSessId, decompDir, origFile: inputPath, structure: [], fileCount: 0,
+          apkToolAvailable: true, usedApkTool: true, fileType: "apk", fileBackups: new Map(),
+          createdAt: Date.now(), lastActivity: Date.now(),
+        } as EditSession);
+        const deepResult = await extractFirebaseConfigDeep(tempSessId);
+        deepFirebaseResult = deepResult;
+        firebaseConfigs = deepResult.configs;
+        riskLevel = deepResult.summary.riskLevel;
+        for (const cfg of deepResult.configs) {
+          if (cfg.apiKey) { allApiKeys.push(cfg.apiKey); addSecret({ type: `Firebase API Key (Layer ${cfg.layer})`, value: cfg.apiKey, file: cfg.source, line: 0 }); }
+          if (cfg.databaseUrl) { allDbUrls.push(cfg.databaseUrl); addSecret({ type: `Firebase DB URL (Layer ${cfg.layer})`, value: cfg.databaseUrl, file: cfg.source, line: 0 }); }
+          if (cfg.projectId) { allProjectIds.push(cfg.projectId); addSecret({ type: `Firebase Project ID (Layer ${cfg.layer})`, value: cfg.projectId, file: cfg.source, line: 0 }); }
+        }
+        p5d.push(`إعدادات Firebase: ${deepResult.summary.totalConfigs}`);
+        p5d.push(`مستوى الخطورة: ${riskLevel}`);
+        p5d.push(`طبقات مفحوصة: ${deepResult.summary.layersScanned || 12}`);
+        if (allApiKeys.length > 0) p5d.push(`API Keys: ${allApiKeys.length}`);
+        if (allDbUrls.length > 0) p5d.push(`Database URLs: ${allDbUrls.length}`);
+        if (allProjectIds.length > 0) p5d.push(`Project IDs: ${allProjectIds.length}`);
+      } catch (e: any) { p5d.push(`خطأ: ${e.message}`); } finally {
+        editSessions.delete(tempSessId);
       }
-      p5d.push(`إعدادات Firebase: ${deepResult.summary.totalConfigs}`);
-      p5d.push(`مستوى الخطورة: ${riskLevel}`);
-      p5d.push(`طبقات مفحوصة: ${deepResult.summary.layersScanned || 12}`);
-      if (allApiKeys.length > 0) p5d.push(`API Keys: ${allApiKeys.length}`);
-      if (allDbUrls.length > 0) p5d.push(`Database URLs: ${allDbUrls.length}`);
-      if (allProjectIds.length > 0) p5d.push(`Project IDs: ${allProjectIds.length}`);
-      editSessions.delete(tempSessId);
-    } catch (e: any) { p5d.push(`خطأ: ${e.message}`); }
+    }
     addPhase(5, "اكتشاف Firebase العميق (12 طبقة)", "B", firebaseConfigs.length > 0 ? "success" : "warning", p5d, Date.now() - p5Start);
 
     // ── PHASE 6: استخراج نقاط النهاية (URLs/APIs) ──
@@ -6975,7 +7023,14 @@ export async function runCloudPentest(sessionId: string): Promise<{
   if (!sess) throw new Error("الجلسة غير موجودة — أعد رفع الملف");
 
   const decompDir  = sess.decompDir;
+  if (!decompDir || !fs.existsSync(decompDir)) {
+    throw new Error("مجلد التفكيك غير موجود — أعد رفع الملف (الجلسة قديمة أو حُذف المجلد المؤقت)");
+  }
   const allFiles   = readDirRecursive(decompDir);
+  if (allFiles.length < 3) {
+    throw new Error(`مجلد التفكيك فارغ (${allFiles.length} ملفات) — أعد رفع/فك الـ APK`);
+  }
+  sess.lastActivity = Date.now();
   const textFiles  = allFiles.filter(f => !isBinaryFile(f));
 
   // ── Helpers ──────────────────────────────────────────────────
