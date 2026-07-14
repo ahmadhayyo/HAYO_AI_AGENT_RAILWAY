@@ -859,6 +859,16 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
       throw new Error(`فشل التفكيك — المجلد فارغ أو ناقص (${allFiles.length} ملفات فقط). تأكد أن ملف APK سليم.`);
     }
 
+    let packageName = "";
+    try {
+      const manifestPath = allFiles.find((f: string) => path.basename(f) === "AndroidManifest.xml");
+      if (manifestPath) {
+        const mText = fs.readFileSync(manifestPath, "utf-8").slice(0, 50_000);
+        const pkgMatch = mText.match(/package\s*=\s*"([^"]+)"/);
+        if (pkgMatch) packageName = pkgMatch[1];
+      }
+    } catch {}
+
     const now = Date.now();
     const session: EditSession = {
       sessionId, structure,
@@ -890,8 +900,10 @@ export async function decompileFileForEdit(buffer: Buffer, fileName: string): Pr
       }
     }, 60_000);
 
-    return { ...session, success: true };
+    console.log(`[decompile] session=${sessionId} hash=${apkHash.slice(0, 12)} pkg=${packageName} files=${allFiles.length}`);
+    return { ...session, success: true, package: packageName };
   } catch (e: any) {
+    console.log(`[decompile] FAILED session=${sessionId} error=${e.message}`);
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
     return {
       sessionId, structure: [], fileCount: 0,

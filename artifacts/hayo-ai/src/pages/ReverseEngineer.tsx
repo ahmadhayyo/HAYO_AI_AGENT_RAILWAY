@@ -1901,7 +1901,7 @@ export default function ReverseEngineer(){
             <h2 className="text-2xl font-bold bg-gradient-to-r from-cyan-300 to-blue-400 bg-clip-text text-transparent">اختبار اختراق سحابي تلقائي</h2>
             <p className="text-sm text-muted-foreground max-w-lg mx-auto">ارفع ملف APK واضغط "ابدأ الاختبار" — سيتم تنفيذ 14 مرحلة Cipher-7 تلقائياً: تفكيك، مصادقة، مفاتيح، IDOR، استغلال، سحب بيانات، Telegram، سكريبت، تحليل تشفيري، Firebase معمّق، AWS، تجاوز حمايات، تقرير استخباراتي، وترسانة الهجوم</p>
           </div>
-          <input type="file" ref={cpFileRef} accept=".apk" className="hidden" onChange={e=>{if(e.target.files?.[0]){setCpFile(e.target.files[0]);setCpResult(null);setDfbResult(null);setFacResult(null);setCpStepsRevealed([]);setCpActiveStep(0);setCpShowReport(false);}}}/>
+          <input type="file" ref={cpFileRef} accept=".apk" className="hidden" onClick={e=>{(e.target as HTMLInputElement).value="";}} onChange={e=>{if(e.target.files?.[0]){setCpFile(e.target.files[0]);setCpResult(null);setDfbResult(null);setFacResult(null);setCpStepsRevealed([]);setCpActiveStep(0);setCpShowReport(false);}}}/>
           <div className={`w-full max-w-xl border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${cpFile?"border-cyan-500/60 bg-cyan-500/5":"border-border/50 hover:border-cyan-500/40 hover:bg-cyan-500/5"}`} onClick={()=>cpFileRef.current?.click()}>
             {cpFile?<div className="space-y-2">
               <Package className="w-10 h-10 text-cyan-400 mx-auto"/>
