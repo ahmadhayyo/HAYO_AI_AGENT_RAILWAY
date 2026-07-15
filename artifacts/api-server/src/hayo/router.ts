@@ -2661,6 +2661,9 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         // Optional credentials → authenticated scan of a login-gated target.
         username: z.string().max(200).optional(),
         password: z.string().max(200).optional(),
+        // Opt-in intrusive detection suite (smuggling/deserialization/proto-pollution).
+        // Requires an explicit liability affirmation in the UI.
+        aggressive: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         await assertCredits(ctx.user, "reverse_analyze");
@@ -2676,7 +2679,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح بفحص هذا الهدف", cause: { token: auth.token } });
         }
         const { runWebScan } = await import("./pentest/webEngine.js");
-        return runWebScan(input.target, { username: input.username, password: input.password });
+        return runWebScan(input.target, { username: input.username, password: input.password, aggressive: input.aggressive });
       }),
 
     // Authorized Android (APK) scan over a decompiled session.
