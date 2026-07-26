@@ -1,0 +1,24 @@
+﻿@echo off
+REM ============================================================
+REM  HAYO Cipher-7 — ONE-COMMAND local orchestrator
+REM  Analyze + extract keys/URLs, and optionally build a modified signed APK.
+REM
+REM    HAYO-AUTO.bat committee.apk                 (analyze + extract keys)
+REM    HAYO-AUTO.bat committee.apk --test-keys     (+ validate keys live)
+REM    HAYO-AUTO.bat committee.apk --unlock --root (+ build modified signed apk)
+REM
+REM  (or drag the APK onto this .bat for a plain analysis)
+REM ============================================================
+setlocal
+set "PY=C:\Users\PT\AppData\Local\Programs\Python\Python312\python.exe"
+
+if "%~1"=="" (
+  echo [!] Usage: HAYO-AUTO.bat ^<committee.apk^> [--test-keys] [--unlock] [--root]
+  pause
+  exit /b 1
+)
+
+"%PY%" "%~dp0hayo_auto.py" %*
+echo.
+pause
+endlocal

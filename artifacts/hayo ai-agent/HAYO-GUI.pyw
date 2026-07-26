@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+HAYO Cipher-7 — Graphical Control Panel (HAYO-GUI.pyw)
+Updated to include DeepSeek Core v5 One-Click Pipeline.
+"""
+import os
+import re
+import queue
+import threading
+import subprocess
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+AGENT = os.path.dirname(os.path.abspath(__file__))
+ADB_CANDIDATES = [
+    r"C:\Users\PT\Downloads\platform-tools\adb.exe",
+    r"D:\LDPlayer\LDPlayer9\adb.exe",
+]
+ADB = next((p for p in ADB_CANDIDATES if os.path.isfile(p)), ADB_CANDIDATES[0])
+PY = r"C:\Users\PT\AppData\Local\Programs\Python\Python312\python.exe"
+DEFAULT_DEV = "emulator-5554"
+
+BG, FG, ACC, BTN, BTN2, BTN_RED = "#0b1020", "#d6f5e3", "#00e6a8", "#122040", "#1b2d52", "#4a0e0e"
+RUN_BTN_TEXT = "🤖  المسار الكامل بقيادة الذكاء الاصطناعي (مباشر داخل اللوحة)"
+
+def launch(batfile, arg=""):
+    path = os.path.join(AGENT, batfile)
+    if not os.path.isfile(path):
+        # Fallback to direct python launch if .bat is missing
+        if batfile.endswith(".bat"):
+            py_script = batfile.replace("RUN-", "").replace(".bat", ".py").lower()
+            if os.path.isfile(os.path.join(AGENT, py_script)):
+                launch_py(py_script, arg)
+                return
+        messagebox.showerror("HAYO", f"Missing: {batfile}"); return
+    env = os.environ.copy()
+    env["HAYO_DEV"] = current_dev()
+    subprocess.Popen(f'start "HAYO Cipher-7" cmd /k ""{path}" {arg}"', shell=True, env=env)
+    log_line(f"▶ launched {batfile} {arg} [DEV={env['HAYO_DEV']}]".strip())
+
+def launch_py(script, arg=""):
+    path = os.path.join(AGENT, script)
+    env = os.environ.copy()
+    env["HAYO_DEV"] = current_dev()
+    subprocess.Popen(f'start "DeepSeek Core v5" cmd /k "{PY} {q(path)} {arg}"', shell=True, env=env)
+    log_line(f"▶ launched {script} {arg} [DEV={env['HAYO_DEV']}]".strip())
+
+def log_line(text):
+    log.insert(tk.END, text + "\n")
+    log.see(tk.END)
+
+# ================================================================
+#  Integrated in-panel pipeline runner (AI-driven, live streaming)
+# ----------------------------------------------------------------
+#  Runs hayo_pipeline.py as a child process bound to the selected
+#  emulator, and streams its phase-by-phase output straight into
+#  the GUI log — no separate cmd window. The AI mastermind drives
+#  all 6 phases (static -> dynamic -> brain -> cloud -> exploit -> report).
+# ================================================================
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")          # strip color codes
+_PHASE_RE = re.compile(r"المرحلة\s*(\d+)\s*[:：]\s*(.+)")
+
+pipeline_proc = None          # currently running subprocess.Popen
+pipeline_queue = queue.Queue()  # lines from the reader thread
+
+
+def _reader_thread(proc):
+    """Background: read child stdout line-by-line into the queue."""
+    try:
+        for raw in proc.stdout:
+            pipeline_queue.put(("line", _ANSI_RE.sub("", raw.rstrip("\n"))))
+    except Exception as e:
+        pipeline_queue.put(("line", f"[reader error] {e}"))
+    finally:
+        proc.wait()
+        pipeline_queue.put(("done", proc.returncode))
+
+
+def _pump_pipeline():
+    """Main-thread: drain the queue into the log widget (Tk-safe)."""
+    global pipeline_proc
+    try:
+        while True:
+            kind, payload = pipeline_queue.get_nowait()
+            if kind == "line":
+                log.insert(tk.END, payload + "\n")
+                log.see(tk.END)
+                m = _PHASE_RE.search(payload)
+                if m:
+                    status.config(text=f"⏳ المرحلة {m.group(1)}: {m.group(2).strip()[:48]}")
+            elif kind == "done":
+                rc = payload
+                pipeline_proc = None
+                run_pipeline_btn.config(state="normal", text=RUN_BTN_TEXT)
+                stop_pipeline_btn.config(state="disabled")
+                if rc == 0:
+                    status.config(text="✅ اكتمل المسار الكامل — التقارير في مجلد loot/")
+                    log_line("✅ اكتمل المسار الكامل بنجاح. التقارير محفوظة في loot/")
+                else:
+                    status.config(text=f"⚠ توقف المسار (رمز {rc})")
+                    log_line(f"⚠ انتهى المسار برمز خروج {rc}")
+                return
+    except queue.Empty:
+        pass
+    if pipeline_proc is not None:
+        root.after(150, _pump_pipeline)
+
+
+def on_full_ai_pipeline():
+    """Launch the unified AI pipeline inside the panel, bound to the emulator."""
+    global pipeline_proc
+    if pipeline_proc is not None:
+        messagebox.showinfo("HAYO", "المسار قيد التشغيل بالفعل.")
+        return
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    dur = dur_var.get().strip() or "180"
+    script = os.path.join(AGENT, "hayo_pipeline.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "hayo_pipeline.py غير موجود."); return
+    cmd = [PY, script, "--package", p, "--device", dev, "--duration", str(dur),
+           "--adaptive", "--max-rounds", "3"]
+    env = os.environ.copy()
+    env["HAYO_DEV"] = dev
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUNBUFFERED"] = "1"
+    try:
+        pipeline_proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            bufsize=1, cwd=AGENT, env=env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as e:
+        pipeline_proc = None
+        messagebox.showerror("HAYO", f"تعذّر بدء المسار: {e}"); return
+    log_line("=" * 60)
+    log_line(f"🤖 بدء المسار الكامل بقيادة AI | الهدف: {p} | الجهاز: {dev} | المدة: {dur}s")
+    log_line("=" * 60)
+    status.config(text="⏳ بدء المسار الكامل...")
+    run_pipeline_btn.config(state="disabled", text="⏳ المسار قيد التشغيل...")
+    stop_pipeline_btn.config(state="normal")
+    threading.Thread(target=_reader_thread, args=(pipeline_proc,), daemon=True).start()
+    root.after(150, _pump_pipeline)
+
+
+def on_stop_pipeline():
+    global pipeline_proc
+    if pipeline_proc is None:
+        return
+    try:
+        pipeline_proc.terminate()
+        log_line("⏹ تم إرسال إيقاف المسار...")
+    except Exception as e:
+        log_line(f"تعذّر الإيقاف: {e}")
+
+def pick_apk():
+    return filedialog.askopenfilename(title="اختر ملف APK",
+                                      filetypes=[("APK / bundle", "*.apk *.xapk *.apks *.apkm"), ("All", "*.*")])
+
+def q(p): return f'"{p}"'
+
+def current_dev():
+    return dev_var.get().strip() or DEFAULT_DEV
+
+def pkg():
+    p = pkg_entry.get().strip()
+    if not p: messagebox.showwarning("HAYO", "اكتب اسم الحزمة أولًا أو اخترها من القائمة.")
+    return p
+
+# ---------------------------------------------------------------- ① static
+def on_analyze():
+    f = pick_apk()
+    if f: launch("HAYO-AUTO.bat", q(f) + " --test-keys")
+
+def on_deepseek_pipeline():
+    f = pick_apk()
+    p = pkg()
+    if f and p:
+        launch_py("deepseek_pipeline.py", f"{q(f)} --package {p} --device {current_dev()} --aggressive")
+    else:
+        messagebox.showwarning("DeepSeek", "يرجى اختيار ملف APK واسم الحزمة أولاً.")
+
+def on_unlock_build():
+    f = pick_apk()
+    if f: launch("RUN-MODIFY-APK.bat", q(f) + " --root")
+
+def on_install():
+    f = filedialog.askopenfilename(title="اختر APK المعدّل", filetypes=[("APK/bundle", "*.apk *.xapk *.apks *.apkm"), ("All", "*.*")])
+    if not f: f = filedialog.askdirectory(title="اختر مجلد الأجزاء (splits)")
+    if f: launch("RUN-INSTALL.bat", q(f))
+
+def on_setup_check():
+    launch("SETUP-CHECK.bat")
+
+# ---------------------------------------------------------------- ② target / devices
+def refresh_devices():
+    try:
+        out = subprocess.run([ADB, "devices"], capture_output=True, text=True, timeout=15).stdout
+        devs = []
+        for line in out.splitlines()[1:]:
+            line = line.strip()
+            if not line or "\t" not in line:
+                continue
+            name, state = line.split("\t")
+            if state.strip() == "device":
+                devs.append(name.strip())
+        if not devs:
+            devs = [DEFAULT_DEV]
+        dev_combo["values"] = devs
+        preferred = next((d for d in devs if d.startswith("emulator-")), devs[0])
+        dev_var.set(preferred)
+        status.config(text=f"✓ الأجهزة المتصلة: {', '.join(devs)}")
+    except Exception as e:
+        dev_combo["values"] = [DEFAULT_DEV]
+        dev_var.set(DEFAULT_DEV)
+        status.config(text=f"خطأ adb: {e}")
+
+def on_list_packages():
+    try:
+        out = subprocess.run([ADB, "-s", current_dev(), "shell", "pm", "list", "packages", "-3"],
+                             capture_output=True, text=True, timeout=30).stdout
+        pkgs = sorted(l.replace("package:", "").strip() for l in out.splitlines() if l.strip())
+        pkg_list.delete(0, tk.END)
+        if not pkgs: pkg_list.insert(tk.END, "لا توجد تطبيقات")
+        for p in pkgs: pkg_list.insert(tk.END, p)
+        status.config(text="👇 انقر على اسم التطبيق في القائمة")
+    except Exception as e:
+        status.config(text=f"خطأ adb: {e}")
+
+def on_pick_pkg(event=None):
+    sel = pkg_list.curselection()
+    if not sel: return
+    name = pkg_list.get(sel[0]).strip()
+    if "." in name:
+        pkg_entry.delete(0, tk.END)
+        pkg_entry.insert(0, name)
+        status.config(text=f"✓ تم اختيار: {name}")
+
+# ---------------------------------------------------------------- ③ dynamic engines
+def on_deep_engine():
+    p = pkg()
+    if p: launch("RUN-DEEP.bat", p)
+
+def on_deepseek_core():
+    p = pkg()
+    if p: launch("RUN-DEEPSEEK-CORE.bat", p)
+
+def on_capture():
+    p = pkg()
+    if p: launch("RUN-CAPTURE-ALL.bat", p)
+
+def on_capture_native():
+    p = pkg()
+    if p: launch("RUN-CAPTURE-NATIVE.bat", p)
+
+def on_hijack_deep():
+    p = pkg()
+    if p: launch("RUN-HIJACK.bat", p)
+
+def on_unlock_local():
+    p = pkg()
+    if p: launch("RUN-UNLOCK.bat", p)
+
+def on_unlock_cloud():
+    p = pkg()
+    if p: launch("RUN-UNLOCK-CLOUD.bat", p)
+
+def on_hijack_premium():
+    p = pkg()
+    if p: launch("RUN-HIJACK-PREMIUM.bat", p)
+
+def on_hijack_cloud():
+    p = pkg()
+    if p: launch("RUN-HIJACK-CLOUD.bat", p)
+
+def on_monitor():
+    p = pkg()
+    if p: launch("RUN-MONITOR.bat", p)
+
+def on_cloud_assault():
+    p = pkg()
+    if p: launch("RUN-CLOUD-ASSAULT.bat", p)
+
+def on_token_heist():
+    p = pkg()
+    if p: launch("RUN-TOKEN-HEIST.bat", p)
+
+def on_full_assault():
+    p = pkg()
+    if p: launch("RUN-FULL-ASSAULT.bat", p)
+
+def on_screen_rec():
+    launch("RUN-SCREEN-REC.bat")
+
+# ---------------------------------------------------------------- ④ advanced utilities
+def on_mass_hook():
+    launch("RUN-MASS-HOOK.bat")
+
+def on_memory_scan():
+    p = pkg()
+    if p: launch("RUN-MEMORY-SCAN.bat", p)
+
+def on_evasion():
+    p = pkg()
+    if p: launch("RUN-EVASION.bat", p)
+
+def on_data_clone():
+    p = pkg()
+    if p: launch("RUN-DATA-CLONE.bat", p)
+
+def on_reverse_shell():
+    p = pkg()
+    if p: launch("RUN-REVERSE-SHELL.bat", p)
+
+def on_c2_server():
+    launch("RUN-C2-SERVER.bat")
+
+def on_orchestrator():
+    p = pkg()
+    if p: launch("RUN-ORCHESTRATOR.bat", p)
+
+# ---------------------------------------------------------------- window
+root = tk.Tk()
+root.title("HAYO Cipher-7 — لوحة التحكم الموحدة")
+root.configure(bg=BG)
+root.geometry("760x850")
+root.minsize(700, 600)
+
+tk.Label(root, text="HAYO Cipher-7", bg=BG, fg=ACC, font=("Consolas", 24, "bold")).pack(pady=(14, 0))
+tk.Label(root, text="محرك الاختبار الديناميكي الشامل", bg=BG, fg=FG, font=("Segoe UI", 11)).pack()
+
+style = ttk.Style()
+style.theme_use("default")
+style.configure("HAYO.TNotebook", background=BG, borderwidth=0)
+style.configure("HAYO.TNotebook.Tab", background=BTN2, foreground=FG, padding=(14, 8), font=("Segoe UI", 10, "bold"))
+style.map("HAYO.TNotebook.Tab", background=[("selected", ACC)], foreground=[("selected", BG)])
+style.configure("HAYO.TCombobox", fieldbackground="#0a1730", background="#0a1730", foreground=ACC)
+
+nb = ttk.Notebook(root, style="HAYO.TNotebook")
+nb.pack(fill="both", expand=True, padx=14, pady=(12, 6))
+
+tab_static = tk.Frame(nb, bg=BG)
+tab_target = tk.Frame(nb, bg=BG)
+tab_engines = tk.Frame(nb, bg=BG)
+tab_advanced = tk.Frame(nb, bg=BG)
+nb.add(tab_static, text="① التحليل الساكن")
+nb.add(tab_target, text="② الهدف والجهاز")
+nb.add(tab_engines, text="③ المحركات الديناميكية")
+nb.add(tab_advanced, text="④ أدوات متقدمة")
+
+def button(parent, text, cmd, color=BTN):
+    b = tk.Button(parent, text=text, command=cmd, bg=color, fg=FG, activebackground=ACC,
+                  activeforeground=BG, font=("Segoe UI", 11, "bold"), relief="flat", bd=0,
+                  padx=10, pady=8, cursor="hand2")
+    b.pack(fill="x", padx=16, pady=3)
+    return b
+
+def section(parent, title):
+    tk.Label(parent, text=title, bg=BG, fg=ACC, font=("Segoe UI", 11, "bold")).pack(anchor="e", padx=16, pady=(12, 4))
+
+# ---- tab ①
+section(tab_static, "تحليل واستخراج + بناء")
+button(tab_static, "🔎  حلّل واستخرج المفاتيح", on_analyze)
+button(tab_static, "🔓  بناء APK موقّع (Premium)", on_unlock_build, BTN2)
+button(tab_static, "📲  تثبيت ذكي على المحاكي", on_install)
+button(tab_static, "🩺  فحص وإصلاح البيئة (Setup Check)", on_setup_check, BTN2)
+
+# ---- tab ②
+section(tab_target, "الجهاز (Emulator / Device)")
+dfrm = tk.Frame(tab_target, bg=BG); dfrm.pack(fill="x", padx=16)
+dev_var = tk.StringVar(value=DEFAULT_DEV)
+dev_combo = ttk.Combobox(dfrm, textvariable=dev_var, style="HAYO.TCombobox",
+                          font=("Consolas", 11), state="readonly", values=[DEFAULT_DEV])
+dev_combo.pack(side="left", fill="x", expand=True, ipady=4)
+tk.Button(dfrm, text="تحديث الأجهزة", command=refresh_devices, bg=BTN2, fg=FG,
+          relief="flat", font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right", padx=(6, 0))
+
+section(tab_target, "التطبيق المستهدف")
+frm = tk.Frame(tab_target, bg=BG); frm.pack(fill="x", padx=16)
+pkg_entry = tk.Entry(frm, font=("Consolas", 11), bg="#0a1730", fg=ACC, insertbackground=ACC, relief="flat")
+pkg_entry.pack(side="left", fill="x", expand=True, ipady=6)
+tk.Button(frm, text="تحديث القائمة", command=on_list_packages, bg=BTN2, fg=FG,
+          relief="flat", font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right", padx=(6, 0))
+
+pkg_list = tk.Listbox(tab_target, height=10, bg="#0a1730", fg=ACC, font=("Consolas", 10),
+                      selectbackground=ACC, selectforeground=BG, relief="flat", cursor="hand2")
+pkg_list.pack(fill="both", expand=True, padx=16, pady=(5, 2))
+pkg_list.bind("<<ListboxSelect>>", on_pick_pkg)
+status = tk.Label(tab_target, text="", bg=BG, fg=ACC, font=("Segoe UI", 9, "bold"), anchor="e")
+status.pack(fill="x", padx=16, pady=(0, 8))
+
+# ---- tab ③
+section(tab_engines, "المسار الموحد بقيادة AI (مباشر داخل اللوحة)")
+
+# duration row for the integrated pipeline
+durfrm = tk.Frame(tab_engines, bg=BG); durfrm.pack(fill="x", padx=16, pady=(0, 2))
+tk.Label(durfrm, text="مدة المرحلة الديناميكية (ثانية):", bg=BG, fg=FG,
+         font=("Segoe UI", 9, "bold")).pack(side="right")
+dur_var = tk.StringVar(value="180")
+tk.Entry(durfrm, textvariable=dur_var, width=8, font=("Consolas", 11), bg="#0a1730",
+         fg=ACC, insertbackground=ACC, relief="flat", justify="center").pack(side="right", padx=(0, 8), ipady=3)
+
+run_pipeline_btn = button(tab_engines, RUN_BTN_TEXT, on_full_ai_pipeline, BTN_RED)
+stop_pipeline_btn = button(tab_engines, "⏹  إيقاف المسار", on_stop_pipeline, BTN2)
+stop_pipeline_btn.config(state="disabled")
+tk.Label(tab_engines, text="يشغّل المحرك الساكن + الديناميكي + العقل المدبر + السحابة + الاستغلال ثم التقرير، "
+         "مرتبطاً بالمحاكي المختار، والتقدّم يظهر في سجل الأسفل.",
+         bg=BG, fg="#7fa8c9", font=("Segoe UI", 8), wraplength=680, justify="right").pack(anchor="e", padx=16, pady=(0, 4))
+
+button(tab_engines, "🚀  المسار المبسّط في نافذة منفصلة (DeepSeek 3 مراحل)", on_deepseek_pipeline, BTN2)
+
+section(tab_engines, "المحرّك الذكي (AI)")
+button(tab_engines, "⚡  DeepSeek Core (استخراج + فكّ تشفير + فتح Premium تلقائي)", on_deepseek_core, BTN2)
+button(tab_engines, "🧠  المحرّك الديناميكي الموحّد (DeepSeek يقود التطبيق)", on_deep_engine, BTN2)
+section(tab_engines, "الهجوم الشامل والاعتراض")
+button(tab_engines, "🔥  هجوم شامل (Full Assault)", on_full_assault, BTN_RED)
+button(tab_engines, "☁️  اختراق السحابة (Cloud Assault)", on_cloud_assault, BTN2)
+button(tab_engines, "💰  حقن الرموز (Token Heist)", on_token_heist, BTN2)
+section(tab_engines, "الاعتراض والتصنت")
+button(tab_engines, "🌐  اعتراض حركة المرور (Universal)", on_capture)
+button(tab_engines, "🔬  اعتراض TLS الأصلي (Native)", on_capture_native)
+button(tab_engines, "🕵️  اعتراض عميق (Deep Hijack)", on_hijack_deep)
+button(tab_engines, "📡  مراقبة الواجهات الحساسة (Monitor)", on_monitor)
+section(tab_engines, "فتح المزايا المدفوعة")
+button(tab_engines, "🔓  فتح Premium (محلي)", on_unlock_local)
+button(tab_engines, "🔓  فتح Premium (سحابي)", on_unlock_cloud)
+button(tab_engines, "🔓  Hijack Premium", on_hijack_premium)
+button(tab_engines, "☁️  Hijack Cloud", on_hijack_cloud)
+section(tab_engines, "أدوات ملحقة")
+button(tab_engines, "🎥  تسجيل الشاشة و Logcat", on_screen_rec)
+
+# ---- tab ④
+section(tab_advanced, "حقن وتنصت متقدم")
+button(tab_advanced, "🪝  Mass Hook (كل العمليات)", on_mass_hook)
+button(tab_advanced, "🧠  فحص الذاكرة (Memory Scanner)", on_memory_scan)
+button(tab_advanced, "🥷  تجاوز الكشف (Evasion)", on_evasion, BTN2)
+section(tab_advanced, "استخراج وتحكم عن بعد")
+button(tab_advanced, "🗂️  استنساخ بيانات التطبيق (Data Clone)", on_data_clone)
+button(tab_advanced, "🖥️  Reverse Shell", on_reverse_shell, BTN_RED)
+button(tab_advanced, "📟  خادم C2", on_c2_server, BTN2)
+button(tab_advanced, "🎛️  المنسق التفاعلي (Orchestrator)", on_orchestrator, BTN2)
+
+log = scrolledtext.ScrolledText(root, height=6, bg="#060c1c", fg=FG, font=("Consolas", 9), relief="flat")
+log.pack(fill="both", expand=False, padx=14, pady=(4, 14))
+log.insert(tk.END, f"ADB: {ADB}\nPython: {PY}\nجارٍ فحص الأجهزة المتصلة...\n")
+
+root.after(200, refresh_devices)
+root.mainloop()

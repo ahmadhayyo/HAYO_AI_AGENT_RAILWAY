@@ -1,0 +1,29 @@
+﻿@echo off
+title HAYO Token Heist
+cd /d "%~dp0"
+
+REM ============================================================
+REM  HAYO Cipher-7 — TOKEN HEIST ENGINE
+REM  Linked to Emulator: emulator-5554
+REM ============================================================
+
+if not defined HAYO_DEV set "HAYO_DEV=emulator-5554"
+set "DEV=%HAYO_DEV%"
+set "PY=C:\Users\PT\AppData\Local\Programs\Python\Python312\python.exe"
+
+set "PKG=%~1"
+if "%PKG%"=="" set /p PKG="Target package: "
+echo.
+echo ============================================
+echo  HAYO Cipher-7 TOKEN HEIST
+echo  Target Device: %DEV%
+echo ============================================
+echo Fast premium unlock + token/points/credits injection
+echo ============================================
+echo.
+
+"%PY%" orchestrator.py --token-heist %PKG% --device %DEV%
+echo.
+echo Token heist complete. Check:
+echo   loot/token_forge/ - forged tokens/receipts/JWTs
+pause

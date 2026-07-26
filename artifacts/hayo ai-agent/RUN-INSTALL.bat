@@ -1,0 +1,24 @@
+﻿@echo off
+REM ============================================================
+REM  HAYO Cipher-7 — Smart Installer (fixes "parse package" on split apps)
+REM  Handles: single .apk | folder of splits | .xapk/.apks/.apkm bundle
+REM
+REM    RUN-INSTALL.bat  app.apk
+REM    RUN-INSTALL.bat  C:\path\to\splits_folder
+REM    RUN-INSTALL.bat  app.xapk
+REM  (add the package name to remove the original first: after the path)
+REM ============================================================
+setlocal
+set "PY=C:\Users\PT\AppData\Local\Programs\Python\Python312\python.exe"
+if not defined HAYO_DEV set "HAYO_DEV=emulator-5554"
+
+if "%~1"=="" (
+  echo [!] Usage: RUN-INSTALL.bat ^<app.apk ^| splits_folder ^| app.xapk^>  [--package com.x]
+  pause
+  exit /b 1
+)
+
+"%PY%" "%~dp0smart_install.py" -D %HAYO_DEV% %*
+echo.
+pause
+endlocal

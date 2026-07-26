@@ -1,0 +1,15 @@
+﻿@echo off
+title HAYO Mass Hook
+cd /d "%~dp0"
+
+set "PY=C:\Users\PT\AppData\Local\Programs\Python\Python312\python.exe"
+if not defined HAYO_DEV set "HAYO_DEV=emulator-5554"
+set "DEV=%HAYO_DEV%"
+
+set /p FILTER="Filter (skip for all): "
+if not "%FILTER%"="" (
+    "%PY%" mass_hook.py --device %DEV% --filter "%FILTER%"
+) else (
+    "%PY%" mass_hook.py --device %DEV%
+)
+pause

@@ -1,0 +1,16 @@
+.\agent.py
+.\crawler.py
+.\DEEPSEEK_CORE_REPORT.md
+.\demo.py
+.\dynamic_engine.py
+.\hayo_pipeline.py
+.\HOW_TO_EXTEND.md
+.\instrument_deep.js
+.\mass_hook.py
+.\RUN-MONITOR.bat
+.\TASK_FOR_AGENT.md
+.\.claude\settings.local.json
+.\scripts\instrument.js
+.\scripts\instrument_deep.BACKUP.js
+.\scripts\instrument_deep.js
+.\scripts\obfuscation_bypass.js
