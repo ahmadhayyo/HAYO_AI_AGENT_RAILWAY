@@ -1,0 +1,382 @@
+[
+  {
+    "line": 58,
+    "content": "function tryHook(className, fn, wrapper) {"
+  },
+  {
+    "line": 60,
+    "content": "var clz = Java.use(className);"
+  },
+  {
+    "line": 69,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 71,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 72,
+    "content": "function hookCrypto() {"
+  },
+  {
+    "line": 74,
+    "content": "tryHook(\"javax.crypto.Cipher\", null, function(Cipher) {"
+  },
+  {
+    "line": 102,
+    "content": "tryHook(\"javax.crypto.spec.SecretKeySpec\", null, function(SKS) {"
+  },
+  {
+    "line": 123,
+    "content": "tryHook(\"javax.crypto.spec.IvParameterSpec\", null, function(IvPS) {"
+  },
+  {
+    "line": 138,
+    "content": "tryHook(\"java.security.KeyPairGenerator\", null, function(KPG) {"
+  },
+  {
+    "line": 156,
+    "content": "tryHook(\"javax.crypto.Mac\", null, function(Mac) {"
+  },
+  {
+    "line": 174,
+    "content": "tryHook(\"java.security.MessageDigest\", null, function(MD) {"
+  },
+  {
+    "line": 190,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 192,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 193,
+    "content": "function hookNetwork() {"
+  },
+  {
+    "line": 195,
+    "content": "tryHook(\"okhttp3.OkHttpClient\", null, function(OHC) {"
+  },
+  {
+    "line": 230,
+    "content": "tryHook(\"okhttp3.ResponseBody\", null, function(RB) {"
+  },
+  {
+    "line": 251,
+    "content": "tryHook(\"java.net.HttpURLConnection\", null, function(HUC) {"
+  },
+  {
+    "line": 267,
+    "content": "tryHook(\"okhttp3.WebSocket\", null, function(WS) {"
+  },
+  {
+    "line": 278,
+    "content": "tryHook(\"org.chromium.net.CronetEngine\", null, function(CE) {"
+  },
+  {
+    "line": 286,
+    "content": "tryHook(\"java.net.URL\", null, function(URL) {"
+  },
+  {
+    "line": 295,
+    "content": "tryHook(\"okhttp3.sse.EventSource\", null, function(ES) {"
+  },
+  {
+    "line": 303,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 305,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 306,
+    "content": "function hookAuth() {"
+  },
+  {
+    "line": 308,
+    "content": "tryHook(\"android.content.SharedPreferences\", null, function(SP) {"
+  },
+  {
+    "line": 325,
+    "content": "var map = Java.cast(all, Java.use(\"java.util.HashMap\"));"
+  },
+  {
+    "line": 347,
+    "content": "tryHook(\"android.accounts.AccountManager\", null, function(AM) {"
+  },
+  {
+    "line": 380,
+    "content": "tryHook(\"io.jsonwebtoken.Jwts\", null, function(Jwts) {"
+  },
+  {
+    "line": 388,
+    "content": "tryHook(\"com.google.firebase.auth.FirebaseAuth\", null, function(FA) {"
+  },
+  {
+    "line": 401,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 403,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 404,
+    "content": "function hookStorage() {"
+  },
+  {
+    "line": 406,
+    "content": "tryHook(\"android.database.sqlite.SQLiteDatabase\", null, function(SD) {"
+  },
+  {
+    "line": 427,
+    "content": "tryHook(\"android.database.Cursor\", null, function(Cursor) {"
+  },
+  {
+    "line": 445,
+    "content": "tryHook(\"androidx.room.RoomDatabase\", null, function(RD) {"
+  },
+  {
+    "line": 453,
+    "content": "tryHook(\"java.io.FileOutputStream\", null, function(FOS) {"
+  },
+  {
+    "line": 474,
+    "content": "tryHook(\"androidx.datastore.core.DataStore\", null, function(DS) {"
+  },
+  {
+    "line": 482,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 484,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 485,
+    "content": "function hookBilling() {"
+  },
+  {
+    "line": 487,
+    "content": "tryHook(\"com.android.billingclient.api.BillingClient\", null, function(BC) {"
+  },
+  {
+    "line": 509,
+    "content": "tryHook(\"com.android.billingclient.api.Purchase\", null, function(Purchase) {"
+  },
+  {
+    "line": 539,
+    "content": "tryHook(\"com.android.vending.billing.IInAppBillingService\", null, function(IAB) {"
+  },
+  {
+    "line": 551,
+    "content": "tryHook(\"android.telephony.SubscriptionManager\", null, function(SM) {"
+  },
+  {
+    "line": 556,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 558,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 559,
+    "content": "function hookCloud() {"
+  },
+  {
+    "line": 561,
+    "content": "tryHook(\"com.google.firebase.database.FirebaseDatabase\", null, function(FD) {"
+  },
+  {
+    "line": 573,
+    "content": "tryHook(\"com.google.firebase.firestore.FirebaseFirestore\", null, function(FF) {"
+  },
+  {
+    "line": 585,
+    "content": "tryHook(\"com.google.firebase.remoteconfig.FirebaseRemoteConfig\", null, function(FRC) {"
+  },
+  {
+    "line": 598,
+    "content": "tryHook(\"com.amazonaws.auth.BasicAWSCredentials\", null, function(AWS) {"
+  },
+  {
+    "line": 609,
+    "content": "tryHook(\"com.google.android.gms.common.api.GoogleApiClient\", null, function(GAC) {"
+  },
+  {
+    "line": 617,
+    "content": "tryHook(\"supabase.KtSession\", null, function(SS) {"
+  },
+  {
+    "line": 629,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 631,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 632,
+    "content": "function hookNative() {"
+  },
+  {
+    "line": 634,
+    "content": "tryHook(\"javax.net.ssl.TrustManager\", null, function(TM) {"
+  },
+  {
+    "line": 638,
+    "content": "tryHook(\"javax.net.ssl.SSLContext\", null, function(SC) {"
+  },
+  {
+    "line": 647,
+    "content": "tryHook(\"javax.net.ssl.HttpsURLConnection\", null, function(HUC) {"
+  },
+  {
+    "line": 655,
+    "content": "tryHook(\"java.lang.System\", null, function(System) {"
+  },
+  {
+    "line": 663,
+    "content": "tryHook(\"java.security.Provider\", null, function(Provider) {"
+  },
+  {
+    "line": 671,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 673,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 674,
+    "content": "function hookMemory() {"
+  },
+  {
+    "line": 695,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 697,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 698,
+    "content": "function hookLifecycle() {"
+  },
+  {
+    "line": 699,
+    "content": "tryHook(\"android.app.Activity\", null, function(Activity) {"
+  },
+  {
+    "line": 715,
+    "content": "tryHook(\"androidx.fragment.app.Fragment\", null, function(Fragment) {"
+  },
+  {
+    "line": 725,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 727,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 728,
+    "content": "function hookWebViewAdvanced() {"
+  },
+  {
+    "line": 729,
+    "content": "tryHook(\"android.webkit.WebView\", null, function(WV) {"
+  },
+  {
+    "line": 752,
+    "content": "var WVC = Java.use(\"android.webkit.WebViewClient\");"
+  },
+  {
+    "line": 759,
+    "content": "var WVC2 = Java.use(\"android.webkit.WebViewClient\");"
+  },
+  {
+    "line": 770,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 772,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 773,
+    "content": "function hookPremiumBypass() {"
+  },
+  {
+    "line": 822,
+    "content": "var clz = Java.use(className);"
+  },
+  {
+    "line": 845,
+    "content": "return Java.use(\"java.lang.Boolean\").TRUE;"
+  },
+  {
+    "line": 883,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 885,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 886,
+    "content": "function hookRetrofit() {"
+  },
+  {
+    "line": 888,
+    "content": "tryHook(\"retrofit2.ServiceMethod\", null, function(SM) {"
+  },
+  {
+    "line": 898,
+    "content": "tryHook(\"retrofit2.OkHttpCall\", null, function(OHC) {"
+  },
+  {
+    "line": 912,
+    "content": "tryHook(\"retrofit2.CallAdapter\", null, function(CA) {"
+  },
+  {
+    "line": 920,
+    "content": "tryHook(\"okhttp3.EventListener\", null, function(EL) {"
+  },
+  {
+    "line": 934,
+    "content": "tryHook(\"com.google.gson.Gson\", null, function(Gson) {"
+  },
+  {
+    "line": 983,
+    "content": "tryHook(\"com.fasterxml.jackson.databind.ObjectMapper\", null, function(OM) {"
+  },
+  {
+    "line": 1015,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 1017,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 1018,
+    "content": "function hookAutoRuntime() {"
+  },
+  {
+    "line": 1048,
+    "content": "var clz = Java.use(className);"
+  },
+  {
+    "line": 1108,
+    "content": "// ========================================================================="
+  },
+  {
+    "line": 1110,
+    "content": "// ========================================================================="
+  }
+]

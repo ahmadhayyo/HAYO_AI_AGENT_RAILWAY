@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""
+HAYO Cipher-7 — Local Companion Agent (v4)
+===========================================
+Runs on YOUR machine against YOUR Android emulator. Attaches Frida to the
+target app, runs the deep instrumentation (transparent crypto, network,
+WebView, storage, dynamic load, TLS bypass, memory scavenger), and
+optionally drives the UI with the AI UI Crawler to maximise code-path
+coverage. Findings are posted back to the HAYO platform where they are
+merged with the static analysis for the session.
+
+
+Prerequisites
+-------------
+1) Android emulator running (e.g. Android Studio AVD) and `adb devices` shows it.
+2) frida-server pushed and running on the emulator (matching frida version).
+3) pip install -r requirements.txt
+4) The target app installed on the emulator.
+
+Usage
+-----
+    python agent.py --server https://your-app-url \
+                    --token dyn_XXXXXXXX \
+                    --package com.target.app \
+                    [--spawn] [--duration 90] [--crawl] [--no-autorestart]
+"""
+import argparse
+import json
+import os
+import random
+import subprocess
+import sys
+import threading
+import time
+
+try:
+    import frida
+except ImportError:
+    sys.exit("[!] frida غير مثبّت. شغّل: pip install -r requirements.txt")
+
+try:
+    import requests
+except ImportError:
+    sys.exit("[!] requests غير مثبّت. شغّل: pip install -r requirements.txt")
+
+try:
+    # Optional: AI UI Crawler (UIAutomator-based, no Appium required)
+    from crawler import UICrawler
+    _HAS_CRAWLER = True
+except Exception:
+    _HAS_CRAWLER = False
+
+try:
+    # Behavioral Analysis Engine
+    from behavioral_analysis import BehaviorAnalyzer
+    _HAS_BEHAVIOR = True
+except Exception as e:
+    print(f"[!] Behavioral analysis not available: {e}")
+    _HAS_BEHAVIOR = False
+
+AGENT_VERSION = "4.0"  # HAYO Cipher-7 v4
+SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "instrument.js")
+
+_findings = []
+_seen = set()
+_seen_evidence = set()
+_stop = threading.Event()
+_behavior = None  # BehaviorAnalyzer instance, created in main()
+
+
+def on_message(message, data):
+    if message.get("type") == "error":
+        print("[frida-error]", message.get("description", ""))
+        return
+    payload = message.get("payload") or {}
+    # Route through behavioral analysis engine
+    if _behavior is not None and _HAS_BEHAVIOR:
+        try:
+            behavior_results = _behavior.ingest_frida_message(payload)
+            for br in behavior_results:
+                sev = br.get("severity", "info").upper()
+                print(f"  [BEH:{sev:<6}] {br['title']}")
+                if br.get("source") == "anomaly_detector" and br.get("severity") in ("high","critical"):
+                    _findings.append({
+                        "type": br.get("type", "behavior_anomaly"),
+                        "title": br.get("title", ""),
+                        "severity": br.get("severity", "high"),
+                        "detail": br.get("title", ""),
+                        "evidence": [{"label": "behavior_event", "value": json.dumps(br.get("event",{}))[:500]}],
+                        "phase": "behavioral",
+                    })
+        except Exception as e:
+            print(f"[!] Behavior analysis error: {e}")
+    kind = payload.get("kind")
+    if kind == "ready":
+        print("[*] الخطافات نشطة — تفاعل مع التطبيق الآن (سجّل دخول، افتح الشاشات…).")
+    elif kind == "finding":
+        # de-dup on (type, hash(evidence))
+        ev = payload.get("evidence", [])
+        ev_key = payload.get("type", "") + "|" + json.dumps(ev, ensure_ascii=False, sort_keys=True)[:300]
+        if ev_key in _seen_evidence:
+            return
+        _seen_evidence.add(ev_key)
+        _findings.append({
+            "type": payload.get("type", "unknown"),
+            "title": payload.get("title"),
+            "severity": payload.get("severity"),
+            "detail": payload.get("detail", ""),
+            "evidence": ev,
+            "phase": payload.get("phase", "dynamic"),
+        })
+        sev = payload.get("severity") or "-"
+        t = payload.get("type", "?")
+        d = (payload.get("detail") or "")[:90]
+        print(f"  [+] [{sev:<8}] {t:<28} — {d}")
+    elif kind == "crawler_target":
+        # Surfaced to the orchestrator so the UI crawler can prioritize
+        act = payload.get("activity", "")
+        if act:
+            print(f"  [→] Activity reached: {act}")
+
+
+def get_device(device_id=None):
+    # Honor an explicit id, else the GUI-provided HAYO_DEV, so we never fall back
+    # onto a real phone that happens to be attached (e.g. for a data transfer).
+    device_id = device_id or os.environ.get("HAYO_DEV")
+    if device_id:
+        return frida.get_device(device_id, timeout=8)
+    usb = [d for d in frida.enumerate_devices() if d.type == "usb"]
+    for d in usb:
+        if "emulator" in (d.id or "").lower() or "emulator" in (d.name or "").lower():
+            return d
+    if usb:
+        return usb[0]
+    try:
+        return frida.get_usb_device(timeout=5)
+    except Exception:
+        return frida.get_remote_device()
+
+
+def _monitor_target(adb, device_id, package, interval=8):
+    """Watch for crashes/OOMs and restart the app silently to keep the hooks alive
+    (the user can disable with --no-autorestart)."""
+    while not _stop.is_set():
+        try:
+            r = subprocess.run([adb] + (["-s", device_id] if device_id else []) +
+                               ["shell", "pidof", package],
+                               timeout=8, capture_output=True, text=True, errors="ignore")
+            alive = bool(r.stdout.strip())
+        except Exception:
+            alive = False
+        if not alive:
+            try:
+                subprocess.run([adb] + (["-s", device_id] if device_id else []) +
+                               ["shell", "monkey", "-p", package, "-c",
+                                "android.intent.category.LAUNCHER", "1"],
+                               timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        _stop.wait(interval)
+
+
+def _auto_explore_legacy(adb, device_id, package, stop):
+    """Lightweight fallback if crawler.py is unavailable — monkey + random taps."""
+    base = [adb] + (["-s", device_id] if device_id else [])
+    def run(cmd):
+        try:
+            subprocess.run(base + ["shell"] + cmd, timeout=15,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    random.seed(1337)
+    while not stop.is_set():
+        run(["monkey", "-p", package, "--throttle", "300",
+             "--pct-syskeys", "0", "--ignore-crashes", "--ignore-timeouts", "60"])
+        for _ in range(8):
+            if stop.is_set():
+                return
+            x, y = random.randint(120, 600), random.randint(300, 1100)
+            run(["input", "tap", str(x), str(y)])
+            run(["input", "swipe", "400", "900", "400", "300", "200"])
+            time.sleep(0.4)
+        run(["input", "keyevent", "4"])
+
+
+def _run_crawler(adb, device_id, package, duration, on_evidence):
+    """Run the AI UI Crawler (UIAutomator). Returns (activities, secrets_seen)."""
+    if not _HAS_CRAWLER:
+        print("[!] crawler.py غير متوفّر — العودة إلى monkey fuzzing.")
+        return (0, 0)
+    crawler = UICrawler(
+        adb=adb, device_id=device_id, package=package, duration=duration,
+        on_evidence=lambda lbl, val: on_evidence(lbl, val),
+    )
+    print(f"[*] الزاحف يبدأ ({duration}s) — سيستكشف كل Activities ويفرز الأسرار المرئية…")
+    visited, secrets = crawler.crawl()
+    print(f"[*] الزاحف انتهى: {visited} Activities، {secrets} أسرار مرئية التُقطت.")
+    return (visited, secrets)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="HAYO dynamic pentest companion agent")
+    ap.add_argument("--server", required=True, help="عنوان منصة HAYO (مثل https://your-app-url)")
+    ap.add_argument("--token", required=True, help="رمز الإقران من المنصة")
+    ap.add_argument("--package", required=True, help="اسم حزمة التطبيق الهدف (com.example.app)")
+    ap.add_argument("--spawn", action="store_true", help="إطلاق التطبيق من جديد بدل الإرفاق بعملية قائمة")
+    ap.add_argument("--duration", type=int, default=60, help="مدة الرصد بالثواني (افتراضي 60)")
+    ap.add_argument("--device", help="معرّف الجهاز/المحاكي (مثل emulator-5554)")
+    ap.add_argument("--auto", action="store_true", help="استكشاف آلي عبر monkey fuzzing (fallback)")
+    ap.add_argument("--crawl", action="store_true", help="استكشاف آلي ذكي عبر UIAutomator (UI Crawler)")
+    ap.add_argument("--no-autorestart", action="store_true", help="لا تُعد تشغيل التطبيق عند انهياره")
+    ap.add_argument("--adb", default="adb", help="مسار adb")
+    args = ap.parse_args()
+
+    if not os.path.exists(SCRIPT_PATH):
+        sys.exit(f"[!] لم يُعثر على سكربت الحقن: {SCRIPT_PATH}")
+
+    with open(SCRIPT_PATH, "r", encoding="utf-8") as f:
+        script_src = f.read()
+
+    global _behavior
+    if _HAS_BEHAVIOR:
+        _behavior = BehaviorAnalyzer(app_package=args.package)
+        print(f"[*] Behavioral analysis engine initialized for {args.package}")
+    print(f"[*] الجهاز/المحاكي… الهدف: {args.package}")
+    device = get_device(args.device)
+    print(f"[*] الجهاز: {getattr(device, 'id', '?')} ({getattr(device, 'name', '?')})")
+
+    try:
+        if args.spawn:
+            pid = device.spawn([args.package])
+            session = device.attach(pid)
+        else:
+            session = device.attach(args.package)
+            pid = None
+    except Exception as e:
+        sys.exit(f"[!] تعذّر الإرفاق بالتطبيق ({e}). تأكّد أن frida-server يعمل والتطبيق مثبّت/يعمل.")
+
+    script = session.create_script(script_src)
+    script.on("message", on_message)
+    script.load()
+
+    if args.spawn and pid is not None:
+        device.resume(pid)
+
+    def _on_ui_secret(lbl, val):
+        # The crawler picked a secret out of the UI (e.g. token in a TextView).
+        # Forward it as a Frida-equivalent finding via the agent's local store.
+        if val and len(val) > 6:
+            _findings.append({
+                "type": "ui_visible_secret",
+                "title": "سرّ ظاهر في الواجهة",
+                "severity": "high",
+                "detail": f"الزاحف التقط قيمة حساسة من واجهة المستخدم: {val[:60]}…",
+                "evidence": [{"label": lbl, "value": str(val)[:300], "sensitive": True}],
+                "phase": "ui-crawler",
+            })
+            print(f"  [ui] سرّ مرئي: {val[:80]}")
+
+    # 1) Auto-restart watchdog (keeps hooks alive even if the app crashes)
+    if not args.no_autorestart:
+        threading.Thread(target=_monitor_target, args=(args.adb, args.device, args.package, 8),
+                         daemon=True, name="autorestart").start()
+
+    # 2) UI exploration: crawler (--crawl) > monkey (--auto) > nothing
+    if args.crawl:
+        threading.Thread(target=_run_crawler,
+                         args=(args.adb, args.device, args.package, args.duration, _on_ui_secret),
+                         daemon=True, name="ui-crawler").start()
+    elif args.auto:
+        print("[*] الاستكشاف الآلي (monkey fuzzing) مُفعّل.")
+        threading.Thread(target=_auto_explore_legacy, args=(args.adb, args.device, args.package, _stop),
+                         daemon=True, name="auto-explore").start()
+
+    print(f"[*] الرصد لمدة {args.duration} ثانية… (Ctrl+C للإنهاء المبكر)")
+    try:
+        time.sleep(args.duration)
+    except KeyboardInterrupt:
+        print("\n[*] إنهاء مبكر بناءً على طلبك.")
+    finally:
+        _stop.set()
+        if _behavior is not None and _HAS_BEHAVIOR:
+            try:
+                _behavior.finalize_baseline()
+            except Exception:
+                pass
+
+    try:
+        script.unload()
+        session.detach()
+    except Exception:
+        pass
+
+    behavior_report = None
+    if _behavior is not None and _HAS_BEHAVIOR:
+        try:
+            behavior_report = _behavior.get_session_report()
+        except Exception:
+            pass
+    print(f"\n[*] انتهى الرصد. عدد النتائج: {len(_findings)}")
+    report = {
+        "package": args.package,
+        "agentVersion": AGENT_VERSION,
+        "deviceId": getattr(device, "id", None),
+        "findings": _findings,
+        "behavior": behavior_report,
+    }
+    url = args.server.rstrip("/") + "/api/pentest/dynamic/" + args.token
+    try:
+        r = requests.post(url, json=report, timeout=30)
+        if r.status_code == 200:
+            data = r.json()
+            print(f"[✓] أُرسلت النتائج ودُمجت. المجموع: {data.get('merged')} — "
+                  f"المستوى: {data.get('summary', {}).get('threatLevel')}")
+        else:
+            print(f"[!] فشل الإرسال ({r.status_code}): {r.text[:200]}")
+    except Exception as e:
+        print(f"[!] تعذّر الاتصال بالمنصة: {e}")
+        print("    النتائج (JSON):")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,124 @@
+Total lines: 1137
+24: function emit(type, payload) {
+38: function captureHex(arr) {
+52: function captureString(s) {
+58: function tryHook(className, fn, wrapper) {
+65:         // silently skip unavailable classes
+69: // =========================================================================
+70: //  1. CRYPTO HOOKS — catch all keys, IVs, plaintext, ciphertext
+71: // =========================================================================
+72: function hookCrypto() {
+73:     // Cipher.doFinal — capture plaintext/ciphertext
+81:                 // Check input args for plaintext
+88:                 // Capture output
+101:     // SecretKeySpec — capture raw key material
+122:     // IvParameterSpec — capture IVs
+137:     // KeyPairGenerator — capture generated keys
+155:     // Mac/HMAC — capture HMAC keys
+173:     // MessageDigest — track hashing operations
+190: // =========================================================================
+191: //  2. NETWORK HOOKS — intercept HTTP, WebSocket, Cronet traffic
+192: // =========================================================================
+193: function hookNetwork() {
+194:     // OkHttp Client
+213:                 // Check for auth tokens in headers
+229:     // OkHttp3 Response body
+238:                 // Check for secrets in response
+250:     // HttpURLConnection
+266:     // WebSocket (OkHttp)
+277:     // Cronet (Chromium networking stack)
+285:     // URLConnection
+294:     // SSE/EventSource
+303: // =========================================================================
+304: //  3. AUTHENTICATION & TOKEN HOOKS
+305: // =========================================================================
+306: function hookAuth() {
+307:     // SharedPreferences — capture all stored data
+346:     // AccountManager
+379:     // JWT parsing in-flight
+387:     // Firebase Auth
+401: // =========================================================================
+402: //  4. STORAGE & DATABASE HOOKS
+403: // =========================================================================
+404: function hookStorage() {
+405:     // SQLite — capture queries and results
+426:     // SQLite Cursor — capture result values
+444:     // Room Database
+452:     // File I/O — capture sensitive file operations
+473:     // DataStore (modern Android)
+482: // =========================================================================
+483: //  5. BILLING / PREMIUM HOOKS
+484: // =========================================================================
+485: function hookBilling() {
+486:     // Play Billing Library
+508:     // Purchase object — capture purchase tokens
+538:     // IAB (In-App Billing v3)
+550:     // SubscriptionManager
+552:         // Not directly premium-related but useful for context
+556: // =========================================================================
+557: //  6. FIREBASE / CLOUD SDK HOOKS
+558: // =========================================================================
+559: function hookCloud() {
+560:     // Firebase Database
+572:     // Firebase Firestore
+584:     // Firebase Remote Config
+597:     // AWS SDK
+608:     // Google Cloud / API keys
+616:     // Supabase
+629: // =========================================================================
+630: //  7. NATIVE / TLS HOOKS
+631: // =========================================================================
+632: function hookNative() {
+633:     // TrustManager — SSL pinning bypass detection
+635:         // Abstract interface — check checkServerTrusted
+654:     // JNI — track native library loading
+662:     // Native crypto via JNI bridge
+671: // =========================================================================
+672: //  8. MEMORY SCANNER — runtime capture of strings in memory
+673: // =========================================================================
+674: function hookMemory() {
+675:     // Scan for sensitive strings in class fields via reflection
+685:                 // Just report the class as interesting
+690:             // Memory class enumeration complete
+695: // =========================================================================
+696: //  9. ACTIVITY / FRAGMENT LIFECYCLE
+697: // =========================================================================
+698: function hookLifecycle() {
+725: // =========================================================================
+726: //  10. WEBVIEW — JavaScript bridge injection detection
+727: // =========================================================================
+728: function hookWebViewAdvanced() {
+730:         // EvaluateJavascript
+738:         // Load data
+750:         // WebViewClient
+770: // =========================================================================
+771: //  11. PREMIUM / SUBSCRIPTION BYPASS
+772: // =========================================================================
+773: function hookPremiumBypass() {
+774:     // Common premium-check method names to force-return true
+791:     // Use Java reflection to find and hook premium check methods
+794:             // Target app-specific premium-related classes
+812:                 // Generic patterns
+849:                                         // Also try primitive boolean return type
+854:                                         // retry as int-returning method (getLevel, etc.)
+873:                     // Reflection failed — skip this class
+883: // =========================================================================
+884: //  12. RETROFIT / API INTERCEPTOR — capture all API calls
+885: // =========================================================================
+886: function hookRetrofit() {
+887:     // Retrofit Service Method invocation
+897:     // Retrofit Call execution
+911:     // Retrofit Call Adapter
+919:     // OkHttp3 EventListener — capture timing and URLs
+933:     // Gson/Jackson — capture serialized data
+982:     // Jackson ObjectMapper
+1015: // =========================================================================
+1016: //  13. RUNTIME AUTO-HOOK — dynamically hook Claude-specific classes
+1017: // =========================================================================
+1018: function hookAutoRuntime() {
+1088:                                             // skip unhookable methods
+1096:                         // skip classes that can't be hooked
+1108: // =========================================================================
+1109: //  MAIN — initialize all hooks
+1110: // =========================================================================
+1132:     // Signal readiness

@@ -1,0 +1,262 @@
+[92m[06:09:33 PIPELINE] تم تحميل التقرير الساكن من الذاكرة[0m
+[95m[06:09:33 PIPELINE] بدء الأنبوب الرئيسي...[0m
+
+[95m=================================================================[0m
+[95m  HAYO Cipher-7 — نظام الاختراق المتكامل[0m
+[95m  الهدف: com.anthropic.claude | الجهاز: emulator-5554[0m
+[95m  الوقت: 120 ثانية للمرحلة الديناميكية[0m
+[95m=================================================================[0m
+
+[96m[06:09:33 PIPELINE] بدء: التحليل الساكن[0m
+
+[95m-----------------------------------------------------------------[0m
+[95m  المرحلة 1: المحرك الساكن - Static Engine[0m
+[95m  تحليل APK، استخراج الأذونات، المكونات، المفاتيح، endpoints[0m
+[95m-----------------------------------------------------------------[0m
+
+
+[95m============================================================[0m
+[95m      المحرك الساكن - Static Analysis Engine[0m
+[95m      Target: com.anthropic.claude[0m
+[95m============================================================[0m
+
+[96m[STATIC] سحب APK للتطبيق com.anthropic.claude...[0m
+[92m[STATIC] APK سحب بنجاح: 23,091,847 bytes[0m
+[96m[STATIC] تحليل AndroidManifest.xml...[0m
+[96m[STATIC] تحليل إعدادات الشبكة...[0m
+[92m[STATIC]   [+] network_security_config.xml موجود[0m
+[96m[STATIC] فحص Firebase...[0m
+[96m[STATIC] استخراج النصوص والبيانات الحساسة...[0m
+[96m[STATIC] البحث عن المفاتيح والأسرار المشفرة...[0m
+[92m[STATIC]   [+] gcp_key: AIzaSyBHforeFMPxWZg51b3HRS3-nHUIfUfNSso...[0m
+[92m[STATIC]   [+] gcp_key: AIzaSyDUHK0y-xkW5lwNiHodVVZ9Wl5YC7_TxkY...[0m
+[93m[STATIC]   [+] google_api: AIzaSyBHforeFMPxWZg51b3HRS3-nHUIfUfNSso...[0m
+[93m[STATIC]   [+] google_api: AIzaSyDUHK0y-xkW5lwNiHodVVZ9Wl5YC7_TxkY...[0m
+[93m[STATIC]   [+] cloud_url: googleapis.com...[0m
+[93m[STATIC]   [+] api_endpoint: https://api.claude-ai.staging.ant.dev...[0m
+[93m[STATIC]   [+] api_endpoint: https://api.claude.ai...[0m
+[96m[STATIC] البحث عن نقاط النهاية السحابية...[0m
+[96m[STATIC]   [→] Cloud endpoint: https://firebaseinstallations.googleapis.com/v1/[0m
+[96m[STATIC]   [→] Cloud endpoint: https://www.googleapis.com/auth/games[0m
+[96m[STATIC]   [→] Cloud endpoint: https://www.googleapis.com/auth/games_lite[0m
+[96m[STATIC] تحليل الـ DEX classes...[0m
+
+[92m============================================================[0m
+[92m  التحليل الساكن اكتمل![0m
+[92m  - 0 صلاحيات[0m
+[92m  - 0 نشاطات[0m
+[92m  - 0 خدمات[0m
+[92m  - 7 سر/مفتاح[0m
+[92m  - 402 نقطة نهاية[0m
+[92m  - التقرير: C:\Users\PT\Desktop\HAYO\HAYO_AI_AGENT_RAILWAY\artifacts\pentest-agent\loot\static_com_anthropic_claude\static_report.json[0m
+[92m============================================================[0m
+
+
+[92m✓ اكتملت بنجاح[0m
+[96m-----------------------------------------------------------------[0m
+
+[96m[06:09:35 PIPELINE] بدء: التحليل الديناميكي[0m
+
+[95m-----------------------------------------------------------------[0m
+[95m  المرحلة 2: المحرك الديناميكي العميق - Deep Dynamic Engine[0m
+[95m  Frida hooks شاملة، استكشاف AI، استخراج runtime secrets[0m
+[95m-----------------------------------------------------------------[0m
+
+[95m[🧠 WARROOM] تم تفعيل غرفة العمليات الذكية - AI WarRoom Brain[0m
+[96m[🧠 WARROOM] النسخة: GPT-4o (العقل المدبر)[0m
+[92m[06:09:36 PIPELINE] تم تحميل Frida hooks العميقة: instrument_deep.js[0m
+[96m[1m
+══ HAYO Cipher-7 — Unified Dynamic Engine ══[0m
+  target : com.anthropic.claude
+  device : emulator-5554
+  brain  : DeepSeek (gpt-4o-2024-08-06)
+  window : 120s
+
+[92m[1m  [+] app launched + instrumentation loaded.[0m
+[96m  [ai] phase1  — force-launching target app[0m
+[96m  [ai] brain-driven exploration started.
+[0m
+[HAYO] Deep Instrumentation Engine v7 — Loading all hooks...
+[93m  [ai] new screen: com.anthropic.claude/.mainactivity.MainActivity (0 elements)[0m
+[93m  [ai] new screen: com.android.settings/.Settings (2 elements)[0m
+[96m[🧠 WARROOM] AI: tap -> The element with text 'التنقل إلى أعلى | البحث في [0m
+[96m  [ai] tap     — The element with text 'التنقل إلى أعلى | البحث في الإعدادات' suggests [0m
+[96m[1m
+[*] captured 0 raw findings. Triaging via brain…[0m
+[96m[🧠 WARROOM] تصنيف 0 نتيجة -> 0 نتائج مرتبة[0m
+[92m[1m
+[✓] done — 0 triaged findings (critical=0 high=0 medium=0).[0m
+[93m    report : C:\Users\PT\Desktop\HAYO\HAYO_AI_AGENT_RAILWAY\artifacts\pentest-agent\loot\deep_com.anthropic.claude_20260723_061145.md[0m
+[93m    json   : C:\Users\PT\Desktop\HAYO\HAYO_AI_AGENT_RAILWAY\artifacts\pentest-agent\loot\deep_com.anthropic.claude_20260723_061145.json[0m
+[96m
+── ملخّص ──
+[0mالتحليل الديناميكي للتطبيق com.anthropic.claude
+- عدد النتائج الخام: 0
+- النتائج المصنفة: 0
+  - حرجة: 0 | عالية: 0 | متوسطة: 0 | منخفضة: 0
+- الشاشات التي تم زيارتها: 1
+- خطوات الاستكشاف: 1
+
+تحليل AI:
+تم إجراء اختبار ديناميكي على الحزمة "com.anthropic.claude" باستخدام جهاز محاكاة، واستمر لمدة 120 ثانية. خلال الاختبار، تم زيارة إعدادات النظام ولكن لم يتم العثور على أي نتائج أو مشكلات تحتاج إلى معالجة.
+
+[96m[🧠 WARROOM] استقبال نتائج المحرك الديناميكي...[0m
+[92m[🧠 WARROOM] تم استيعاب: 0 نتيجة, 0 حرجة[0m
+
+[92m✓ اكتملت بنجاح[0m
+[96m-----------------------------------------------------------------[0m
+
+[96m[06:11:45 PIPELINE] بدء: تحليل العقل المدبر[0m
+
+[95m-----------------------------------------------------------------[0m
+[95m  المرحلة 3: العقل الذكي المدبر - AI WarRoom Brain[0m
+[95m  تحليل النتائج، تصنيف الثغرات، تخطيط الهجمات التالية[0m
+[95m-----------------------------------------------------------------[0m
+
+[95m[🧠 WARROOM] تم تفعيل غرفة العمليات الذكية - AI WarRoom Brain[0m
+[96m[🧠 WARROOM] النسخة: GPT-4o (العقل المدبر)[0m
+[96m[🧠 WARROOM] استقبال نتائج المحرك الساكن...[0m
+[92m[🧠 WARROOM] تم استيعاب: 7 سر, 402 نقطة نهاية, 5 سحابية[0m
+[93m[🧠 WARROOM] تخطيط هجوم السحابة...[0m
+[91m[🧠 WARROOM] تعذر تحليل خطة السحابة[0m
+[96m[🧠 WARROOM] استقبال نتائج المحرك الديناميكي...[0m
+[92m[🧠 WARROOM] تم استيعاب: 0 نتيجة, 7 حرجة[0m
+[96m[06:11:47 PIPELINE] القرار التالي للعقل المدبر: run_cloud_breach - يجب اختراق السحابة[0m
+
+[92m✓ اكتملت بنجاح[0m
+[96m-----------------------------------------------------------------[0m
+
+[96m[06:11:47 PIPELINE] بدء: اختراق السحابة[0m
+
+[95m-----------------------------------------------------------------[0m
+[95m  المرحلة 4: اختراق السحابة - Cloud Breach Engine[0m
+[95m  Firebase, AWS, GCP, Supabase اختراق واستخراج البيانات[0m
+[95m-----------------------------------------------------------------[0m
+
+
+[95m============================================================[0m
+[95m      محرك اختراق السحابة - Cloud Breach Engine[0m
+[95m      Target: com.anthropic.claude[0m
+[95m============================================================[0m
+Exception in thread Thread-126 (<lambda>):
+Traceback (most recent call last):
+  File "C:\Users\PT\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "C:\Users\PT\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\PT\Desktop\HAYO\HAYO_AI_AGENT_RAILWAY\artifacts\pentest-agent\exploit_warroom.py", line 346, in <lambda>
+    c2_thread = threading.Thread(target=lambda: c2.start(), daemon=True)
+                                                ^^^^^^^^
+AttributeError: 'C2Server' object has no attribute 'start'
+
+[93m[C️ CLOUD] بدء هجوم Firebase...[0m
+[96m[C️ CLOUD] فحص Firebase: https://firebase.google.com/support/privacy/init-options.[0m
+[93m[C️ CLOUD]   استجابة غير JSON: 200[0m
+[96m[C️ CLOUD] فحص Firebase: https://firebaseinstallations.googleapis.com/v1/[0m
+[93m[C️ CLOUD]   Firebase غير موجود[0m
+[96m[C️ CLOUD] فحص Firebase: https://firebase.google.com/support/guides/disable-analytics[0m
+[93m[C️ CLOUD]   استجابة غير JSON: 200[0m
+[93m[C️ CLOUD] فحص AWS S3 buckets...[0m
+[93m[C️ CLOUD] فحص Supabase...[0m
+[93m[C️ CLOUD] استخراج المفاتيح المشفرة من الجهاز...[0m
+[95m[C️ CLOUD] بدء الاختراق العميق للشبكة السحابية...[0m
+
+[92m============================================================[0m
+[92m  اختراق السحابة اكتمل![0m
+[92m  - خدمات مستغلة: 0[0m
+[92m  - نقاط نهاية مخترقة: 0[0m
+[92m  - مفاتيح مستخرجة: 0[0m
+[92m  - جدران حماية تم تجاوزها: 0[0m
+[92m  - التقرير: C:\Users\PT\Desktop\HAYO\HAYO_AI_AGENT_RAILWAY\artifacts\pentest-agent\loot\cloud\com.anthropic.claude\cloud_breach_report.json[0m
+[92m============================================================[0m
+
+
+[92m✓ اكتملت بنجاح[0m
+[96m-----------------------------------------------------------------[0m
+
+[96m[06:12:02 PIPELINE] بدء: غرفة الاستغلال[0m
+
+[95m-----------------------------------------------------------------[0m
+[95m  المرحلة 5: غرفة عمليات الاستغلال - Exploitation War Room[0m
+[95m  استغلال الثغرات، اختراق جدران الحماية، C2, توكنات[0m
+[95m-----------------------------------------------------------------[0m
+
+[93m[⚔️ WARROOM] بدء استغلال التوكنات والمفاتيح...[0m
+[96m[⚔️ WARROOM] استغلال مفتاح Firebase: AIzaSyBHforeFMP...[0m
+[93m  [ai] new screen: com.android.settings.intelligence/.search.SearchActivity (3 elements)[0m
+[96m[🧠 WARROOM] AI: back -> The current screen is a search activity with no re[0m
+[96m  [ai] back    — The current screen is a search activity with no relevant elements for [0m
+[92m[⚔️ WARROOM]   [+] مفتاح openai صالح: AIzaSyBHforeFMPxWZg5...[0m
+[96m[⚔️ WARROOM] استغلال مفتاح Firebase: AIzaSyDUHK0y-xk...[0m
+[92m  [ai] exploration done: 2 steps, 2 screens[0m
+[92m[⚔️ WARROOM]   [+] مفتاح openai صالح: AIzaSyDUHK0y-xkW5lwN...[0m
+[96m[⚔️ WARROOM] استغلال مفتاح Firebase: AIzaSyBHforeFMP...[0m
+[92m[⚔️ WARROOM]   [+] مفتاح openai صالح: AIzaSyBHforeFMPxWZg5...[0m
+[96m[⚔️ WARROOM] استغلال مفتاح Firebase: AIzaSyDUHK0y-xk...[0m
+[92m[⚔️ WARROOM]   [+] مفتاح openai صالح: AIzaSyDUHK0y-xkW5lwN...[0m
+[93m[06:12:12 PIPELINE] استغلال التوكنات: 8 نتيجة[0m
+[95m[⚔️ WARROOM] بدء اختراق جدران الحماية العميقة...[0m
+[96m[⚔️ WARROOM] هجوم على: http://schemas.android.com/apk/res/android style view                                                   P                                                          [0m
+[96m[⚔️ WARROOM] هجوم على: http://schemas.android.com/apk/res/android style  (          ]        [0m
+[96m[⚔️ WARROOM] هجوم على: https://firebase.google.com/support/privacy/init-options.[0m
+[92m[⚔️ WARROOM]   [+] cache_poison نجح![0m
+[92m[⚔️ WARROOM]   [+] rate_limit_bypass نجح![0m
+[92m[⚔️ WARROOM]   [+] ip_rotation نجح![0m
+[96m[⚔️ WARROOM] هجوم على: http://schemas.android.com/apk/res/android objectAnimator set [0m
+[96m[⚔️ WARROOM] هجوم على: https://developer.android.com/reference/com/google/android/play/core/review/model/ReviewErrorCode.html#[0m
+[92m[⚔️ WARROOM]   [+] cache_poison نجح![0m
+[92m[⚔️ WARROOM]   [+] rate_limit_bypass نجح![0m
+[92m[⚔️ WARROOM]   [+] ip_rotation نجح![0m
+[96m[⚔️ WARROOM] هجوم على: http://schemas.android.com/apk/res/android include layout style                       t                                                  8 8                       [0m
+[96m[⚔️ WARROOM] هجوم على: http://xml.org/sax/features/external-parameter-entities[0m
+[92m[⚔️ WARROOM]   [+] rate_limit_bypass نجح![0m
+[92m[⚔️ WARROOM]   [+] ip_rotation نجح![0m
+[96m[⚔️ WARROOM] هجوم على: http://schemas.android.com/apk/res/android item                     8                                L                          }           .           L                          }           /           L                          }           0           L                          }           1           L                          }           2           L                          }           3           L   [0m
+[96m[⚔️ WARROOM] هجوم على: http://schemas.android.com/apk/res-auto **http://schemas.android.com/apk/res/android       [0m
+[96m[⚔️ WARROOM] هجوم على: http://schemas.android.com/apk/res/android item selector                        $                    L                                       7           8                          5                                 [0m
+[93m[06:12:36 PIPELINE] اختراق جدران الحماية: 8 نجاح[0m
+[95m[⚔️ WARROOM] نشر خادم C2 للتحكم عن بعد...[0m
+[92m[⚔️ WARROOM]   [+] C2 Server on 0.0.0.0:9999[0m
+[93m[06:12:36 PIPELINE] C2: c2_started[0m
+[95m[⚔️ WARROOM] توليد ملخص الاستغلال النهائي...[0m
+[92m[⚔️ WARROOM] ملخص الاستغلال: C:\Users\PT\Desktop\HAYO\HAYO_AI_AGENT_RAILWAY\artifacts\pentest-agent\loot\exploitation\com_anthropic_claude\exploit_summary.json[0m
+
+[92m✓ اكتملت بنجاح[0m
+[96m-----------------------------------------------------------------[0m
+
+[96m[06:12:41 PIPELINE] بدء: التقرير النهائي[0m
+
+[95m-----------------------------------------------------------------[0m
+[95m  المرحلة 6: التقرير النهائي - Final Report[0m
+[95m  تجميع جميع النتائج في تقرير شامل[0m
+[95m-----------------------------------------------------------------[0m
+
+
+[92m************************************************************[0m
+[92m  تقرير الاختبار النهائي[0m
+[92m************************************************************[0m
+[92m  الحزمة: com.anthropic.claude[0m
+[92m  المدة: 188.2 ثانية[0m
+[92m  الثغرات المكتشفة: 0 خطأ[0m
+[92m  - تحليل ساكن: {'gcp_key': 2, 'google_api': 2, 'cloud_url': 1, 'api_endpoint': 2} أسرار, 402 endpoint[0m
+[92m  - تحليل ديناميكي: 0 نتيجة, 2 شاشة[0m
+[92m  - اختراق سحابة: [], 0 نقطة[0m
+[92m  - استغلال: 7 سر, 8 جدار[0m
+[92m  التقرير: C:\Users\PT\Desktop\HAYO\HAYO_AI_AGENT_RAILWAY\artifacts\pentest-agent\loot\pipeline_report_com_anthropic_claude.json[0m
+[92m************************************************************[0m
+
+
+[92m-----------------------------------------------------------------[0m
+[92m  ملخص النتائج النهائي:[0m
+[92m    ✓ التحليل الساكن[0m
+[92m    ✓ التحليل الديناميكي[0m
+[92m    ✓ تحليل العقل المدبر[0m
+[92m    ✓ اختراق السحابة[0m
+[92m    ✓ غرفة الاستغلال[0m
+[92m    ✓ التقرير النهائي[0m
+[92m  الوقت الإجمالي: 188.2 ثانية[0m
+[92m  الأخطاء: 0[0m
+[92m-----------------------------------------------------------------[0m
+
+
+[96mالتقرير النهائي محفوظ في: C:\Users\PT\Desktop\HAYO\HAYO_AI_AGENT_RAILWAY\artifacts\pentest-agent\loot\pipeline_report_com_anthropic_claude.json[0m

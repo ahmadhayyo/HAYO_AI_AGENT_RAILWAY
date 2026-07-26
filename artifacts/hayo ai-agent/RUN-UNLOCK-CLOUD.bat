@@ -1,0 +1,25 @@
+﻿@echo off
+REM ============================================================
+REM  HAYO Cipher-7 — CLOUD Premium Unlock (server response rewrite)
+REM  Use when premium is tied to a LOGIN / Gmail account (server returns it).
+REM  Rewrites the server's "free" entitlement to "premium" in memory.
+REM    RUN-UNLOCK-CLOUD.bat  com.committee.package.name
+REM ============================================================
+setlocal
+set "ADB=C:\Users\PT\Downloads\platform-tools\adb.exe"
+set "PY312=C:\Users\PT\AppData\Local\Programs\Python\Python312\python.exe"
+if not defined HAYO_DEV set "HAYO_DEV=emulator-5554"
+set "DEV=%HAYO_DEV%"
+
+if "%~1"=="" (
+  echo [!] Usage: RUN-UNLOCK-CLOUD.bat ^<package.name^>
+  exit /b 1
+)
+
+echo [*] Starting frida-server in its own window (leave it open) ...
+start "HAYO frida-server" /min "%ADB%" -s %DEV% shell "su -c '/data/local/tmp/frida-server'"
+ping -n 4 127.0.0.1 >nul
+
+echo [*] Launching CLOUD unlock (response rewrite) on %~1 ...
+"%PY312%" "%~dp0frida_hijack.py" -D %DEV% -s "%~dp0unlock_cloud.js" %~1
+endlocal

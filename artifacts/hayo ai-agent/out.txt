@@ -1,0 +1,80 @@
+Total lines: 1137
+24: function emit(type, payload) {
+38: function captureHex(arr) {
+52: function captureString(s) {
+58: function tryHook(className, fn, wrapper) {
+65:         // silently skip unavailable classes
+69: // =========================================================================
+70: //  1. CRYPTO HOOKS — catch all keys, IVs, plaintext, ciphertext
+71: // =========================================================================
+72: function hookCrypto() {
+73:     // Cipher.doFinal — capture plaintext/ciphertext
+81:                 // Check input args for plaintext
+88:                 // Capture output
+101:     // SecretKeySpec — capture raw key material
+122:     // IvParameterSpec — capture IVs
+137:     // KeyPairGenerator — capture generated keys
+155:     // Mac/HMAC — capture HMAC keys
+173:     // MessageDigest — track hashing operations
+190: // =========================================================================
+191: //  2. NETWORK HOOKS — intercept HTTP, WebSocket, Cronet traffic
+192: // =========================================================================
+193: function hookNetwork() {
+194:     // OkHttp Client
+213:                 // Check for auth tokens in headers
+229:     // OkHttp3 Response body
+238:                 // Check for secrets in response
+250:     // HttpURLConnection
+266:     // WebSocket (OkHttp)
+277:     // Cronet (Chromium networking stack)
+285:     // URLConnection
+294:     // SSE/EventSource
+303: // =========================================================================
+304: //  3. AUTHENTICATION & TOKEN HOOKS
+305: // =========================================================================
+306: function hookAuth() {
+307:     // SharedPreferences — capture all stored data
+346:     // AccountManager
+379:     // JWT parsing in-flight
+387:     // Firebase Auth
+401: // =========================================================================
+402: //  4. STORAGE & DATABASE HOOKS
+403: // =========================================================================
+404: function hookStorage() {
+405:     // SQLite — capture queries and results
+426:     // SQLite Cursor — capture result values
+444:     // Room Database
+452:     // File I/O — capture sensitive file operations
+473:     // DataStore (modern Android)
+482: // =========================================================================
+483: //  5. BILLING / PREMIUM HOOKS
+484: // =========================================================================
+485: function hookBilling() {
+486:     // Play Billing Library
+508:     // Purchase object — capture purchase tokens
+538:     // IAB (In-App Billing v3)
+550:     // SubscriptionManager
+552:         // Not directly premium-related but useful for context
+556: // =========================================================================
+557: //  6. FIREBASE / CLOUD SDK HOOKS
+558: // =========================================================================
+559: function hookCloud() {
+560:     // Firebase Database
+572:     // Firebase Firestore
+584:     // Firebase Remote Config
+597:     // AWS SDK
+608:     // Google Cloud / API keys
+616:     // Supabase
+629: // =========================================================================
+630: //  7. NATIVE / TLS HOOKS
+631: // =========================================================================
+632: function hookNative() {
+633:     // TrustManager — SSL pinning bypass detection
+635:         // Abstract interface — check checkServerTrusted
+654:     // JNI — track native library loading
+662:     // Native crypto via JNI bridge
+671: // =========================================================================
+672: //  8. MEMORY SCANNER — runtime capture of strings in memory
+673: // =========================================================================
+674: function hookMemory() {
+675:     // Scan for sensitive strings in class fields via reflection
