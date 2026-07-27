@@ -10,7 +10,7 @@ import queue
 import threading
 import subprocess
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 
 AGENT = os.path.dirname(os.path.abspath(__file__))
 ADB_CANDIDATES = [
@@ -23,6 +23,10 @@ DEFAULT_DEV = "emulator-5554"
 
 BG, FG, ACC, BTN, BTN2, BTN_RED = "#0b1020", "#d6f5e3", "#00e6a8", "#122040", "#1b2d52", "#4a0e0e"
 RUN_BTN_TEXT = "🤖  المسار الكامل بقيادة الذكاء الاصطناعي (مباشر داخل اللوحة)"
+# Python 3.12+ يمنع إنشاء متغيّرات tkinter قبل وجود نافذة جذر → ننشئ الجذر أولاً.
+root = tk.Tk()
+USE_PIPELINE_VAR = tk.BooleanVar(value=False)
+USE_ULTIMATE_HOOKS_VAR = tk.BooleanVar(value=True)
 
 def launch(batfile, arg=""):
     path = os.path.join(AGENT, batfile)
@@ -43,7 +47,9 @@ def launch_py(script, arg=""):
     path = os.path.join(AGENT, script)
     env = os.environ.copy()
     env["HAYO_DEV"] = current_dev()
-    subprocess.Popen(f'start "DeepSeek Core v5" cmd /k "{PY} {q(path)} {arg}"', shell=True, env=env)
+    env["HAYO_ADB"] = ADB
+    env["PYTHONIOENCODING"] = "utf-8"
+    subprocess.Popen(f'start "DeepSeek Core v5" cmd /k "chcp 65001>nul & {PY} {q(path)} {arg}"', shell=True, env=env)
     log_line(f"▶ launched {script} {arg} [DEV={env['HAYO_DEV']}]".strip())
 
 def log_line(text):
@@ -118,15 +124,31 @@ def on_full_ai_pipeline():
         return
     dev = current_dev()
     dur = dur_var.get().strip() or "180"
-    script = os.path.join(AGENT, "hayo_pipeline.py")
+    
+    # Check if using new pipeline orchestrator
+    use_pipeline = USE_PIPELINE_VAR.get()
+    use_ultimate = USE_ULTIMATE_HOOKS_VAR.get()
+    
+    # Use dynamic_engine.py with new options
+    script = os.path.join(AGENT, "dynamic_engine.py")
     if not os.path.isfile(script):
-        messagebox.showerror("HAYO", "hayo_pipeline.py غير موجود."); return
-    cmd = [PY, script, "--package", p, "--device", dev, "--duration", str(dur),
-           "--adaptive", "--max-rounds", "3"]
+        messagebox.showerror("HAYO", "dynamic_engine.py غير موجود."); return
+    
+    cmd = [PY, script, "--package", p, "--device", dev, "--duration", str(dur)]
+    
+    if use_pipeline:
+        cmd.append("--use-pipeline")
+    
+    if not use_ultimate:
+        # If not using ultimate hooks, will fall back to instrument_deep.js or instrument.js
+        pass
+    
     env = os.environ.copy()
     env["HAYO_DEV"] = dev
+    env["HAYO_ADB"] = ADB
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
+    
     try:
         pipeline_proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -137,8 +159,15 @@ def on_full_ai_pipeline():
     except Exception as e:
         pipeline_proc = None
         messagebox.showerror("HAYO", f"تعذّر بدء المسار: {e}"); return
+    
+    pipeline_mode = "جديد (8 مراحل)" if use_pipeline else "تقليدي"
+    hooks_mode = "Ultimate (100+ hooks)" if use_ultimate else "Deep (40+ hooks)"
+    
     log_line("=" * 60)
-    log_line(f"🤖 بدء المسار الكامل بقيادة AI | الهدف: {p} | الجهاز: {dev} | المدة: {dur}s")
+    log_line(f"🤖 بدء المسار الكامل بقيادة AI")
+    log_line(f"   الهدف: {p} | الجهاز: {dev} | المدة: {dur}s")
+    log_line(f"   البايبلاين: {pipeline_mode}")
+    log_line(f"   الخطافات: {hooks_mode}")
     log_line("=" * 60)
     status.config(text="⏳ بدء المسار الكامل...")
     run_pipeline_btn.config(state="disabled", text="⏳ المسار قيد التشغيل...")
@@ -277,6 +306,68 @@ def on_hijack_cloud():
     p = pkg()
     if p: launch("RUN-HIJACK-CLOUD.bat", p)
 
+def on_auto_premium():
+    """فتح اشتراك تلقائي شامل — يحقن premium_master.js بكل طبقاته ويجرّب كل
+    السيناريوهات (اشتراك/مدى الحياة/نقاط/كوين/VIP/تحقّق خادمي) على الحزمة المحددة،
+    أو يكتشف تطبيق المقدّمة تلقائياً إن لم تُحدَّد حزمة. يبلّغ بما نجح فعلاً."""
+    p = pkg_entry.get().strip()          # اختياري — بدونه يُكتشف تلقائياً
+    dev = current_dev()
+    script = os.path.join(AGENT, "premium_auto.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "premium_auto.py غير موجود."); return
+    arg = f"--device {dev} --duration 45"
+    if p:
+        arg += f" --package {p}"
+    log_line("🧪 فتح تلقائي شامل — تجربة كل الحيل" + (f" على {p}" if p else " (اكتشاف تلقائي)"))
+    launch_py("premium_auto.py", arg)
+
+def on_auto_premium_assist():
+    """الوضع المُساعَد: الخطافات حيّة، وأنت تسجّل الدخول وتتنقّل يدوياً؛ تُلتقط
+    استدعاءات الاشتراك لحظة حدوثها (أفضل بكثير للتطبيقات المربوطة بحساب)."""
+    p = pkg_entry.get().strip()
+    dev = current_dev()
+    script = os.path.join(AGENT, "premium_auto.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "premium_auto.py غير موجود."); return
+    messagebox.showinfo("HAYO — الوضع المُساعَد",
+        "سيُفتح التطبيق والخطافات حيّة.\nاقبل الشروط ← سجّل الدخول ← افتح شاشة الاشتراك.\n"
+        "النافذة ~3 دقائق. النتائج تظهر في النافذة.")
+    arg = f"--device {dev} --assist" + (f" --package {p}" if p else "")
+    log_line("🧑‍💻 وضع مُساعَد — سجّل دخولك أثناء التشغيل" + (f" على {p}" if p else " (اكتشاف تلقائي)"))
+    launch_py("premium_auto.py", arg)
+
+def on_static_patch():
+    """ترقيع ساكن دائم: يعدّل دوال القرار في APK (isPremium→true) ويعيد التوقيع."""
+    f = filedialog.askopenfilename(title="اختر APK للترقيع الدائم",
+                                   filetypes=[("APK", "*.apk"), ("All", "*.*")])
+    if not f:
+        return
+    script = os.path.join(AGENT, "premium_patch.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "premium_patch.py غير موجود."); return
+    do_install = messagebox.askyesno("HAYO", "تثبيت النسخة المُرقّعة على المحاكي بعد التوقيع؟")
+    arg = q(f) + (f" --install --device {current_dev()}" if do_install else "")
+    log_line(f"🩹 ترقيع ساكن دائم: {os.path.basename(f)}")
+    launch_py("premium_patch.py", arg)
+
+def on_jwt_forge():
+    """تزوير/قلب رمز JWT لمنح صلاحيات مميّزة."""
+    script = os.path.join(AGENT, "jwt_forge.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "jwt_forge.py غير موجود."); return
+    tok = simpledialog.askstring("HAYO — JWT Forge",
+        "الصق رمز JWT لقلب مطالباته (اتركه فارغاً لتوليد رمز مميّز جديد):")
+    if tok is None:
+        return
+    tok = tok.strip()
+    if tok:
+        arg = f'--token "{tok}" --mode keep'
+        log_line("🔑 قلب مطالبات JWT (mode=keep)")
+    else:
+        arg = "--new --mode none"
+        log_line("🔑 توليد رمز JWT مميّز جديد (alg=none)")
+    launch_py("jwt_forge.py", arg)
+
 def on_monitor():
     p = pkg()
     if p: launch("RUN-MONITOR.bat", p)
@@ -323,8 +414,144 @@ def on_orchestrator():
     p = pkg()
     if p: launch("RUN-ORCHESTRATOR.bat", p)
 
+# ---------------------------------------------------------------- ⑤ new advanced components
+def on_deep_engine_with_pipeline():
+    """Run dynamic engine with new pipeline orchestrator"""
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    dur = dur_var.get().strip() or "180"
+    script = os.path.join(AGENT, "dynamic_engine.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "dynamic_engine.py غير موجود."); return
+    cmd = [PY, script, "--package", p, "--device", dev, "--duration", str(dur), "--use-pipeline"]
+    launch_py("dynamic_engine.py", f"--package {p} --device {dev} --duration {dur} --use-pipeline")
+
+def on_phase_manager():
+    """Run phase manager brain standalone"""
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    script = os.path.join(AGENT, "phase_manager_brain.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "phase_manager_brain.py غير موجود."); return
+    launch_py("phase_manager_brain.py", f"--package {p} --device {dev}")
+
+def on_decision_engine():
+    """Run real-time decision engine standalone"""
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    script = os.path.join(AGENT, "realtime_decision_engine.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "realtime_decision_engine.py غير موجود."); return
+    launch_py("realtime_decision_engine.py", f"--package {p} --device {dev}")
+
+def on_data_extraction():
+    """Run live data extraction standalone"""
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    script = os.path.join(AGENT, "live_data_extractor.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "live_data_extractor.py غير موجود."); return
+    launch_py("live_data_extractor.py", f"--package {p} --device {dev}")
+
+def on_adaptive_exploit():
+    """Run adaptive exploitation engine standalone"""
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    script = os.path.join(AGENT, "adaptive_exploitation_engine.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "adaptive_exploitation_engine.py غير موجود."); return
+    launch_py("adaptive_exploitation_engine.py", f"--package {p} --device {dev}")
+
+def on_feedback_loop():
+    """Run feedback loop standalone"""
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    script = os.path.join(AGENT, "feedback_loop.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "feedback_loop.py غير موجود."); return
+    launch_py("feedback_loop.py", f"--package {p} --device {dev}")
+
+def on_pipeline_orchestrator():
+    """Run pipeline orchestrator standalone"""
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    script = os.path.join(AGENT, "pipeline_orchestrator.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "pipeline_orchestrator.py غير موجود."); return
+    launch_py("pipeline_orchestrator.py", f"--package {p} --device {dev}")
+
+def on_working_memory():
+    """Run working memory standalone"""
+    p = pkg()
+    if not p:
+        return
+    dev = current_dev()
+    script = os.path.join(AGENT, "working_memory.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "working_memory.py غير موجود."); return
+    launch_py("working_memory.py", f"--package {p} --device {dev}")
+
+def on_full_pipeline():
+    """Run full pipeline (static + dynamic + AI + exploitation) in one click"""
+    p = pkg()
+    if not p:
+        messagebox.showwarning("HAYO", "يرجى تحديد اسم الحزمة أولاً.")
+        return
+    
+    # Ask for APK path for static analysis
+    apk_path = filedialog.askopenfilename(
+        title="اختر ملف APK للتحليل الساكنة (اختياري)",
+        filetypes=[("APK / bundle", "*.apk *.xapk *.apks *.apkm"), ("All", "*.*")]
+    )
+    
+    dev = current_dev()
+    dur = dur_var.get().strip() or "180"
+    use_pipeline = USE_PIPELINE_VAR.get()
+    use_ultimate = USE_ULTIMATE_HOOKS_VAR.get()
+    
+    script = os.path.join(AGENT, "full_pipeline.py")
+    if not os.path.isfile(script):
+        messagebox.showerror("HAYO", "full_pipeline.py غير موجود."); return
+    
+    cmd = [PY, script, "--package", p, "--device", dev, "--duration", str(dur), "--adb", ADB]
+    
+    if use_pipeline:
+        cmd.append("--use-pipeline")
+    
+    if use_ultimate:
+        cmd.append("--use-ultimate-hooks")
+    
+    if apk_path:
+        cmd.extend(["--apk", apk_path])
+    
+    log_line("=" * 60)
+    log_line("⚡ بدء المسار الكامل الشامل")
+    log_line(f"   الهدف: {p} | الجهاز: {dev} | المدة: {dur}s")
+    log_line(f"   التحليل الساكنة: {'نعم' if apk_path else 'لا'}")
+    log_line(f"   البايبلاين: {'جديد' if use_pipeline else 'تقليدي'}")
+    log_line(f"   الخطافات: {'Ultimate (100+)' if use_ultimate else 'Deep (40+)'}")
+    log_line("=" * 60)
+    
+    launch_py("full_pipeline.py", f"--package {p} --device {dev} --duration {dur} --adb {ADB}" +
+              (f" --use-pipeline" if use_pipeline else "") +
+              (f" --use-ultimate-hooks" if use_ultimate else "") +
+              (f" --apk {apk_path}" if apk_path else ""))
+
 # ---------------------------------------------------------------- window
-root = tk.Tk()
 root.title("HAYO Cipher-7 — لوحة التحكم الموحدة")
 root.configure(bg=BG)
 root.geometry("760x850")
@@ -366,6 +593,7 @@ def section(parent, title):
 section(tab_static, "تحليل واستخراج + بناء")
 button(tab_static, "🔎  حلّل واستخرج المفاتيح", on_analyze)
 button(tab_static, "🔓  بناء APK موقّع (Premium)", on_unlock_build, BTN2)
+button(tab_static, "🩹  ترقيع ساكن دائم (smali → isPremium=true)", on_static_patch, BTN_RED)
 button(tab_static, "📲  تثبيت ذكي على المحاكي", on_install)
 button(tab_static, "🩺  فحص وإصلاح البيئة (Setup Check)", on_setup_check, BTN2)
 
@@ -396,6 +624,15 @@ status.pack(fill="x", padx=16, pady=(0, 8))
 # ---- tab ③
 section(tab_engines, "المسار الموحد بقيادة AI (مباشر داخل اللوحة)")
 
+# options row for the integrated pipeline
+optfrm = tk.Frame(tab_engines, bg=BG); optfrm.pack(fill="x", padx=16, pady=(0, 2))
+tk.Checkbutton(optfrm, text="🔬 البايبلاين الجديد (8 مراحل ذكية)", variable=USE_PIPELINE_VAR, 
+                bg=BG, fg=ACC, selectcolor=BTN, activebackground=BG, activeforeground=ACC,
+                font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="left")
+tk.Checkbutton(optfrm, text="🪝 100+ Hooks (Ultimate)", variable=USE_ULTIMATE_HOOKS_VAR,
+                bg=BG, fg=ACC, selectcolor=BTN, activebackground=BG, activeforeground=ACC,
+                font=("Segoe UI", 9, "bold"), cursor="hand2").pack(side="right")
+
 # duration row for the integrated pipeline
 durfrm = tk.Frame(tab_engines, bg=BG); durfrm.pack(fill="x", padx=16, pady=(0, 2))
 tk.Label(durfrm, text="مدة المرحلة الديناميكية (ثانية):", bg=BG, fg=FG,
@@ -407,15 +644,24 @@ tk.Entry(durfrm, textvariable=dur_var, width=8, font=("Consolas", 11), bg="#0a17
 run_pipeline_btn = button(tab_engines, RUN_BTN_TEXT, on_full_ai_pipeline, BTN_RED)
 stop_pipeline_btn = button(tab_engines, "⏹  إيقاف المسار", on_stop_pipeline, BTN2)
 stop_pipeline_btn.config(state="disabled")
-tk.Label(tab_engines, text="يشغّل المحرك الساكن + الديناميكي + العقل المدبر + السحابة + الاستغلال ثم التقرير، "
-         "مرتبطاً بالمحاكي المختار، والتقدّم يظهر في سجل الأسفل.",
+tk.Label(tab_engines, text="يشغّل المحرك الساكن + الديناميكي + العقل المدبر + السحابة + الاستغلال ثم التقرير. "
+         "البايبلاين الجديد يضيف: Pipeline Orchestrator, Working Memory, Real-time Decision, "
+         "Live Data Extraction, Phase Manager Brain, Adaptive Exploitation, Feedback Loop. "
+         "التقدّم يظهر في سجل الأسفل.",
          bg=BG, fg="#7fa8c9", font=("Segoe UI", 8), wraplength=680, justify="right").pack(anchor="e", padx=16, pady=(0, 4))
 
 button(tab_engines, "🚀  المسار المبسّط في نافذة منفصلة (DeepSeek 3 مراحل)", on_deepseek_pipeline, BTN2)
+button(tab_engines, "⚡  المسار الكامل الشامل (ساكنة + ديناميكية + AI + استغلال)", on_full_pipeline, BTN_RED)
 
-section(tab_engines, "المحرّك الذكي (AI)")
+section(tab_engines, "المحرّك الذكي (AI) - مع المكونات الجديدة")
 button(tab_engines, "⚡  DeepSeek Core (استخراج + فكّ تشفير + فتح Premium تلقائي)", on_deepseek_core, BTN2)
 button(tab_engines, "🧠  المحرّك الديناميكي الموحّد (DeepSeek يقود التطبيق)", on_deep_engine, BTN2)
+button(tab_engines, "🔬  المحرّك الديناميكي (مع البايبلاين الجديد)", on_deep_engine_with_pipeline, BTN2)
+button(tab_engines, "🧠  Phase Manager Brain (إدارة المراحل الذكية)", on_phase_manager, BTN2)
+button(tab_engines, "⚡  Real-time Decision Engine (قرارات حية)", on_decision_engine, BTN2)
+button(tab_engines, "🔍  Live Data Extraction (استخلاص حي)", on_data_extraction, BTN2)
+button(tab_engines, "🎯  Adaptive Exploitation (استغلال تكيفي)", on_adaptive_exploit, BTN2)
+button(tab_engines, "🔄  Feedback Loop (تحسين مستمر)", on_feedback_loop, BTN2)
 section(tab_engines, "الهجوم الشامل والاعتراض")
 button(tab_engines, "🔥  هجوم شامل (Full Assault)", on_full_assault, BTN_RED)
 button(tab_engines, "☁️  اختراق السحابة (Cloud Assault)", on_cloud_assault, BTN2)
@@ -426,6 +672,9 @@ button(tab_engines, "🔬  اعتراض TLS الأصلي (Native)", on_capture_n
 button(tab_engines, "🕵️  اعتراض عميق (Deep Hijack)", on_hijack_deep)
 button(tab_engines, "📡  مراقبة الواجهات الحساسة (Monitor)", on_monitor)
 section(tab_engines, "فتح المزايا المدفوعة")
+button(tab_engines, "🧪  فتح تلقائي شامل — جرّب كل الحيل (Auto)", on_auto_premium, BTN_RED)
+button(tab_engines, "🧑‍💻  فتح مُساعَد — سجّل دخولك أثناء التشغيل (Live-Assisted)", on_auto_premium_assist, BTN_RED)
+button(tab_engines, "🔑  تزوير/قلب رمز JWT (صلاحيات مميّزة)", on_jwt_forge, BTN2)
 button(tab_engines, "🔓  فتح Premium (محلي)", on_unlock_local)
 button(tab_engines, "🔓  فتح Premium (سحابي)", on_unlock_cloud)
 button(tab_engines, "🔓  Hijack Premium", on_hijack_premium)
@@ -443,6 +692,8 @@ button(tab_advanced, "🗂️  استنساخ بيانات التطبيق (Data 
 button(tab_advanced, "🖥️  Reverse Shell", on_reverse_shell, BTN_RED)
 button(tab_advanced, "📟  خادم C2", on_c2_server, BTN2)
 button(tab_advanced, "🎛️  المنسق التفاعلي (Orchestrator)", on_orchestrator, BTN2)
+button(tab_advanced, "🧠  Pipeline Orchestrator (منسق التسلسل)", on_pipeline_orchestrator, BTN2)
+button(tab_advanced, "💾  Working Memory (الذاكرة المؤقتة)", on_working_memory, BTN2)
 
 log = scrolledtext.ScrolledText(root, height=6, bg="#060c1c", fg=FG, font=("Consolas", 9), relief="flat")
 log.pack(fill="both", expand=False, padx=14, pady=(4, 14))
