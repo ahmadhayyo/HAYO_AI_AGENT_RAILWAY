@@ -23,10 +23,21 @@ DEFAULT_DEV = "emulator-5554"
 
 BG, FG, ACC, BTN, BTN2, BTN_RED = "#0b1020", "#d6f5e3", "#00e6a8", "#122040", "#1b2d52", "#4a0e0e"
 RUN_BTN_TEXT = "🤖  المسار الكامل بقيادة الذكاء الاصطناعي (مباشر داخل اللوحة)"
+# الهدف/التعليمات الافتراضية للعقل المدبّر إن ترك المستخدم الحقل فارغاً.
+DEFAULT_GOAL = "reach login, premium/subscription and cloud-sync screens"
 # Python 3.12+ يمنع إنشاء متغيّرات tkinter قبل وجود نافذة جذر → ننشئ الجذر أولاً.
 root = tk.Tk()
 USE_PIPELINE_VAR = tk.BooleanVar(value=False)
 USE_ULTIMATE_HOOKS_VAR = tk.BooleanVar(value=True)
+
+def get_directive():
+    """التعليمات التنفيذية التي كتبها المستخدم للعقل المدبّر (أو الهدف الافتراضي).
+    تُمرَّر إلى المحرّك عبر متغيّر البيئة HAYO_GOAL و/أو الوسيط --goal."""
+    try:
+        t = directive_text.get("1.0", "end").strip()
+    except Exception:
+        t = ""
+    return t or DEFAULT_GOAL
 
 def launch(batfile, arg=""):
     path = os.path.join(AGENT, batfile)
@@ -40,6 +51,7 @@ def launch(batfile, arg=""):
         messagebox.showerror("HAYO", f"Missing: {batfile}"); return
     env = os.environ.copy()
     env["HAYO_DEV"] = current_dev()
+    env["HAYO_GOAL"] = get_directive()   # يصل الهدف حتى لمسارات .bat (dynamic_engine يقرأه)
     subprocess.Popen(f'start "HAYO Cipher-7" cmd /k ""{path}" {arg}"', shell=True, env=env)
     log_line(f"▶ launched {batfile} {arg} [DEV={env['HAYO_DEV']}]".strip())
 
@@ -48,6 +60,7 @@ def launch_py(script, arg=""):
     env = os.environ.copy()
     env["HAYO_DEV"] = current_dev()
     env["HAYO_ADB"] = ADB
+    env["HAYO_GOAL"] = get_directive()
     env["PYTHONIOENCODING"] = "utf-8"
     subprocess.Popen(f'start "DeepSeek Core v5" cmd /k "chcp 65001>nul & {PY} {q(path)} {arg}"', shell=True, env=env)
     log_line(f"▶ launched {script} {arg} [DEV={env['HAYO_DEV']}]".strip())
@@ -134,18 +147,21 @@ def on_full_ai_pipeline():
     if not os.path.isfile(script):
         messagebox.showerror("HAYO", "dynamic_engine.py غير موجود."); return
     
-    cmd = [PY, script, "--package", p, "--device", dev, "--duration", str(dur)]
-    
+    directive = get_directive()
+    cmd = [PY, script, "--package", p, "--device", dev, "--duration", str(dur),
+           "--goal", directive]
+
     if use_pipeline:
         cmd.append("--use-pipeline")
-    
+
     if not use_ultimate:
         # If not using ultimate hooks, will fall back to instrument_deep.js or instrument.js
         pass
-    
+
     env = os.environ.copy()
     env["HAYO_DEV"] = dev
     env["HAYO_ADB"] = ADB
+    env["HAYO_GOAL"] = directive
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
     
@@ -168,6 +184,7 @@ def on_full_ai_pipeline():
     log_line(f"   الهدف: {p} | الجهاز: {dev} | المدة: {dur}s")
     log_line(f"   البايبلاين: {pipeline_mode}")
     log_line(f"   الخطافات: {hooks_mode}")
+    log_line(f"🎯 التعليمات للعقل: {directive[:120]}{'…' if len(directive) > 120 else ''}")
     log_line("=" * 60)
     status.config(text="⏳ بدء المسار الكامل...")
     run_pipeline_btn.config(state="disabled", text="⏳ المسار قيد التشغيل...")
@@ -425,8 +442,9 @@ def on_deep_engine_with_pipeline():
     script = os.path.join(AGENT, "dynamic_engine.py")
     if not os.path.isfile(script):
         messagebox.showerror("HAYO", "dynamic_engine.py غير موجود."); return
-    cmd = [PY, script, "--package", p, "--device", dev, "--duration", str(dur), "--use-pipeline"]
-    launch_py("dynamic_engine.py", f"--package {p} --device {dev} --duration {dur} --use-pipeline")
+    directive = get_directive().replace("\n", " ").replace('"', "'").strip()
+    launch_py("dynamic_engine.py",
+              f'--package {p} --device {dev} --duration {dur} --use-pipeline --goal "{directive}"')
 
 def on_phase_manager():
     """Run phase manager brain standalone"""
@@ -694,6 +712,18 @@ button(tab_advanced, "📟  خادم C2", on_c2_server, BTN2)
 button(tab_advanced, "🎛️  المنسق التفاعلي (Orchestrator)", on_orchestrator, BTN2)
 button(tab_advanced, "🧠  Pipeline Orchestrator (منسق التسلسل)", on_pipeline_orchestrator, BTN2)
 button(tab_advanced, "💾  Working Memory (الذاكرة المؤقتة)", on_working_memory, BTN2)
+
+# ── حقل التعليمات التنفيذية للعقل المدبّر (يُطبّق على كل أزرار المحرّك) ──
+dir_head = tk.Frame(root, bg=BG); dir_head.pack(fill="x", padx=14, pady=(2, 0))
+tk.Label(dir_head, text="🎯 التعليمات التنفيذية للعقل (الهدف النهائي — ينفّذها بدقة):",
+         bg=BG, fg=ACC, font=("Segoe UI", 9, "bold")).pack(side="right")
+tk.Button(dir_head, text="استعادة الافتراضي", command=lambda: (directive_text.delete("1.0", tk.END),
+          directive_text.insert("1.0", DEFAULT_GOAL)), bg=BTN2, fg=FG, relief="flat",
+          font=("Segoe UI", 8, "bold"), cursor="hand2").pack(side="left")
+directive_text = scrolledtext.ScrolledText(root, height=3, bg="#0a1730", fg=ACC,
+         insertbackground=ACC, font=("Consolas", 10), relief="flat", wrap="word")
+directive_text.pack(fill="x", padx=14, pady=(2, 6))
+directive_text.insert("1.0", DEFAULT_GOAL)
 
 log = scrolledtext.ScrolledText(root, height=6, bg="#060c1c", fg=FG, font=("Consolas", 9), relief="flat")
 log.pack(fill="both", expand=False, padx=14, pady=(4, 14))

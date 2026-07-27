@@ -474,6 +474,18 @@ class LLMBrain:
             return res
         return None
 
+    def think(self, prompt, strategy=None, temperature=0.2):
+        """Single-prompt reasoning via the real provider cascade.
+
+        Used by ExtendedBrain (select_exploit / update_strategy / should_run_phase /
+        adapt_strategy). Before this existed, those methods called a NON-EXISTENT
+        think() → every call threw AttributeError → silently fell back to hardcoded
+        defaults (the extended brain *looked* AI-driven but wasn't). `strategy` is an
+        advisory label kept for API compatibility."""
+        sys_p = ("You are HAYO's expert security reasoning engine. Analyze precisely "
+                 "and respond ONLY with the exact JSON object requested — no prose.")
+        return self.chat(system=sys_p, user=str(prompt), temperature=temperature)
+
     # =========================================================================
     # ADVANCED STRATEGY & MULTI-AGENT CONSENSUS EXTENSIONS (v7)
     # =========================================================================
@@ -631,6 +643,9 @@ class LLMBrain:
             "in real time to force it through login, premium/subscription, cloud-sync, settings and account flows "
             "so the Frida hooks capture keys, tokens and secrets. You are relentless and resourceful: you ALWAYS "
             "return a concrete next action and NEVER give up while there is any screen or trick left to try.\n\n"
+            "★ AUTHORITATIVE OPERATOR DIRECTIVE (obey this PRECISELY — it overrides generic exploration; every "
+            "action you choose must move toward fulfilling it, and only declare success/stop once IT is achieved):\n"
+            "    " + str(goal).replace("\n", " ").strip() + "\n\n"
             "Respond ONLY with valid JSON:\n"
             "{\n"
             '  "action": "tap|input|swipe|launch|back|key|wait|stop",\n'

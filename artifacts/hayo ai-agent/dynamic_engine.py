@@ -44,15 +44,65 @@ except Exception as e:
     print(f"[!] ai_explorer unavailable: {e}")
     _HAS_EXPLORER = False
 
+# New advanced components
+try:
+    from pipeline_orchestrator import PipelineOrchestrator, PhaseStatus
+    _HAS_PIPELINE = True
+except Exception as e:
+    print(f"[!] pipeline_orchestrator unavailable: {e}")
+    _HAS_PIPELINE = False
+
+try:
+    from working_memory import WorkingMemory, Priority
+    _HAS_WORKING_MEMORY = True
+except Exception as e:
+    print(f"[!] working_memory unavailable: {e}")
+    _HAS_WORKING_MEMORY = False
+
+try:
+    from realtime_decision_engine import RealtimeDecisionEngine, Event
+    _HAS_DECISION_ENGINE = True
+except Exception as e:
+    print(f"[!] realtime_decision_engine unavailable: {e}")
+    _HAS_DECISION_ENGINE = False
+
+try:
+    from live_data_extractor import LiveDataExtractor
+    _HAS_DATA_EXTRACTOR = True
+except Exception as e:
+    print(f"[!] live_data_extractor unavailable: {e}")
+    _HAS_DATA_EXTRACTOR = False
+
+try:
+    from phase_manager_brain import PhaseManagerBrain, PhaseContext
+    _HAS_PHASE_BRAIN = True
+except Exception as e:
+    print(f"[!] phase_manager_brain unavailable: {e}")
+    _HAS_PHASE_BRAIN = False
+
+try:
+    from adaptive_exploitation_engine import AdaptiveExploitationEngine
+    _HAS_EXPLOIT_ENGINE = True
+except Exception as e:
+    print(f"[!] adaptive_exploitation_engine unavailable: {e}")
+    _HAS_EXPLOIT_ENGINE = False
+
+try:
+    from feedback_loop import FeedbackLoop
+    _HAS_FEEDBACK_LOOP = True
+except Exception as e:
+    print(f"[!] feedback_loop unavailable: {e}")
+    _HAS_FEEDBACK_LOOP = False
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _pick_instrumentation():
-    """يُفضّل السكربت العميق (instrument_deep.js: خطافات تشفير/شبكة/تخزين/billing/TLS
-    حقيقية بصيغة kind:"finding") على الجذع الضعيف instrument.js الذي لا يلتقط شيئاً."""
+    """يُفضّل السكربت العميق (instrument_ultimate.js: 100+ hooks) على instrument_deep.js على instrument.js."""
+    ultimate = os.path.join(HERE, "scripts", "instrument_ultimate.js")
     deep = os.path.join(HERE, "scripts", "instrument_deep.js")
     basic = os.path.join(HERE, "scripts", "instrument.js")
-    return deep if os.path.isfile(deep) else basic
+    return ultimate if os.path.isfile(ultimate) else (deep if os.path.isfile(deep) else basic)
 
 
 SCRIPT_PATH = _pick_instrumentation()
@@ -106,7 +156,8 @@ class DynamicEngine:
     def __init__(self, package, device, adb="adb", duration=180, use_ai=True,
                  goal="reach login, premium/subscription and cloud-sync screens",
                  store=None, brain=None, report=True,
-                 until_goal=True, max_steps=160, stagnation_limit=20):
+                 until_goal=True, max_steps=160, stagnation_limit=20,
+                 use_pipeline=False):
         self.package = package; self.device = device; self.adb = adb
         self.duration = duration; self.use_ai = use_ai; self.goal = goal
         # القيادة التقارُبية: حتى النجاح (نتيجة حرجة) أو الركود أو سقف الخطوات؛
@@ -117,6 +168,9 @@ class DynamicEngine:
         self.findings = []
         self._seen = set()
         self._mem_classes = set()   # ضجيج «memory scavenger»: أصناف محمّلة (ليست نتائج)
+        self._alloc_counts = {}     # عدّاد تخصيص/تحرير الذاكرة الخام (malloc/free) بدل نتيجة/استدعاء
+        self.use_pipeline = use_pipeline  # Enable new pipeline orchestrator
+        
         # WarRoomBrain يوفّر triage()/summarize()/decide_action() التي يحتاجها المحرك؛
         # LLMBrain العام لا يملك triage/summarize → كان التقرير ينهار في التشغيل المستقل.
         if brain is None:
@@ -131,6 +185,38 @@ class DynamicEngine:
         self.report = report         # False → campaign writes the unified report
         self.explorer = None
         os.makedirs(LOOT, exist_ok=True)
+        
+        # Try to use ExtendedBrain if available (supports all advanced components)
+        try:
+            from extended_brain import ExtendedBrain
+            # Wrap the existing brain with ExtendedBrain
+            brain = ExtendedBrain(base_brain=brain, verbose=True)
+            print(G + "  [+] Using ExtendedBrain for advanced components" + X)
+        except ImportError:
+            print(Y + "  [*] ExtendedBrain not available - advanced components disabled" + X)
+        
+        # Initialize new advanced components (only if brain supports required methods)
+        brain_has_required_methods = hasattr(brain, 'decide') and hasattr(brain, 'select_exploit') and hasattr(brain, 'update_strategy')
+        
+        self.working_memory = WorkingMemory() if _HAS_WORKING_MEMORY else None
+        self.phase_manager_brain = PhaseManagerBrain(package) if _HAS_PHASE_BRAIN else None
+        # أُعيد تفعيله: عطل التكامل (تمرير نص بدل Event + .get() على كائن Decision +
+        # إغراق الـ LLM) أُصلح — الآن يمرّر Event ويُرجع Decision ويُحدّد معدّل الاستشارة.
+        self.realtime_decision_engine = RealtimeDecisionEngine(brain, self.working_memory) if (_HAS_DECISION_ENGINE and self.working_memory and brain_has_required_methods) else None
+        self.live_data_extractor = LiveDataExtractor(self.working_memory) if (_HAS_DATA_EXTRACTOR and self.working_memory) else None
+        self.adaptive_exploitation_engine = AdaptiveExploitationEngine(brain, self.working_memory) if (_HAS_EXPLOIT_ENGINE and self.working_memory and brain_has_required_methods) else None
+        self.feedback_loop = FeedbackLoop(brain, self.working_memory) if (_HAS_FEEDBACK_LOOP and self.working_memory and brain_has_required_methods) else None
+        self.pipeline_orchestrator = PipelineOrchestrator(package, device, brain, adb) if (_HAS_PIPELINE and self.phase_manager_brain and brain_has_required_methods) else None
+        
+        # Cloud bypass integration
+        self.cloud_bypass_enabled = False  # Disabled in favor of final script
+        self.cloud_bypass_script = os.path.join(os.path.dirname(__file__), "scripts", "cloud_bypass_frida.js")
+        self.premium_unlock_enabled = True
+        self.premium_unlock_script = os.path.join(os.path.dirname(__file__), "scripts", "final_premium_unlock.js")
+        self.native_bypass_script = os.path.join(os.path.dirname(__file__), "scripts", "native_premium_bypass.js")
+        # اعتراض الرسائل بين التطبيق والسحابة (OkHttp/HttpURLConnection/org.json) →
+        # إعادة كتابة إشارة الاشتراك إلى «premium مسموح»، مع أدلة حقيقية «قبل/بعد».
+        self.entitlement_interceptor_script = os.path.join(os.path.dirname(__file__), "scripts", "cloud_entitlement_interceptor.js")
 
     def _brain_online(self):
         """يكتشف مزوّد LLM حيّاً سواء كان brain = LLMBrain (self.engine) أو
@@ -146,9 +232,13 @@ class DynamicEngine:
     # ── finding shaping ─────────────────────────────────────────────────────
     _SEV_CRIT = ("key", "secret", "token", "password", "credential",
                  "private", "seed", "mnemonic", "apikey", "api_key")
+    # ملاحظة: لا نضع "native" وحدها هنا — كانت تُصنّف كل native_malloc/native_free
+    # كـ HIGH وتُغرق التقرير بعشرات الآلاف من الإيجابيات الكاذبة. نكتفي بالأنواع
+    # الأصلية ذات المعنى الأمني فقط (SSL/تحميل مكتبات ديناميكي/تحميل DEX أصلي).
     _SEV_HIGH = ("auth", "billing", "premium", "purchase", "subscription",
                  "cloud", "firebase", "ssl", "pinning", "dex_load",
-                 "webview_js", "native", "response_body", "jwt")
+                 "webview_js", "native_ssl", "native_dlopen", "native_dlsym",
+                 "native_exec", "response_body", "jwt")
 
     def _infer_severity(self, ftype, payload):
         explicit = payload.get("severity")
@@ -205,6 +295,13 @@ class DynamicEngine:
                 if cls:
                     self._mem_classes.add(cls)
                 return
+            # كبت ضجيج تخصيص/تحرير الذاكرة الخام: أي تطبيق يستدعي malloc/free
+            # ملايين المرات، وكانت تُنتج ~99.9% من النتائج (عشرات الآلاف). نجمّعها
+            # في عدّاد واحد بدل نتيجة لكل استدعاء، ونُصدر ملخّصاً واحداً في النهاية.
+            if ftype in ("native_malloc", "native_free", "native_calloc",
+                         "native_realloc"):
+                self._alloc_counts[ftype] = self._alloc_counts.get(ftype, 0) + 1
+                return
             f = self._shape_finding(p)
             key = f["type"] + "|" + json.dumps(f["evidence"], ensure_ascii=False, sort_keys=True)[:200]
             if key in self._seen:
@@ -216,6 +313,55 @@ class DynamicEngine:
                 except Exception: pass
             sev = f["severity"]; col = R if sev in ("critical", "high") else (Y if sev == "medium" else X)
             print(col + f"  [+] [{sev:<8}] {f['type']:<26} {(f['detail'] or '')[:70]}" + X)
+            
+            # Extract live data using new component
+            if self.live_data_extractor:
+                try:
+                    self.live_data_extractor.extract({
+                        "type": ftype,
+                        "data": f.get("raw", {}),
+                        "source": "frida",
+                    })
+                except Exception as e:
+                    pass
+            
+            # Feed into feedback loop — النجاح يعكس **قيمة النتيجة الحقيقية** لا مجرد
+            # أن الخطاف أُطلق. (عالٍ/حرِج ومؤكَّد = نجاح؛ متوسط = نجاح جزئي؛
+            # منخفض/معلومة/إيجابية-كاذبة = لا). سابقاً كان success=True دائماً فيصير
+            # مقياس معدّل النجاح 100% بلا معنى.
+            if self.feedback_loop:
+                try:
+                    fp = bool(f.get("false_positive", False))
+                    valuable = (sev in ("critical", "high")) and not fp
+                    partial = (sev == "medium") and not fp
+                    self.feedback_loop.collect_feedback(
+                        action=f"frida_hook_{ftype}",
+                        result={"success": valuable, "partial_success": partial,
+                                "severity": sev, "false_positive": fp,
+                                "type": ftype, "data": f.get("raw", {})},
+                        context={"severity": sev, "finding_type": ftype}
+                    )
+                except Exception as e:
+                    pass
+            
+            # Real-time decision making
+            if self.realtime_decision_engine:
+                try:
+                    from realtime_decision_engine import Event
+                    event = Event(
+                        type="finding",
+                        data={"type": ftype, "severity": sev, "raw": f.get("raw", {})},
+                        source="frida"
+                    )
+                    decision = self.realtime_decision_engine.decide(event)
+                    if decision and hasattr(decision, 'type') and decision.type.value == "escalate":
+                        print(C + f"  [ai] Decision: {decision.action} ({decision.reasoning})" + X)
+                except AttributeError as e:
+                    # Brain doesn't have required methods - skip AI decision
+                    pass
+                except Exception as e:
+                    pass
+            
             # keep the explorer's context fresh so the brain reacts آنياً لما أطلقه
             if self.explorer:
                 crit = sum(1 for x in self.findings if x["severity"] in ("critical", "high"))
@@ -246,7 +392,10 @@ class DynamicEngine:
         print(f"  device : {self.device}")
         brain_online = self._brain_online()
         print(f"  brain  : {'DeepSeek ('+str(getattr(self.brain,'model','?'))+')' if brain_online else 'OFFLINE heuristics (no DEEPSEEK_API_KEY)'}")
-        print(f"  window : {self.duration}s\n")
+        print(f"  window : {self.duration}s")
+        if self.use_pipeline:
+            print(f"  pipeline: ENABLED (new sequential orchestration)")
+        print()
         if not os.path.isfile(SCRIPT_PATH):
             sys.exit(f"[!] instrumentation script not found: {SCRIPT_PATH}")
 
@@ -266,9 +415,150 @@ class DynamicEngine:
         script = session.create_script(src)
         script.on("message", self._on_message)
         script.load()
+        
+        # Load cloud bypass script if enabled
+        if self.cloud_bypass_enabled and os.path.exists(self.cloud_bypass_script):
+            try:
+                print(C + f"  [*] Loading cloud bypass script from: {self.cloud_bypass_script}" + X)
+                bypass_src = open(self.cloud_bypass_script, "r", encoding="utf-8").read()
+                bypass_script = session.create_script(bypass_src)
+                bypass_script.on("message", self._on_message)
+                bypass_script.load()
+                print(G + "  [+] Cloud bypass script loaded successfully." + X)
+            except Exception as e:
+                print(Y + f"  [*] Failed to load cloud bypass script: {e}" + X)
+                import traceback
+                traceback.print_exc()
+        else:
+            print(Y + f"  [*] Cloud bypass script not found or disabled" + X)
+        
+        # Load premium unlock script if enabled
+        if self.premium_unlock_enabled and os.path.exists(self.premium_unlock_script):
+            try:
+                print(C + f"  [*] Loading premium unlock script from: {self.premium_unlock_script}" + X)
+                premium_src = open(self.premium_unlock_script, "r", encoding="utf-8").read()
+                premium_script = session.create_script(premium_src)
+                premium_script.on("message", self._on_message)
+                premium_script.load()
+                print(G + "  [+] Premium unlock script loaded successfully." + X)
+            except Exception as e:
+                print(Y + f"  [*] Failed to load premium unlock script: {e}" + X)
+                import traceback
+                traceback.print_exc()
+        else:
+            print(Y + f"  [*] Premium unlock script not found or disabled" + X)
+        
+        # Load native bypass script if enabled
+        if hasattr(self, 'native_bypass_script') and os.path.exists(self.native_bypass_script):
+            try:
+                print(C + f"  [*] Loading native bypass script from: {self.native_bypass_script}" + X)
+                native_src = open(self.native_bypass_script, "r", encoding="utf-8").read()
+                native_script = session.create_script(native_src)
+                native_script.on("message", self._on_message)
+                native_script.load()
+                print(G + "  [+] Native bypass script loaded successfully." + X)
+            except Exception as e:
+                print(Y + f"  [*] Failed to load native bypass script: {e}" + X)
+                import traceback
+                traceback.print_exc()
+        else:
+            print(Y + f"  [*] Native bypass script not found or disabled" + X)
+
+        # Load cloud entitlement interceptor (اعتراض إشارة الاشتراك السحابية)
+        if os.path.exists(self.entitlement_interceptor_script):
+            try:
+                print(C + f"  [*] Loading cloud entitlement interceptor: {self.entitlement_interceptor_script}" + X)
+                ent_src = open(self.entitlement_interceptor_script, "r", encoding="utf-8").read()
+                ent_script = session.create_script(ent_src)
+                ent_script.on("message", self._on_message)
+                ent_script.load()
+                print(G + "  [+] Cloud entitlement interceptor loaded (OkHttp/HttpURLConnection/org.json)." + X)
+            except Exception as e:
+                print(Y + f"  [*] Failed to load entitlement interceptor: {e}" + X)
+                import traceback
+                traceback.print_exc()
+        else:
+            print(Y + f"  [*] Cloud entitlement interceptor not found" + X)
+
         device.resume(pid)
         print(G + B + "  [+] app launched + instrumentation loaded." + X)
 
+        # Use new pipeline orchestrator if enabled
+        if self.use_pipeline and self.pipeline_orchestrator:
+            print(C + "  [pipeline] Running sequential orchestration...\n" + X)
+            self._run_with_pipeline()
+        else:
+            # Original AI-guided exploration
+            self._run_with_exploration()
+        
+        # Apply feedback loop if available
+        if self.feedback_loop:
+            try:
+                self.feedback_loop.apply_feedback()
+                analysis = self.feedback_loop.analyze_feedback()
+                print(C + f"  [feedback] Applied {len(analysis.get('recommendations', []))} improvements" + X)
+            except Exception as e:
+                pass
+        
+        # Print working memory stats if available
+        if self.working_memory:
+            try:
+                stats = self.working_memory.get_stats()
+                print(C + f"  [memory] {stats['total_items']} items stored" + X)
+            except Exception as e:
+                pass
+        
+        if self._mem_classes:
+            print(C + f"  [i] رصد الـ scavenger {len(self._mem_classes)} صنفاً محمّلاً "
+                  f"في الذاكرة (معلومة استطلاعية, لا تُحتسب نتائج)." + X)
+        if self._alloc_counts:
+            _total_alloc = sum(self._alloc_counts.values())
+            _brk = ", ".join(f"{k}={v}" for k, v in sorted(self._alloc_counts.items()))
+            print(C + f"  [i] تخصيص/تحرير ذاكرة خام: {_total_alloc} استدعاء ({_brk}) "
+                  f"— مجمّعة كعدّاد واحد, لا تُحتسب نتائج." + X)
+            # نتيجة استطلاعية واحدة (منخفضة) تلخّص النشاط بدل عشرات الآلاف
+            self.findings.append({
+                "type": "native_alloc_summary",
+                "title": "Native Memory Allocation (aggregated)",
+                "severity": "low",
+                "detail": f"total={_total_alloc}; {_brk}",
+                "why": "ملخّص مجمّع لنشاط malloc/free/calloc/realloc الخام (ضجيج معتاد لأي تطبيق).",
+                "data": self._alloc_counts,
+                "evidence": [_brk],
+                "phase": "dynamic",
+                "raw": dict(self._alloc_counts),
+            })
+        # Teardown can block: the memory-scavenger may be mid-scan on the agent
+        # thread, so unload()/detach() would wait for it. Force-stop the app to
+        # release the agent, then tear down under a watchdog so reporting always runs.
+        self._safe_teardown(device, script, session)
+        return self._finish(device)
+    
+    def _run_with_pipeline(self):
+        """Run using new pipeline orchestrator"""
+        # Update pipeline context with current state
+        self.pipeline_orchestrator.context = {
+            "package": self.package,
+            "device": self.device,
+            "duration": self.duration,
+            "goal": self.goal,
+        }
+        
+        # Run pipeline
+        results = self.pipeline_orchestrator.run()
+        
+        # Collect findings from pipeline
+        for phase_name, result in results.items():
+            if result.status == PhaseStatus.COMPLETED and "findings" in result.data:
+                for finding in result.data["findings"]:
+                    self.findings.append(finding)
+        
+        # Print summary
+        summary = self.pipeline_orchestrator.get_summary()
+        print(C + f"  [pipeline] Completed: {summary['completed']}/{summary['total_phases']} phases" + X)
+    
+    def _run_with_exploration(self):
+        """Run using original AI-guided exploration"""
         # AI-guided exploration in parallel — قيادة تقارُبية (حتى النجاح/الركود)
         self._explorer_thread = None
         if self.use_ai and _HAS_EXPLORER:
@@ -295,14 +585,6 @@ class DynamicEngine:
             print(Y + "\n[*] stopped early." + X)
         if self.explorer:
             self.explorer.stop()
-        if self._mem_classes:
-            print(C + f"  [i] رصد الـ scavenger {len(self._mem_classes)} صنفاً محمّلاً "
-                  f"في الذاكرة (معلومة استطلاعية، لا تُحتسب نتائج)." + X)
-        # Teardown can block: the memory-scavenger may be mid-scan on the agent
-        # thread, so unload()/detach() would wait for it. Force-stop the app to
-        # release the agent, then tear down under a watchdog so reporting always runs.
-        self._safe_teardown(device, script, session)
-        return self._finish(device)
 
     def _safe_teardown(self, device, script, session, timeout=6):
         import subprocess as _sp
@@ -404,19 +686,75 @@ class DynamicEngine:
         if added:
             print(G + B + f"  [+] الاستغلال السحابي وصل إلى {added} هدف/بيانات." + X)
 
+    # ── premium unlock verification ─────────────────────────────────────────
+    def _verify_premium_unlock(self):
+        """يؤكّد فتح المميّز من **أحداث اعتراض حقيقية** فقط.
+
+        الدليل: كل نتيجة من نوع `premium_entitlement_intercepted` تعني أن التطبيق
+        طلب نقطة نهاية اشتراك/مصادقة فعلاً، واعترضنا استجابتها الحقيقية وأعدنا
+        كتابتها إلى «مسموح» (مع «قبل/بعد»). لا نُعلن الفتح دون هذا الدليل."""
+        hits = [f for f in self.findings
+                if f.get("type") == "premium_entitlement_intercepted"]
+        layers, evidence = set(), []
+        for f in hits:
+            raw = f.get("raw", {}) or {}
+            if raw.get("layer"):
+                layers.add(raw["layer"])
+            evidence.append({
+                "layer": raw.get("layer"),
+                "url": raw.get("url"),
+                "changes": raw.get("changes"),
+                "detail": f.get("detail"),
+            })
+        return {
+            "verified": bool(hits),
+            "intercepted_signals": len(hits),
+            "layers": sorted(layers),
+            "evidence": evidence[:25],
+            "method": "real interception of app↔cloud entitlement responses",
+        }
+
     # ── reporting ──────────────────────────────────────────────────────────
     def _finish(self, device):
         self._run_secret_hunt()
         self._run_crypto_solve()   # فكّ الأسرار المشفّرة بالمفاتيح الملتقطة
         self._run_cloud_raid()     # استغلال الأسرار للوصول لبيانات السحابة
+        
+        # Cloud exposure analysis with ExtendedBrain
+        cloud_analysis = None
+        if hasattr(self.brain, 'analyze_cloud_exposure'):
+            try:
+                # Extract secrets from findings
+                secrets = []
+                for f in self.findings:
+                    if f.get("type") in ["secret", "key", "token", "credential"]:
+                        secrets.append(f)
+                cloud_analysis = self.brain.analyze_cloud_exposure(secrets)
+                print(G + f"  [+] Cloud exposure analysis: {cloud_analysis['risk_level']} risk level" + X)
+            except Exception as e:
+                print(Y + f"  [*] Cloud analysis error: {e}" + X)
+        
+        # تأكيد فتح المميّز من أحداث الاعتراض الحقيقية فقط (لا ادّعاء)
+        premium_unlock = self._verify_premium_unlock()
+        if premium_unlock["verified"]:
+            print(G + B + f"  [✓] premium unlock مُؤكَّد: اعتُرضت "
+                  f"{premium_unlock['intercepted_signals']} إشارة اشتراك حقيقية "
+                  f"عبر {', '.join(premium_unlock['layers']) or '?'}." + X)
+        else:
+            print(Y + "  [*] لم تُعترَض أي إشارة اشتراك سحابية بعد — لم يُؤكَّد فتح المميّز." + X)
+
         if not self.report:
             # campaign mode: the campaign orchestrator triages + writes the unified
             # report over the whole blackboard, so just hand back the raw findings.
             print(C + f"\n[*] dynamic phase captured {len(self.findings)} raw findings "
                   f"(campaign will triage + report)." + X)
-            return {"package": self.package, "findings": self.findings,
+            result = {"package": self.package, "findings": self.findings,
                     "visited": self.explorer.visited if self.explorer else [],
-                    "explore_steps": self.explorer.steps if self.explorer else 0}
+                    "explore_steps": self.explorer.steps if self.explorer else 0,
+                    "premium_unlock": premium_unlock}
+            if cloud_analysis:
+                result["cloud_analysis"] = cloud_analysis
+            return result
         print(C + B + f"\n[*] captured {len(self.findings)} raw findings. Triaging via brain…" + X)
         triaged = self.brain.triage(self.findings)
         session = {
@@ -430,7 +768,10 @@ class DynamicEngine:
             "raw_count": len(self.findings),
             "findings": self.findings,
             "triaged": triaged,
+            "premium_unlock": premium_unlock,
         }
+        if cloud_analysis:
+            session["cloud_analysis"] = cloud_analysis
         summary = self.brain.summarize(session)
         session["summary"] = summary
 
@@ -464,6 +805,47 @@ class DynamicEngine:
         L.append(f"- **شاشات زُرِت:** {len(session['visited'])} — خطوات الاستكشاف: {session['explore_steps']}")
         L.append(f"- **نتائج خام:** {session['raw_count']} — بعد الفرز: {len(triaged)}")
         L.append("")
+        
+        # Cloud exposure analysis
+        if "cloud_analysis" in session:
+            ca = session["cloud_analysis"]
+            L.append("## تحليل التعرض السحابي")
+            L.append("")
+            L.append(f"- **مستوى الخطر:** `{ca['risk_level'].upper()}`")
+            L.append(f"- **إجمالي الأسرار السحابية:** {ca['total_secrets']}")
+            L.append("")
+            if ca["cloud_services"]:
+                L.append("### الخدمات السحابية المكتشفة")
+                L.append("")
+                for service, data in ca["cloud_services"].items():
+                    L.append(f"#### {service.upper()}")
+                    L.append(f"- **العدد:** {data['count']}")
+                    for secret in data["secrets"]:
+                        L.append(f"  - `{secret['type']}`: {secret['value']} ({secret['severity']})")
+                L.append("")
+        
+        # Premium unlock verification (اعتراض إشارة الاشتراك السحابية)
+        pu = session.get("premium_unlock")
+        if pu:
+            L.append("## تأكيد فتح المميّز (اعتراض الإشارة السحابية)")
+            L.append("")
+            if pu["verified"]:
+                L.append(f"- **الحالة:** ✅ مُؤكَّد — اعتُرضت **{pu['intercepted_signals']}** "
+                         f"إشارة اشتراك حقيقية وأُعيدت كـ«مسموح».")
+                L.append(f"- **الطبقات:** {', '.join(pu['layers']) or '—'}")
+                L.append(f"- **الطريقة:** {pu['method']}")
+                L.append("")
+                L.append("### أدلة الاعتراض (قبل/بعد)")
+                L.append("")
+                for e in pu["evidence"]:
+                    L.append(f"- `[{e.get('layer','?')}]` {e.get('url') or ''} — "
+                             f"{', '.join(e.get('changes') or [])}")
+            else:
+                L.append("- **الحالة:** ❌ غير مُؤكَّد — لم تُعترَض أي إشارة اشتراك سحابية "
+                         "خلال الجلسة (قد لا يستعلم التطبيق عن الاشتراك عبر الشبكة، أو لم "
+                         "يُبلَغ المسار المُختبَر).")
+            L.append("")
+
         L.append("## الملخّص التنفيذي")
         L.append("")
         L.append(summary)
@@ -504,13 +886,19 @@ def main():
     ap.add_argument("--adb", default=os.environ.get("HAYO_ADB", "C:/Users/PT/Downloads/platform-tools/adb.exe"))
     ap.add_argument("--duration", type=int, default=180)
     ap.add_argument("--no-ai", action="store_true", help="disable AI exploration (manual interaction)")
-    ap.add_argument("--goal", default="reach login, premium/subscription and cloud-sync screens")
+    # الهدف/التعليمات التنفيذية: يقرأها العقل المدبّر وينفّذها بدقة. تُمرَّر صراحةً
+    # عبر --goal، أو من متغيّر البيئة HAYO_GOAL (يضبطه حقل التعليمات في اللوحة) فيصل
+    # الأمر حتى عبر مسارات .bat التي لا تمرّر --goal.
+    ap.add_argument("--goal",
+                    default=(os.environ.get("HAYO_GOAL", "").strip()
+                             or "reach login, premium/subscription and cloud-sync screens"))
     ap.add_argument("--server", help="optional HAYO platform URL to merge findings")
     ap.add_argument("--token", help="dyn_ token for the platform merge")
+    ap.add_argument("--use-pipeline", action="store_true", help="use new sequential pipeline orchestrator")
     args = ap.parse_args()
 
     eng = DynamicEngine(args.package, args.device, args.adb, args.duration,
-                        use_ai=not args.no_ai, goal=args.goal)
+                        use_ai=not args.no_ai, goal=args.goal, use_pipeline=args.use_pipeline)
     eng.run()
     if args.server and args.token:
         eng.post(args.server, args.token)

@@ -74,6 +74,23 @@ function captureString(str) {
     }
 }
 
+// يحوّل مصفوفة بايتات إلى نص قابل للطباعة — يكشف المفاتيح/التوكنات/JSON الصريحة
+// الناتجة عن فكّ التشفير (Cipher.doFinal). غير القابل للطباعة يُستبدل بنقطة.
+function capturePrintable(arr) {
+    if (!arr) return "";
+    try {
+        var s = "";
+        var n = Math.min(arr.length, 256);
+        for (var i = 0; i < n; i++) {
+            var c = arr[i] & 0xff;
+            s += (c >= 0x20 && c <= 0x7e) ? String.fromCharCode(c) : ".";
+        }
+        return s + (arr.length > 256 ? "..." : "");
+    } catch (e) {
+        return "";
+    }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // كل خطافات Java تُثبَّت داخل Java.perform: المحرّك يحمّل السكربت بعد spawn وقبل
 // resume (التطبيق معلّق، الـVM غير مُهيّأ). استدعاء Java.use في المستوى الأعلى
@@ -294,7 +311,11 @@ try {
         emit("crypto_cipher_dofinal", {
             algorithm: this.getAlgorithm(),
             input_length: input ? input.length : 0,
-            output_length: output ? output.length : 0
+            output_length: output ? output.length : 0,
+            // النص الصريح الناتج — يكشف المفاتيح/التوكنات المفكوكة لحظة فكّ التشفير:
+            output_hex: captureHex(output),
+            output_str: capturePrintable(output),
+            input_hex: captureHex(input)
         });
         return output;
     };
