@@ -527,6 +527,10 @@ export default function ReverseEngineer(){
   // Binary header / certificate info (parse-dex / parse-pe / certificate endpoints)
   const[binInfo,setBinInfo]=useState<{title:string;data:Record<string,any>}|null>(null);
   const[binLoading,setBinLoading]=useState(false);
+  // Native library (.so) analysis (native-analyze endpoint → readelf/nm/strings)
+  const[nativeInfo,setNativeInfo]=useState<any>(null);
+  const[nativeLoading,setNativeLoading]=useState(false);
+  const[nativeOpen,setNativeOpen]=useState(false);
   const[drag,setDrag]=useState(false);
   const[decomp,setDecomp]=useState(false);
   const[res,setRes]=useState<DecompileResult|null>(null);
@@ -838,6 +842,14 @@ export default function ReverseEngineer(){
     if(!sel){toast.error("مدعوم لـ DEX / EXE / DLL / APK فقط");return;}
     setBinLoading(true);setBinInfo(null);
     try{const fd=new FormData();fd.append("file",aFile);const r=await fetchRE(`/api/reverse/${sel.ep}`,{method:"POST",body:fd});const d=await r.json();if(!r.ok){toast.error(d.error||"فشل التحليل");return;}setBinInfo({title:sel.title,data:d});}catch(e:any){toast.error(e.message);}finally{setBinLoading(false);}
+  };
+  // Analyze a selected native .so/ELF file via readelf/nm/strings on the server.
+  const doNativeAnalyze=async(node?:FileTreeNode)=>{
+    const target=node||selNode;
+    if(!target){toast.error("اختر ملف .so أولاً");return;}
+    if(!iSess){toast.error("افتح ملفاً أولاً");return;}
+    setNativeLoading(true);setNativeInfo(null);setNativeOpen(true);
+    try{const r=await fetch("/api/reverse/native-analyze",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:iSess,filePath:target.path})});const d=await r.json();if(!r.ok){toast.error(d.error||"فشل التحليل");setNativeOpen(false);return;}setNativeInfo({...d,_name:target.name});}catch(e:any){toast.error(e.message);setNativeOpen(false);}finally{setNativeLoading(false);}
   };
   const doAiAnalysis=async(type:string)=>{
     if(!selContent||selContent.startsWith("["))return;setAnalyzing(true);setShowAi(true);setAiText("");setAiVulns(null);
@@ -1582,6 +1594,7 @@ export default function ReverseEngineer(){
           <div className="bg-card/70 backdrop-blur-sm border border-border rounded-2xl overflow-hidden flex flex-col" style={{minHeight:"300px",flex:1}}>
             <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/20 shrink-0">
               <FileCode2 className="w-4 h-4 text-primary"/><span className="text-sm font-medium truncate flex-1">{selNode?.name||"اختر ملفاً"}</span>
+              {selNode?.name?.toLowerCase().endsWith(".so")&&<Button size="sm" variant="outline" onClick={()=>doNativeAnalyze()} disabled={nativeLoading} className="h-7 px-2 text-xs gap-1 border-blue-500/30 text-blue-300 mr-auto"><Cpu className="w-3.5 h-3.5"/>تحليل native</Button>}
               {selContent&&!selContent.startsWith("[")&&<div className="flex items-center gap-1">
                 <DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" variant="outline" disabled={analyzing} className="gap-1.5 h-7 px-2 text-xs border-primary/30"><Bot className="w-3.5 h-3.5 text-primary"/>AI<ChevronDown className="w-3 h-3"/></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="w-40 z-50"><DropdownMenuItem onClick={()=>doAiAnalysis("explain")} className="gap-2 text-xs cursor-pointer"><BookOpen className="w-3 h-3"/>شرح</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("security")} className="gap-2 text-xs cursor-pointer"><Shield className="w-3 h-3 text-red-400"/>أمني</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("logic")} className="gap-2 text-xs cursor-pointer"><Wrench className="w-3 h-3 text-blue-400"/>منطق</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("full")} className="gap-2 text-xs cursor-pointer"><Bot className="w-3 h-3 text-primary"/>شامل</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiVulnScan()} className="gap-2 text-xs cursor-pointer"><Bug className="w-3 h-3 text-orange-400"/>فحص ثغرات</DropdownMenuItem>{selNode?.name?.endsWith(".smali")&&<DropdownMenuItem onClick={()=>doSmaliToJava()} className="gap-2 text-xs cursor-pointer"><Code className="w-3 h-3 text-emerald-400"/>Smali → Java</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
                 <Button size="sm" variant="ghost" onClick={()=>{navigator.clipboard.writeText(selContent);toast.success("نسخ");}} className="h-7 w-7 p-0"><Copy className="w-3.5 h-3.5"/></Button>
@@ -4484,6 +4497,33 @@ export default function ReverseEngineer(){
           </div>
         </>}
       </div>}
+
+      {/* Native (.so) analysis result dialog */}
+      <Dialog open={nativeOpen} onOpenChange={setNativeOpen}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" dir="rtl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Cpu className="w-5 h-5 text-blue-400"/>تحليل native — {nativeInfo?._name||""}</DialogTitle>
+            <DialogDescription>تحليل مكتبة ELF/‎.so عبر readelf · nm · strings</DialogDescription>
+          </DialogHeader>
+          {nativeLoading?<div className="flex items-center gap-3 justify-center py-12 text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin text-blue-400"/>يحلّل المكتبة...</div>
+          :nativeInfo?<div className="space-y-3 text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {([["المعمارية",nativeInfo.arch],["النوع",nativeInfo.elfType],["الفئة",nativeInfo.elfClass],["SONAME",nativeInfo.soname]] as const).filter(([,v])=>v).map(([l,v])=><div key={l} className="bg-muted/20 rounded-lg p-2 border border-border/50 text-center"><div className="text-[10px] text-muted-foreground">{l}</div><div className="text-xs font-mono text-blue-300 truncate" title={String(v)}>{String(v)}</div></div>)}
+            </div>
+            {nativeInfo.fileType&&<div className="text-[11px] font-mono text-muted-foreground bg-muted/20 rounded px-2 py-1.5 break-all">{nativeInfo.fileType}</div>}
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-2"><div className="text-lg font-bold text-blue-300">{nativeInfo.exportedSymbols?.length||0}</div><div className="text-[10px] text-muted-foreground">رموز مصدّرة</div></div>
+              <div className="bg-violet-500/10 border border-violet-500/30 rounded-lg p-2"><div className="text-lg font-bold text-violet-300">{nativeInfo.importedSymbols?.length||0}</div><div className="text-[10px] text-muted-foreground">رموز مستوردة</div></div>
+              <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-2"><div className="text-lg font-bold text-emerald-300">{nativeInfo.jniMethods?.length||0}</div><div className="text-[10px] text-muted-foreground">دوال JNI</div></div>
+            </div>
+            {nativeInfo.neededLibs?.length>0&&<div><div className="text-xs font-semibold mb-1">مكتبات مطلوبة ({nativeInfo.neededLibs.length})</div><div className="flex flex-wrap gap-1">{nativeInfo.neededLibs.map((l:string,i:number)=><span key={i} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted/30 border border-border/50 text-muted-foreground">{l}</span>)}</div></div>}
+            {nativeInfo.jniMethods?.length>0&&<div><div className="text-xs font-semibold mb-1 text-emerald-300">دوال JNI</div><div className="max-h-40 overflow-y-auto space-y-0.5">{nativeInfo.jniMethods.map((s:string,i:number)=><div key={i} className="text-[10px] font-mono text-emerald-200/80 bg-black/20 rounded px-2 py-1 truncate" title={s}>{s}</div>)}</div></div>}
+            {nativeInfo.interestingStrings?.length>0&&<div><div className="text-xs font-semibold mb-1 text-amber-300">نصوص مثيرة للاهتمام ({nativeInfo.interestingStrings.length})</div><div className="max-h-40 overflow-y-auto space-y-0.5">{nativeInfo.interestingStrings.map((s:string,i:number)=><div key={i} className="text-[10px] font-mono text-amber-200/80 bg-black/20 rounded px-2 py-1 truncate" title={s}>{s}</div>)}</div></div>}
+            {nativeInfo.exportedSymbols?.length>0&&<details><summary className="text-xs font-semibold text-blue-300 cursor-pointer">كل الرموز المصدّرة ({nativeInfo.exportedSymbols.length})</summary><div className="mt-1 max-h-48 overflow-y-auto space-y-0.5">{nativeInfo.exportedSymbols.map((s:string,i:number)=><div key={i} className="text-[10px] font-mono text-muted-foreground bg-black/20 rounded px-2 py-0.5 truncate" title={s}>{s}</div>)}</div></details>}
+            {!nativeInfo.arch&&!nativeInfo.exportedSymbols?.length&&<div className="text-center text-muted-foreground py-6 text-xs">تعذّر استخراج بيانات — قد لا يكون ملف ELF صالح أو الأدوات غير متاحة.</div>}
+          </div>:null}
+        </DialogContent>
+      </Dialog>
 
     </div>
   </DashboardLayout>);

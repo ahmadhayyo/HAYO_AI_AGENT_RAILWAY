@@ -3063,6 +3063,80 @@ export function detectMalwarePatterns(
   return { risk: highCount >= 2 ? "high" : highCount === 1 ? "medium" : "low", patterns };
 }
 
+// Native library (.so / ELF) analysis using readelf / nm / strings / file.
+// Every tool invocation is isolated so a missing tool degrades gracefully
+// instead of failing the whole request.
+export function analyzeNativeLibrary(sessionId: string, filePath: string): {
+  ok: boolean; error?: string;
+  fileType?: string; arch?: string; elfType?: string; elfClass?: string; soname?: string;
+  neededLibs?: string[]; exportedSymbols?: string[]; importedSymbols?: string[];
+  jniMethods?: string[]; interestingStrings?: string[]; symbolCount?: number; stringCount?: number;
+} {
+  const sess = editSessions.get(sessionId);
+  if (!sess) return { ok: false, error: "الجلسة غير موجودة" };
+  const baseDir = path.resolve(sess.decompDir);
+  const rel = String(filePath || "").replace(/^[/\\]+/, "");
+  const abs = path.resolve(baseDir, rel);
+  if (!abs.startsWith(baseDir)) return { ok: false, error: "مسار غير صالح" };
+  if (!fs.existsSync(abs)) return { ok: false, error: "الملف غير موجود" };
+
+  const result: any = { ok: true };
+  const safe = (fn: () => void) => { try { fn(); } catch { /* tool missing / parse error */ } };
+
+  safe(() => {
+    const r = runCmd("file", ["-b", abs], baseDir, 15_000);
+    if (r.code === 0 && r.stdout.trim()) result.fileType = r.stdout.trim().slice(0, 300);
+  });
+  safe(() => {
+    const r = runCmd("readelf", ["-h", abs], baseDir, 15_000);
+    if (r.code === 0) {
+      const machine = r.stdout.match(/Machine:\s*(.+)/)?.[1]?.trim();
+      const type = r.stdout.match(/Type:\s*(.+)/)?.[1]?.trim();
+      const cls = r.stdout.match(/Class:\s*(.+)/)?.[1]?.trim();
+      if (machine) result.arch = machine;
+      if (type) result.elfType = type;
+      if (cls) result.elfClass = cls;
+    }
+  });
+  safe(() => {
+    const r = runCmd("readelf", ["-d", abs], baseDir, 20_000);
+    if (r.code === 0) {
+      const needed = [...r.stdout.matchAll(/\(NEEDED\)\s+Shared library:\s*\[([^\]]+)\]/g)].map(m => m[1]);
+      const soname = r.stdout.match(/\(SONAME\)\s+Library soname:\s*\[([^\]]+)\]/)?.[1];
+      result.neededLibs = [...new Set(needed)];
+      if (soname) result.soname = soname;
+    }
+  });
+  safe(() => {
+    const r = runCmd("readelf", ["--dyn-syms", "-W", abs], baseDir, 30_000);
+    if (r.code === 0) {
+      const exp: string[] = [], imp: string[] = [];
+      for (const line of r.stdout.split("\n")) {
+        const m = line.match(/^\s*\d+:\s+\S+\s+\S+\s+(?:FUNC|OBJECT|NOTYPE|IFUNC)\s+(?:GLOBAL|WEAK)\s+\S+\s+(\S+)\s+(.+?)\s*$/);
+        if (!m) continue;
+        const ndx = m[1]; const name = m[2].trim();
+        if (!name || name.startsWith("$")) continue;
+        if (ndx === "UND") imp.push(name); else exp.push(name);
+      }
+      result.exportedSymbols = [...new Set(exp)].slice(0, 300);
+      result.importedSymbols = [...new Set(imp)].slice(0, 300);
+      result.jniMethods = result.exportedSymbols.filter((s: string) => s.startsWith("Java_") || s === "JNI_OnLoad");
+      result.symbolCount = new Set([...exp, ...imp]).size;
+    }
+  });
+  safe(() => {
+    const r = runCmd("strings", ["-n", "6", abs], baseDir, 30_000);
+    if (r.code === 0) {
+      const all = r.stdout.split("\n");
+      result.stringCount = all.length;
+      const re = /(https?:\/\/|api[_-]?key|secret|passwo?rd|token|firebase|\.amazonaws\.com|-----BEGIN)/i;
+      result.interestingStrings = [...new Set(all.filter(s => re.test(s)).map(s => s.trim()))].slice(0, 100);
+    }
+  });
+
+  return result;
+}
+
 export async function aiVulnerabilityScan(code: string, fileName: string, fileType: string): Promise<VulnerabilityFinding[]> {
   const result = await callPowerAI(
     `أنت خبير في أمن التطبيقات. افحص هذا الكود وأعطِ قائمة بالثغرات بتنسيق JSON:

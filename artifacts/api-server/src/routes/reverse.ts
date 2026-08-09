@@ -34,6 +34,7 @@ import {
   extractNetworkEndpoints,
   detectObfuscation,
   detectMalwarePatterns,
+  analyzeNativeLibrary,
   aiVulnerabilityScan,
   aiDecompileSmali,
   extractStringsFromBinary,
@@ -425,6 +426,16 @@ router.post("/malware-scan", async (req: Request, res: Response) => {
     const files = getSessionFiles(sessionId);
     if (!files) { res.status(404).json({ error: "الجلسة غير موجودة" }); return; }
     res.json(detectMalwarePatterns(files, permissions || []));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/native-analyze", async (req: Request, res: Response) => {
+  try {
+    const { sessionId, filePath } = req.body;
+    if (!sessionId || !filePath) { res.status(400).json({ error: "sessionId و filePath مطلوبان" }); return; }
+    const result = analyzeNativeLibrary(sessionId, filePath);
+    if (!result.ok) { res.status(400).json(result); return; }
+    res.json(result);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
