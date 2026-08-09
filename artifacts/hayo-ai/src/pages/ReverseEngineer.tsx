@@ -4,7 +4,7 @@
  * Formats: APK·EXE·DLL·MSI·EX4/5·IPA·JAR·AAR·DEX·SO·WASM
  */
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import Editor from "@monaco-editor/react";
+import Editor, { DiffEditor } from "@monaco-editor/react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -589,6 +589,10 @@ export default function ReverseEngineer(){
   const[irCat,setIrCat]=useState("");
   const[showKeys,setShowKeys]=useState(false);
   const[treeFilter,setTreeFilter]=useState("");
+  // Global code search (searches file CONTENTS across the whole session, not just names)
+  const[codeQuery,setCodeQuery]=useState("");
+  const[codeRes,setCodeRes]=useState<any[]>([]);
+  const[codeSearching,setCodeSearching]=useState(false);
   const[editTreeFilter,setEditTreeFilter]=useState("");
   const[intelTreeFilter,setIntelTreeFilter]=useState("");
   const[forensicsTreeFilter,setForensicsTreeFilter]=useState("");
@@ -627,6 +631,9 @@ export default function ReverseEngineer(){
   const[cpExpanded,setCpExpanded]=useState<Set<number>>(new Set([1]));
   const[cpShowReport,setCpShowReport]=useState(false);
   const[cpFile,setCpFile]=useState<File|null>(null);
+  // Cloud-pentest sub-mode: which target the tab is focused on (APK / Web / Wallet).
+  // Previously all three tools rendered stacked in one long scroll.
+  const[cpMode,setCpMode]=useState<"apk"|"web"|"wallet">("apk");
   const[cpActiveStep,setCpActiveStep]=useState(0);
   const[cpStepsRevealed,setCpStepsRevealed]=useState<number[]>([]);
   const cpFileRef=useRef<HTMLInputElement>(null);
@@ -762,6 +769,59 @@ export default function ReverseEngineer(){
     }catch(e:any){toast.error(e.message);}finally{setDecomp(false);}
   };
   const doSelNode=(n:FileTreeNode)=>{setSelNode(n);setAiText("");setShowAi(false);if(res){const f=res.files.find(f=>f.path===n.path);if(f?.isBinary){setSelBinary(f);setSelContent("");}else{setSelBinary(null);setSelContent(f?.content||"لا محتوى");}}};
+  // Full-text search across every decompiled file (uses the session regex-search endpoint).
+  const doCodeSearch=async()=>{
+    if(!codeQuery.trim())return;
+    if(!iSess){toast.error("فكّك ملفاً أولاً");return;}
+    setCodeSearching(true);setCodeRes([]);
+    try{const r=await fetch("/api/reverse/regex-search",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:iSess,pattern:codeQuery.trim()})});const d=await r.json();if(!r.ok){toast.error(d.error||"فشل البحث");return;}setCodeRes(d.results||[]);if((d.results||[]).length===0)toast.info("لا نتائج");}catch(e:any){toast.error(e.message);}finally{setCodeSearching(false);}
+  };
+  const openCodeResult=(filePath:string)=>{
+    const name=filePath.split("/").pop()||filePath;
+    doSelNode({name,path:filePath,type:"file"} as FileTreeNode);
+  };
+  // Client-side unified report (Markdown) built from the current analysis result.
+  const exportReport=()=>{
+    if(!res)return;
+    const L:string[]=[];
+    L.push(`# تقرير الهندسة العكسية — ${aFile?.name||"ملف"}`);
+    L.push(`\n_تم الإنشاء: ${new Date().toLocaleString("ar-EG")}_\n`);
+    L.push(`## ملخص`);
+    L.push(`- الصيغة: **${(res.formatLabel||res.fileType||"—").toUpperCase()}**`);
+    L.push(`- عدد الملفات: **${res.totalFiles}**`);
+    L.push(`- الحجم: **${fmtB(res.totalSize)}**`);
+    if(res.metadata?.aiModelUsed)L.push(`- نموذج AI: ${res.metadata.aiModelUsed}`);
+    const perms:string[]=res.manifest?.permissions||[];
+    if(perms.length){
+      L.push(`\n## الصلاحيات (${perms.length})`);
+      const dang=perms.filter(p=>DANGER_PERMS.has(p));
+      if(dang.length)L.push(`\n**خطيرة (${dang.length}):**\n${dang.map(p=>`- ⚠️ ${p}`).join("\n")}`);
+      const rest=perms.filter(p=>!DANGER_PERMS.has(p));
+      if(rest.length)L.push(`\n**عادية:**\n${rest.map(p=>`- ${p}`).join("\n")}`);
+    }
+    const vulns=res.vulnerabilities||[];
+    if(vulns.length){
+      L.push(`\n## الثغرات (${vulns.length})`);
+      for(const v of vulns){
+        L.push(`\n### [${(v.severity||"info").toUpperCase()}] ${v.title}`);
+        L.push(`- التصنيف: ${v.category}`);
+        if(v.description)L.push(`- ${v.description}`);
+        if(v.evidence?.length)L.push(`- أدلة:\n${v.evidence.map((e:string)=>`  - \`${e}\``).join("\n")}`);
+      }
+    }
+    if(intel){
+      L.push(`\n## الاستخبارات`);
+      (["ssl","root","crypto","secrets","urls"] as const).forEach(k=>{
+        const arr=intel[k] as string[]|undefined;
+        if(arr?.length){L.push(`\n**${k.toUpperCase()} (${arr.length}):**\n${arr.slice(0,50).map(x=>`- \`${x}\``).join("\n")}`);}
+      });
+    }
+    const md=L.join("\n");
+    const blob=new Blob([md],{type:"text/markdown;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=`RE-report-${(aFile?.name||"file").replace(/\.[^.]+$/,"")}.md`;a.click();URL.revokeObjectURL(url);
+    toast.success("تم تصدير التقرير");
+  };
   const doAiAnalysis=async(type:string)=>{
     if(!selContent||selContent.startsWith("["))return;setAnalyzing(true);setShowAi(true);setAiText("");
     try{const r=await fetchRE("/api/reverse/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:selContent,fileName:selNode?.name,analysisType:type})});const d=await r.json();if(!r.ok){toast.error(d.error);setShowAi(false);return;}setAiText(d.analysis);}catch(e:any){toast.error(e.message);setShowAi(false);}finally{setAnalyzing(false);}
@@ -1406,7 +1466,10 @@ export default function ReverseEngineer(){
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0"/>
               <span className="text-sm font-bold text-emerald-300">اكتمل التفكيك</span>
-              {dlId&&<Button size="sm" variant="outline" onClick={()=>window.open(`/api/reverse/download/${dlId}`,"_blank")} className="mr-auto h-7 text-[10px] gap-1 border-emerald-500/30"><Archive className="w-3 h-3"/>ZIP</Button>}
+              <div className="mr-auto flex items-center gap-1">
+                <Button size="sm" variant="outline" onClick={exportReport} className="h-7 text-[10px] gap-1 border-violet-500/30 text-violet-300"><FileOutput className="w-3 h-3"/>تقرير</Button>
+                {dlId&&<Button size="sm" variant="outline" onClick={()=>window.open(`/api/reverse/download/${dlId}`,"_blank")} className="h-7 text-[10px] gap-1 border-emerald-500/30"><Archive className="w-3 h-3"/>ZIP</Button>}
+              </div>
             </div>
             {/* 4 animated stat cards */}
             <div className="grid grid-cols-2 gap-1.5">
@@ -1440,6 +1503,22 @@ export default function ReverseEngineer(){
           </div>}
           {res?.manifest?.permissions?.length>0&&<div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 space-y-2"><div className="flex items-center gap-2 text-sm font-semibold"><FileJson className="w-4 h-4 text-blue-400"/>صلاحيات</div><div className="max-h-32 overflow-y-auto space-y-0.5">{res.manifest.permissions.map((p:string)=><div key={p} className="flex items-center gap-1.5 text-xs">{DANGER_PERMS.has(p)?<Unlock className="w-3 h-3 text-red-400"/>:<Lock className="w-3 h-3 text-muted-foreground"/>}<span className={DANGER_PERMS.has(p)?"text-red-300":"text-muted-foreground"}>{p}</span></div>)}</div></div>}
           {res?.vulnerabilities&&res.vulnerabilities.length>0&&<VPanel findings={res.vulnerabilities}/>}
+          {/* Global code search — searches inside every file's content */}
+          {res&&<div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold"><Search className="w-4 h-4 text-violet-400"/>بحث شامل في الكود</div>
+            <p className="text-[10px] text-muted-foreground">يبحث داخل محتوى كل الملفات (نص أو Regex)</p>
+            <div className="flex gap-1.5">
+              <input value={codeQuery} onChange={e=>setCodeQuery(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doCodeSearch()} placeholder="مثال: isPremium|api[_-]?key" className="flex-1 bg-muted/30 border border-border rounded-lg px-2 py-1.5 text-xs font-mono text-right placeholder:text-muted-foreground/50 min-w-0" disabled={codeSearching}/>
+              <Button size="sm" onClick={doCodeSearch} disabled={codeSearching||!codeQuery.trim()} className="h-8 w-8 p-0 shrink-0">{codeSearching?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Search className="w-3.5 h-3.5"/>}</Button>
+            </div>
+            {codeRes.length>0&&<div className="space-y-1 max-h-56 overflow-y-auto">
+              <div className="text-[10px] text-muted-foreground">{codeRes.length} نتيجة</div>
+              {codeRes.slice(0,100).map((r:any,i:number)=><button key={i} onClick={()=>openCodeResult(r.filePath)} className="w-full text-right bg-muted/20 hover:bg-violet-500/10 rounded-lg px-2 py-1.5 border border-border/50 hover:border-violet-500/30 transition-all">
+                <div className="flex items-center gap-1.5 text-[11px]"><span className="text-violet-300 font-mono truncate flex-1">{(r.filePath||"").split("/").pop()}</span>{r.line!=null&&<span className="text-muted-foreground/60 shrink-0">:{r.line}</span>}</div>
+                {r.context&&<div className="font-mono text-[10px] text-muted-foreground/70 truncate mt-0.5">{r.context}</div>}
+              </button>)}
+            </div>}
+          </div>}
         </div>
         {/* Tree */}
         <div className="bg-card/70 backdrop-blur-sm border border-border rounded-2xl overflow-hidden flex flex-col">
@@ -1591,7 +1670,7 @@ export default function ReverseEngineer(){
               {eNode&&eMods.has(eNode.path)&&<span className="text-[10px] px-1.5 py-0.5 bg-yellow-500/20 text-yellow-300 rounded-full">معدّل</span>}
               {pending&&<div className="flex items-center gap-1 mr-auto"><Button size="sm" onClick={applyMod} className="h-6 text-xs gap-1 bg-emerald-600 px-2"><CheckCheck className="w-3 h-3"/>تطبيق</Button><Button size="sm" variant="ghost" onClick={()=>setPending(null)} className="h-6 w-6 p-0 text-red-400"><X className="w-3 h-3"/></Button></div>}
             </div>
-            {eNode&&!eContent.startsWith("[")?<div className="flex-1 min-h-0"><Editor height="100%" language={lang("."+(eNode.name.split(".").pop()||""))} value={eContent} onChange={v=>v!==undefined&&setEContent(v)} theme={eNode.name.endsWith(".smali")?"smali-dark":"vs-dark"} beforeMount={registerSmaliLanguage} options={{fontSize:12,minimap:{enabled:false},wordWrap:"on",scrollBeyondLastLine:false,automaticLayout:true,readOnly:!eSess,lineNumbers:"on",folding:true,tabSize:2}}/></div>
+            {eNode&&!eContent.startsWith("[")?(pending?<div className="flex-1 min-h-0 flex flex-col"><div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/5 border-b border-emerald-500/20 text-[11px] text-emerald-300 shrink-0"><Diff className="w-3 h-3 shrink-0"/><span className="truncate flex-1">{pending.explanation||"تعديل مقترح من AI — راجع الفروقات ثم طبّق"}</span><span className="text-muted-foreground shrink-0">المقترح ↔ الأصل</span></div><div className="flex-1 min-h-0"><DiffEditor height="100%" language={lang("."+(eNode.name.split(".").pop()||""))} original={eContent} modified={pending.modifiedCode} theme={eNode.name.endsWith(".smali")?"smali-dark":"vs-dark"} beforeMount={registerSmaliLanguage} options={{fontSize:12,minimap:{enabled:false},renderSideBySide:true,readOnly:true,scrollBeyondLastLine:false,automaticLayout:true}}/></div></div>:<div className="flex-1 min-h-0"><Editor height="100%" language={lang("."+(eNode.name.split(".").pop()||""))} value={eContent} onChange={v=>v!==undefined&&setEContent(v)} theme={eNode.name.endsWith(".smali")?"smali-dark":"vs-dark"} beforeMount={registerSmaliLanguage} options={{fontSize:12,minimap:{enabled:false},wordWrap:"on",scrollBeyondLastLine:false,automaticLayout:true,readOnly:!eSess,lineNumbers:"on",folding:true,tabSize:2}}/></div>)
             :<div className="flex-1 flex flex-col items-center justify-center text-muted-foreground"><FileCode2 className="w-10 h-10 mb-3 opacity-20"/><p className="text-sm">اختر ملفاً</p></div>}
           </div>
           {/* AI Panel */}
@@ -1892,8 +1971,21 @@ export default function ReverseEngineer(){
       {/* ══ TAB 6: CLOUD PENTEST ══ */}
       {tab==="cloudpen"&&<div className="flex-1 flex flex-col gap-4 min-h-0 overflow-y-auto">
 
+        {/* ── Sub-mode selector: APK / Web / Wallet ── */}
+        <div className="flex gap-1.5 bg-muted/30 rounded-xl p-1 self-center border border-border">
+          {([
+            {id:"apk" as const,label:"تطبيق APK",icon:Package,active:"bg-cyan-500/15 text-cyan-300 border-cyan-500/40"},
+            {id:"web" as const,label:"موقع ويب",icon:Globe,active:"bg-purple-500/15 text-purple-300 border-purple-500/40"},
+            {id:"wallet" as const,label:"محفظة",icon:Wallet,active:"bg-amber-500/15 text-amber-300 border-amber-500/40"},
+          ]).map(m=>(
+            <button key={m.id} onClick={()=>setCpMode(m.id)} className={`flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold border transition-all ${cpMode===m.id?m.active:"border-transparent text-muted-foreground hover:text-foreground"}`}>
+              <m.icon className="w-4 h-4"/>{m.label}
+            </button>
+          ))}
+        </div>
+
         {/* ── PHASE 1: Upload & Start ── */}
-        {!cpResult&&!cpLoading&&<div className="flex-1 flex flex-col items-center justify-center gap-6 py-8">
+        {cpMode==="apk"&&!cpResult&&!cpLoading&&<div className="flex-1 flex flex-col items-center justify-center gap-6 py-8">
           <div className="text-center space-y-2">
             <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 border border-cyan-500/30 flex items-center justify-center">
               <Shield className="w-10 h-10 text-cyan-400"/>
@@ -1959,7 +2051,7 @@ export default function ReverseEngineer(){
         </div>}
 
         {/* ══ WEB PENTEST — URL Input & Start ══ */}
-        {!wpResult&&!wpLoading&&<div className="flex-1 flex flex-col items-center justify-center gap-5 py-6">
+        {cpMode==="web"&&!wpResult&&!wpLoading&&<div className="flex-1 flex flex-col items-center justify-center gap-5 py-6">
           <div className="text-center space-y-2">
             <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-600/20 border border-purple-500/30 flex items-center justify-center">
               <Globe className="w-10 h-10 text-purple-400"/>
@@ -2003,7 +2095,7 @@ export default function ReverseEngineer(){
         </div>}
 
         {/* ══ WEB PENTEST — Live Execution Progress ══ */}
-        {wpLoading&&<div className="space-y-4">
+        {cpMode==="web"&&wpLoading&&<div className="space-y-4">
           <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5">
             <div className="flex items-center gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-purple-400"/>
@@ -2351,7 +2443,7 @@ export default function ReverseEngineer(){
         </div>}
 
         {/* ══ WEB PENTEST — Results ══ */}
-        {wpResult&&<>
+        {cpMode==="web"&&wpResult&&<>
           <div className="bg-gradient-to-r from-purple-900/40 to-pink-900/40 border border-purple-500/30 rounded-2xl p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
@@ -3284,7 +3376,7 @@ export default function ReverseEngineer(){
         </>}
 
         {/* ══ WALLET PENTEST — Address Input & Start ══ */}
-        {!walResult&&!walLoading&&<div className="flex-1 flex flex-col items-center justify-center gap-5 py-6">
+        {cpMode==="wallet"&&!walResult&&!walLoading&&<div className="flex-1 flex flex-col items-center justify-center gap-5 py-6">
           <div className="text-center space-y-2">
             <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-amber-500/20 to-orange-600/20 border border-amber-500/30 flex items-center justify-center">
               <Wallet className="w-10 h-10 text-amber-400"/>
@@ -3331,7 +3423,7 @@ export default function ReverseEngineer(){
         </div>}
 
         {/* ══ WALLET PENTEST — Live Execution Progress ══ */}
-        {walLoading&&<div className="space-y-4">
+        {cpMode==="wallet"&&walLoading&&<div className="space-y-4">
           <div className="bg-gradient-to-r from-amber-900/40 to-orange-900/40 border border-amber-500/30 rounded-2xl p-5">
             <div className="flex items-center gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-amber-400"/>
@@ -3371,7 +3463,7 @@ export default function ReverseEngineer(){
         </div>}
 
         {/* ══ WALLET PENTEST — Results ══ */}
-        {walResult&&<>
+        {cpMode==="wallet"&&walResult&&<>
           <div className="space-y-4 w-full">
             <div className="flex items-center justify-between">
               <div>
@@ -3512,7 +3604,7 @@ export default function ReverseEngineer(){
         </>}
 
         {/* ── Sequential Pipeline: Live Progress ── */}
-        {seqRunning&&<div className="space-y-4 w-full">
+        {cpMode==="apk"&&seqRunning&&<div className="space-y-4 w-full">
           <div className="bg-gradient-to-r from-violet-900/40 via-cyan-900/40 to-emerald-900/40 border border-violet-500/30 rounded-2xl p-5">
             <div className="flex items-center gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-violet-400"/>
@@ -3538,7 +3630,7 @@ export default function ReverseEngineer(){
         </div>}
 
         {/* ── Sequential Pipeline: Done ── */}
-        {seqDone&&!seqRunning&&<div className="bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-500/40 rounded-2xl p-5 w-full text-center space-y-2">
+        {cpMode==="apk"&&seqDone&&!seqRunning&&<div className="bg-gradient-to-r from-green-900/30 to-emerald-900/30 border border-green-500/40 rounded-2xl p-5 w-full text-center space-y-2">
           <div className="text-2xl font-bold text-green-400">اكتمل الخط المتسلسل بالكامل</div>
           <div className="text-sm text-muted-foreground">Firebase Audit + Cloud Pentest + Full Auto Clone — تم تنفيذ جميع المراحل بنجاح</div>
           <div className="flex gap-2 justify-center text-xs">
@@ -3549,7 +3641,7 @@ export default function ReverseEngineer(){
         </div>}
 
 {/* الزر الجديد: Live Audit */}
-<Button 
+{cpMode==="apk"&&<Button
   onClick={async () => {
     const projectIdInput = prompt("أدخل Firebase Project ID (أو استخدم المُستخرج من التقرير):");
     if (!projectIdInput) return;
@@ -3579,9 +3671,9 @@ export default function ReverseEngineer(){
   style={{ marginTop: '10px' }}
 >
   <Zap className="w-5 h-5"/> Live Audit (فحص السحابة مباشرة)
-</Button>
+</Button>}
         {/* ── PHASE 2: Live Execution (Steps Revealing) ── */}
-        {cpLoading&&<div className="space-y-4">
+        {cpMode==="apk"&&cpLoading&&<div className="space-y-4">
           <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-5">
             <div className="flex items-center gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-cyan-400"/>
@@ -3942,7 +4034,7 @@ export default function ReverseEngineer(){
         </div>}
 
         {/* ── PHASE 3: Results ── */}
-        {cpResult&&<>
+        {cpMode==="apk"&&cpResult&&<>
           {/* Header with file info */}
           <div className="bg-gradient-to-r from-cyan-900/40 to-blue-900/40 border border-cyan-500/30 rounded-2xl p-5">
             <div className="flex items-center justify-between flex-wrap gap-3">
