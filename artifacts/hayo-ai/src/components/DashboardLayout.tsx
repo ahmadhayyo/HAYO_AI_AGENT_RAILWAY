@@ -110,8 +110,14 @@ function DashboardLayoutContent({
   children,
   setSidebarWidth,
 }: DashboardLayoutContentProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { user, logout } = useAuth();
+  // The whole app runs RTL for Arabic (document.documentElement.dir = "rtl").
+  // The sidebar must sit on the matching physical side, otherwise its fixed
+  // panel and the reserved flex space land on opposite sides and it overlaps
+  // the page content.
+  const isRtl = i18n.dir() === "rtl";
+  const sidebarSide: "left" | "right" = isRtl ? "right" : "left";
   // Owner-only service sections (subscription/admin panel, executive AI agent,
   // system maintenance, model settings) are for running/maintaining the platform
   // and must never appear for subscribers — only for the owner/admin.
@@ -219,8 +225,13 @@ function DashboardLayoutContent({
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing) return;
 
-      const sidebarLeft = sidebarRef.current?.getBoundingClientRect().left ?? 0;
-      const newWidth = e.clientX - sidebarLeft;
+      const rect = sidebarRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      // The drag handle sits on the sidebar's inner edge, which flips with the
+      // side: for a right-anchored (RTL) sidebar the inner edge is on the left.
+      const newWidth = sidebarSide === "right"
+        ? rect.right - e.clientX
+        : e.clientX - rect.left;
       if (newWidth >= MIN_WIDTH && newWidth <= MAX_WIDTH) {
         setSidebarWidth(newWidth);
       }
@@ -243,13 +254,14 @@ function DashboardLayoutContent({
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     };
-  }, [isResizing, setSidebarWidth]);
+  }, [isResizing, setSidebarWidth, sidebarSide]);
 
   return (
     <>
       <div className="relative" ref={sidebarRef}>
         <Sidebar
-          collapsible="icon"
+          side={sidebarSide}
+          collapsible="offcanvas"
           className="border-r-0"
           disableTransition={isResizing}
         >
@@ -334,7 +346,7 @@ function DashboardLayoutContent({
           </SidebarFooter>
         </Sidebar>
         <div
-          className={`absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/20 transition-colors ${isCollapsed ? "hidden" : ""}`}
+          className={`absolute top-0 ${sidebarSide === "right" ? "left-0" : "right-0"} w-1 h-full cursor-col-resize hover:bg-primary/20 transition-colors ${isCollapsed ? "hidden" : ""}`}
           onMouseDown={() => {
             if (isCollapsed) return;
             setIsResizing(true);
@@ -346,7 +358,9 @@ function DashboardLayoutContent({
       <SidebarInset>
         <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
           <div className="flex items-center gap-2">
-            {isMobile && <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />}
+            {/* Always available so the sidebar can be shown/hidden on demand
+                (offcanvas fully hides it, including its internal toggle). */}
+            <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
             <div className="flex items-center gap-3">
               <div className="flex flex-col gap-1">
                 <span className="tracking-tight text-foreground">
