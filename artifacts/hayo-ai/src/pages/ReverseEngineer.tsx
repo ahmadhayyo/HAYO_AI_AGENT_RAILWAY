@@ -16,7 +16,7 @@ import {
   Download, Bot, Copy, Loader2, X, CheckCircle2,
   Info, Lock, Unlock, ScanSearch, Package, Cpu,
   Shield, BookOpen, Wrench, Archive, FileJson,
-  Search, Save, Hammer, Binary, AlertTriangle,
+  Search, Save, Hammer, Binary, AlertTriangle, Bug,
   Dot, CheckCheck, Undo2, Sparkles, Eye, Zap,
   GitBranch, Globe, Key, Terminal, Scan, Fingerprint,
   ToggleLeft, ToggleRight, Rocket, Flame, Settings,
@@ -583,6 +583,9 @@ export default function ReverseEngineer(){
   // ══ TAB 4: INTEL ══
   const[intel,setIntel]=useState<IntelReport|null>(null);
   const[intelLoading,setIntelLoading]=useState(false);
+  // Advanced scan — wires previously-unused backend analyzers (malware / obfuscation / network / permission-risk)
+  const[advScan,setAdvScan]=useState<{malware?:any;obf?:any;net?:any;perm?:any}|null>(null);
+  const[advLoading,setAdvLoading]=useState(false);
   const[irPat,setIrPat]=useState("");
   const[irRes,setIrRes]=useState<any[]>([]);
   const[irSearching,setIrSearching]=useState(false);
@@ -970,6 +973,23 @@ export default function ReverseEngineer(){
   const doRegex=async(pat?:string,cat?:string)=>{
     if(!iSess)return;setIrSearching(true);setIrRes([]);
     try{const r=await fetch("/api/reverse/regex-search",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId:iSess,pattern:pat||irPat,category:cat})});const d=await r.json();if(!r.ok){toast.error(d.error);return;}setIrRes(d.results);}catch(e:any){toast.error(e.message);}finally{setIrSearching(false);}
+  };
+  // Runs the four session-based analyzers in parallel and stores their results.
+  const doAdvancedScan=async()=>{
+    if(!iSess){toast.error("افتح ملفاً أولاً");return;}
+    setAdvLoading(true);setAdvScan(null);
+    const perms:string[]=res?.manifest?.permissions||[];
+    const post=(ep:string,body:any)=>fetch(`/api/reverse/${ep}`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(r=>r.ok?r.json():null).catch(()=>null);
+    try{
+      const[malware,obf,net,perm]=await Promise.all([
+        post("malware-scan",{sessionId:iSess,permissions:perms}),
+        post("detect-obfuscation",{sessionId:iSess}),
+        post("network-endpoints",{sessionId:iSess}),
+        perms.length?post("permission-risk",{permissions:perms}):Promise.resolve(null),
+      ]);
+      setAdvScan({malware,obf,net,perm});
+      toast.success("اكتمل الفحص المتقدم");
+    }catch(e:any){toast.error(e.message||"فشل الفحص المتقدم");}finally{setAdvLoading(false);}
   };
 
   // ═══ TAB 5 HANDLERS ═══
@@ -1780,6 +1800,37 @@ export default function ReverseEngineer(){
           {intel&&<div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             {([["ssl","SSL/TLS",Lock,"text-red-400 bg-red-500/10 border-red-500/30"],["root","Root",Terminal,"text-orange-400 bg-orange-500/10 border-orange-500/30"],["crypto","Crypto",Key,"text-yellow-400 bg-yellow-500/10 border-yellow-500/30"],["secrets","Secrets",Fingerprint,"text-purple-400 bg-purple-500/10 border-purple-500/30"],["urls","URLs",Globe,"text-blue-400 bg-blue-500/10 border-blue-500/30"]] as const).map(([k,l,Ic,cls])=><button key={k} onClick={()=>{setIrCat(k);doRegex("",k);}} className={`p-3 rounded-xl border transition-all hover:scale-105 ${cls}`}><Ic className="w-5 h-5 mx-auto mb-1"/><div className="text-2xl font-bold">{intel[k as keyof IntelReport]?.length||0}</div><div className="text-xs font-medium">{l}</div></button>)}
           </div>}
+          {/* Advanced scan — malware / obfuscation / network endpoints / permission risk */}
+          <div className="bg-card/70 backdrop-blur-sm border border-orange-500/20 rounded-xl p-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <Bug className="w-4 h-4 text-orange-400"/><span className="text-sm font-semibold">فحص متقدم</span>
+              <span className="text-[10px] text-muted-foreground">برمجيات خبيثة · تعتيم · نقاط شبكة · مخاطر الأذونات</span>
+              <Button onClick={doAdvancedScan} disabled={advLoading||!iSess} size="sm" className="mr-auto gap-2 bg-orange-600 hover:bg-orange-700">{advLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Scan className="w-4 h-4"/>}فحص</Button>
+            </div>
+            {advScan&&<div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Malware */}
+              <div className={`rounded-lg border p-3 ${advScan.malware?.risk==="high"?"border-red-500/40 bg-red-500/5":advScan.malware?.risk==="medium"?"border-amber-500/30 bg-amber-500/5":"border-border/50 bg-muted/10"}`}>
+                <div className="flex items-center gap-2 text-xs font-semibold"><Bug className="w-3.5 h-3.5 text-red-400"/>برمجيات خبيثة<span className={`mr-auto text-[10px] px-1.5 py-0.5 rounded ${advScan.malware?.risk==="high"?"bg-red-500/20 text-red-300":advScan.malware?.risk==="medium"?"bg-amber-500/20 text-amber-300":"bg-emerald-500/20 text-emerald-300"}`}>{advScan.malware?.risk==="high"?"خطر مرتفع":advScan.malware?.risk==="medium"?"متوسط":"نظيف"}</span></div>
+                {advScan.malware?.patterns?.length>0?<div className="mt-2 space-y-1">{advScan.malware.patterns.map((p:any,i:number)=><div key={i} className="text-[10px] bg-black/20 rounded px-2 py-1"><span className="text-red-300 font-semibold">{p.type}</span><span className="text-muted-foreground"> — {p.desc}</span><div className="text-muted-foreground/50 font-mono">{p.evidence}</div></div>)}</div>:<div className="text-[10px] text-muted-foreground mt-1">لا أنماط مشبوهة</div>}
+              </div>
+              {/* Obfuscation */}
+              <div className={`rounded-lg border p-3 ${advScan.obf?.isObfuscated?"border-violet-500/40 bg-violet-500/5":"border-border/50 bg-muted/10"}`}>
+                <div className="flex items-center gap-2 text-xs font-semibold"><Lock className="w-3.5 h-3.5 text-violet-400"/>التعتيم (Obfuscation)<span className="mr-auto text-[10px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300">{advScan.obf?.isObfuscated?`${advScan.obf.confidence}%`:"غير مبهم"}</span></div>
+                {advScan.obf?.indicators?.length>0?<div className="mt-2 space-y-1">{advScan.obf.indicators.map((ind:string,i:number)=><div key={i} className="text-[10px] text-violet-200/80 bg-black/20 rounded px-2 py-1">{ind}</div>)}</div>:<div className="text-[10px] text-muted-foreground mt-1">لا مؤشرات تعتيم</div>}
+              </div>
+              {/* Network endpoints */}
+              <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-3">
+                <div className="flex items-center gap-2 text-xs font-semibold"><Globe className="w-3.5 h-3.5 text-blue-400"/>نقاط الشبكة<span className="mr-auto text-[10px] text-muted-foreground">{advScan.net?.endpoints?.length||0} URL · {advScan.net?.domains?.length||0} نطاق · {advScan.net?.ips?.length||0} IP</span></div>
+                {(advScan.net?.endpoints?.length>0)&&<div className="mt-2 max-h-32 overflow-y-auto space-y-0.5">{advScan.net.endpoints.slice(0,40).map((u:string,i:number)=><div key={i} className="text-[10px] font-mono text-blue-200/80 bg-black/20 rounded px-2 py-1 truncate">{u}</div>)}</div>}
+                {advScan.net?.ips?.length>0&&<div className="mt-1.5 flex flex-wrap gap-1">{advScan.net.ips.map((ip:string,i:number)=><span key={i} className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">{ip}</span>)}</div>}
+              </div>
+              {/* Permission risk */}
+              <div className={`rounded-lg border p-3 ${advScan.perm?.risk==="high"?"border-red-500/40 bg-red-500/5":advScan.perm?.risk==="medium"?"border-amber-500/30 bg-amber-500/5":"border-border/50 bg-muted/10"}`}>
+                <div className="flex items-center gap-2 text-xs font-semibold"><Unlock className="w-3.5 h-3.5 text-amber-400"/>مخاطر الأذونات<span className={`mr-auto text-[10px] px-1.5 py-0.5 rounded ${advScan.perm?.risk==="high"?"bg-red-500/20 text-red-300":advScan.perm?.risk==="medium"?"bg-amber-500/20 text-amber-300":"bg-emerald-500/20 text-emerald-300"}`}>{advScan.perm?advScan.perm.risk==="high"?"مرتفع":advScan.perm.risk==="medium"?"متوسط":"منخفض":"—"}</span></div>
+                {advScan.perm?.findings?.length>0?<div className="mt-2 max-h-32 overflow-y-auto space-y-1">{advScan.perm.findings.map((f:any,i:number)=><div key={i} className="text-[10px] flex items-center gap-1.5"><span className={`w-1.5 h-1.5 rounded-full shrink-0 ${f.risk==="high"?"bg-red-400":"bg-amber-400"}`}/><span className="font-mono text-muted-foreground truncate">{f.perm.replace("android.permission.","")}</span></div>)}</div>:<div className="text-[10px] text-muted-foreground mt-1">{advScan.perm?"لا أذونات خطيرة":"لا توجد أذونات محمّلة (افتح APK في التحليل)"}</div>}
+              </div>
+            </div>}
+          </div>
           <div className="bg-card/70 backdrop-blur-sm border border-border rounded-xl p-3 space-y-2">
             <div className="flex items-center gap-2"><Search className="w-4 h-4 text-cyan-400"/><span className="text-sm font-semibold">بحث Regex</span></div>
             <div className="flex gap-2"><input value={irPat} onChange={e=>setIrPat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doRegex()} placeholder="api[_-]?key|password" className="flex-1 bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm font-mono text-right placeholder:text-muted-foreground/50" disabled={!iSess||irSearching}/><Button onClick={()=>doRegex()} disabled={!iSess||irSearching||!irPat.trim()}>{irSearching?<Loader2 className="w-4 h-4 animate-spin"/>:<Search className="w-4 h-4"/>}</Button></div>
