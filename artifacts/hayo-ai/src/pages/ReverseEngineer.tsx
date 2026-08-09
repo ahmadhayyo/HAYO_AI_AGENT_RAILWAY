@@ -524,6 +524,9 @@ export default function ReverseEngineer(){
 
   // ══ TAB 1: ANALYZE ══
   const[aFile,setAFile]=useState<File|null>(null);
+  // Binary header / certificate info (parse-dex / parse-pe / certificate endpoints)
+  const[binInfo,setBinInfo]=useState<{title:string;data:Record<string,any>}|null>(null);
+  const[binLoading,setBinLoading]=useState(false);
   const[drag,setDrag]=useState(false);
   const[decomp,setDecomp]=useState(false);
   const[res,setRes]=useState<DecompileResult|null>(null);
@@ -533,6 +536,7 @@ export default function ReverseEngineer(){
   const[analyzing,setAnalyzing]=useState(false);
   const[aiText,setAiText]=useState("");
   const[showAi,setShowAi]=useState(false);
+  const[aiVulns,setAiVulns]=useState<any[]|null>(null);
   const[dlId,setDlId]=useState("");
   const[aSessId,setASessId]=useState("");
   const[liveStream,setLiveStream]=useState<{sseUrl:string}|null>(null);
@@ -825,9 +829,29 @@ export default function ReverseEngineer(){
     const a=document.createElement("a");a.href=url;a.download=`RE-report-${(aFile?.name||"file").replace(/\.[^.]+$/,"")}.md`;a.click();URL.revokeObjectURL(url);
     toast.success("تم تصدير التقرير");
   };
+  // Parse the raw binary header of the uploaded file (DEX / PE / APK certificate).
+  const doBinHeader=async()=>{
+    if(!aFile)return;
+    const ext=aFile.name.split(".").pop()?.toLowerCase()||"";
+    const map:Record<string,{ep:string;title:string}>={dex:{ep:"parse-dex",title:"رأس DEX"},exe:{ep:"parse-pe",title:"رأس PE (EXE)"},dll:{ep:"parse-pe",title:"رأس PE (DLL)"},apk:{ep:"certificate",title:"شهادة التوقيع"}};
+    const sel=map[ext];
+    if(!sel){toast.error("مدعوم لـ DEX / EXE / DLL / APK فقط");return;}
+    setBinLoading(true);setBinInfo(null);
+    try{const fd=new FormData();fd.append("file",aFile);const r=await fetchRE(`/api/reverse/${sel.ep}`,{method:"POST",body:fd});const d=await r.json();if(!r.ok){toast.error(d.error||"فشل التحليل");return;}setBinInfo({title:sel.title,data:d});}catch(e:any){toast.error(e.message);}finally{setBinLoading(false);}
+  };
   const doAiAnalysis=async(type:string)=>{
-    if(!selContent||selContent.startsWith("["))return;setAnalyzing(true);setShowAi(true);setAiText("");
+    if(!selContent||selContent.startsWith("["))return;setAnalyzing(true);setShowAi(true);setAiText("");setAiVulns(null);
     try{const r=await fetchRE("/api/reverse/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:selContent,fileName:selNode?.name,analysisType:type})});const d=await r.json();if(!r.ok){toast.error(d.error);setShowAi(false);return;}setAiText(d.analysis);}catch(e:any){toast.error(e.message);setShowAi(false);}finally{setAnalyzing(false);}
+  };
+  // AI vulnerability scan of the currently-selected file (returns structured findings).
+  const doAiVulnScan=async()=>{
+    if(!selContent||selContent.startsWith("["))return;setAnalyzing(true);setShowAi(true);setAiText("");setAiVulns(null);
+    try{const ext=selNode?.name?.split(".").pop()||"";const r=await fetchRE("/api/reverse/ai-vuln-scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:selContent,fileName:selNode?.name,fileType:ext})});const d=await r.json();if(!r.ok){toast.error(d.error);setShowAi(false);return;}const arr=Array.isArray(d)?d:(d.vulnerabilities||[]);setAiVulns(arr);if(arr.length===0)setAiText("لا ثغرات مكتشفة في هذا الملف.");}catch(e:any){toast.error(e.message);setShowAi(false);}finally{setAnalyzing(false);}
+  };
+  // Convert selected Smali file to readable Java via AI.
+  const doSmaliToJava=async()=>{
+    if(!selContent||selContent.startsWith("["))return;setAnalyzing(true);setShowAi(true);setAiText("");setAiVulns(null);
+    try{const className=selNode?.name?.replace(/\.smali$/,"")||"Unknown";const r=await fetchRE("/api/reverse/ai-decompile-smali",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({smaliCode:selContent,className})});const d=await r.json();if(!r.ok){toast.error(d.error);setShowAi(false);return;}setAiText((d.javaCode||"// فشل التحويل")+(d.explanation?`\n\n/* الشرح:\n${d.explanation}\n*/`:""));}catch(e:any){toast.error(e.message);setShowAi(false);}finally{setAnalyzing(false);}
   };
 
   const cloneResultRef=useRef<any>(null);
@@ -1480,6 +1504,13 @@ export default function ReverseEngineer(){
             :<div className="space-y-2"><Upload className="w-8 h-8 mx-auto text-muted-foreground"/><p className="text-sm font-medium">اسحب أو انقر</p><p className="text-[10px] text-muted-foreground">{ALL_FORMATS.map(f=>f.toUpperCase()).join(" · ")}</p></div>}
           </div>
           {aFile&&!res&&!decomp&&<Button onClick={doDecompile} className="w-full gap-2 bg-emerald-600 hover:bg-emerald-700 py-5"><Binary className="w-4 h-4"/>تفكيك</Button>}
+          {aFile&&["dex","exe","dll","apk"].includes(aFile.name.split(".").pop()?.toLowerCase()||"")&&<div className="space-y-2">
+            <Button onClick={doBinHeader} disabled={binLoading} variant="outline" className="w-full gap-2 h-9 border-blue-500/30 text-blue-300">{binLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<FileJson className="w-4 h-4"/>}تحليل الرأس الثنائي</Button>
+            {binInfo&&<div className="bg-card/70 backdrop-blur-sm border border-blue-500/20 rounded-xl p-3 space-y-1.5">
+              <div className="text-xs font-semibold text-blue-300 flex items-center gap-1.5"><FileJson className="w-3.5 h-3.5"/>{binInfo.title}</div>
+              <div className="max-h-48 overflow-y-auto space-y-0.5">{Object.entries(binInfo.data).filter(([,v])=>v==null||typeof v!=="object").map(([k,v])=><div key={k} className="flex items-center justify-between gap-2 text-[10px] bg-muted/20 rounded px-2 py-1"><span className="text-muted-foreground shrink-0">{k}</span><span className="font-mono text-blue-200/80 truncate text-left" title={String(v)}>{String(v)}</span></div>)}</div>
+            </div>}
+          </div>}
           {decomp&&<><ProgressSteps step={decompStep}/>{liveStream&&<LiveTerminal sseUrl={liveStream.sseUrl} onResult={handleDecompResult} onComplete={handleDecompComplete}/>}</>}
           {res&&<div className="space-y-2">
             {/* Stats header */}
@@ -1552,7 +1583,7 @@ export default function ReverseEngineer(){
             <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/20 shrink-0">
               <FileCode2 className="w-4 h-4 text-primary"/><span className="text-sm font-medium truncate flex-1">{selNode?.name||"اختر ملفاً"}</span>
               {selContent&&!selContent.startsWith("[")&&<div className="flex items-center gap-1">
-                <DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" variant="outline" disabled={analyzing} className="gap-1.5 h-7 px-2 text-xs border-primary/30"><Bot className="w-3.5 h-3.5 text-primary"/>AI<ChevronDown className="w-3 h-3"/></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="w-40 z-50"><DropdownMenuItem onClick={()=>doAiAnalysis("explain")} className="gap-2 text-xs cursor-pointer"><BookOpen className="w-3 h-3"/>شرح</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("security")} className="gap-2 text-xs cursor-pointer"><Shield className="w-3 h-3 text-red-400"/>أمني</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("logic")} className="gap-2 text-xs cursor-pointer"><Wrench className="w-3 h-3 text-blue-400"/>منطق</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("full")} className="gap-2 text-xs cursor-pointer"><Bot className="w-3 h-3 text-primary"/>شامل</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+                <DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" variant="outline" disabled={analyzing} className="gap-1.5 h-7 px-2 text-xs border-primary/30"><Bot className="w-3.5 h-3.5 text-primary"/>AI<ChevronDown className="w-3 h-3"/></Button></DropdownMenuTrigger><DropdownMenuContent align="start" className="w-40 z-50"><DropdownMenuItem onClick={()=>doAiAnalysis("explain")} className="gap-2 text-xs cursor-pointer"><BookOpen className="w-3 h-3"/>شرح</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("security")} className="gap-2 text-xs cursor-pointer"><Shield className="w-3 h-3 text-red-400"/>أمني</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("logic")} className="gap-2 text-xs cursor-pointer"><Wrench className="w-3 h-3 text-blue-400"/>منطق</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiAnalysis("full")} className="gap-2 text-xs cursor-pointer"><Bot className="w-3 h-3 text-primary"/>شامل</DropdownMenuItem><DropdownMenuItem onClick={()=>doAiVulnScan()} className="gap-2 text-xs cursor-pointer"><Bug className="w-3 h-3 text-orange-400"/>فحص ثغرات</DropdownMenuItem>{selNode?.name?.endsWith(".smali")&&<DropdownMenuItem onClick={()=>doSmaliToJava()} className="gap-2 text-xs cursor-pointer"><Code className="w-3 h-3 text-emerald-400"/>Smali → Java</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
                 <Button size="sm" variant="ghost" onClick={()=>{navigator.clipboard.writeText(selContent);toast.success("نسخ");}} className="h-7 w-7 p-0"><Copy className="w-3.5 h-3.5"/></Button>
                 <Button size="sm" variant="ghost" onClick={()=>{const b=new Blob([selContent],{type:"text/plain"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=selNode?.name||"file";a.click();}} className="h-7 w-7 p-0"><Download className="w-3.5 h-3.5"/></Button>
               </div>}
@@ -1595,7 +1626,7 @@ export default function ReverseEngineer(){
                   </div>
                 </div>}</div>
           </div>
-          {showAi&&<div className="bg-card/70 backdrop-blur-sm border border-primary/30 rounded-2xl overflow-hidden flex flex-col" style={{maxHeight:"380px"}}><div className="flex items-center gap-2 px-3 py-2.5 border-b border-border bg-primary/5 shrink-0"><Bot className="w-4 h-4 text-primary"/><span className="text-sm font-medium">AI</span><Button size="sm" variant="ghost" onClick={()=>setShowAi(false)} className="mr-auto h-6 w-6 p-0"><X className="w-3 h-3"/></Button></div><div className="flex-1 overflow-y-auto p-4 text-sm leading-relaxed">{analyzing?<div className="flex items-center gap-3 justify-center py-12 text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin text-primary"/>يحلل...</div>:<div className="whitespace-pre-wrap">{aiText}</div>}</div></div>}
+          {showAi&&<div className="bg-card/70 backdrop-blur-sm border border-primary/30 rounded-2xl overflow-hidden flex flex-col" style={{maxHeight:"380px"}}><div className="flex items-center gap-2 px-3 py-2.5 border-b border-border bg-primary/5 shrink-0"><Bot className="w-4 h-4 text-primary"/><span className="text-sm font-medium">AI</span><Button size="sm" variant="ghost" onClick={()=>setShowAi(false)} className="mr-auto h-6 w-6 p-0"><X className="w-3 h-3"/></Button></div><div className="flex-1 overflow-y-auto p-4 text-sm leading-relaxed">{analyzing?<div className="flex items-center gap-3 justify-center py-12 text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin text-primary"/>يحلل...</div>:aiVulns&&aiVulns.length>0?<VPanel findings={aiVulns}/>:<div className="whitespace-pre-wrap">{aiText}</div>}</div></div>}
         </div>
       </div>}
 
