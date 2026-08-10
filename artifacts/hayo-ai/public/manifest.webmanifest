@@ -1,7 +1,7 @@
 {
-  "name": "HAYO — محلل الأسواق المالية",
-  "short_name": "HAYO Markets",
-  "description": "محلل الأسواق المالية بالذكاء الاصطناعي — شارت + تحليل AI + إشارات",
+  "name": "HAYO AI — محلل الأسواق المالية",
+  "short_name": "HAYO AI",
+  "description": "محلل الأسواق المالية بالذكاء الاصطناعي — شارت مباشر + تحليل AI + إشارات",
   "start_url": "/trading",
   "scope": "/",
   "display": "standalone",
@@ -12,8 +12,8 @@
   "dir": "rtl",
   "categories": ["finance", "productivity"],
   "icons": [
-    { "src": "/logo.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "/app-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/app-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/app-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

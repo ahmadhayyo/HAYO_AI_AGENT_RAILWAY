@@ -7,7 +7,7 @@ import { router, publicProcedure, protectedProcedure, adminProcedure, tradingPro
 import { reverseEngineerRouter } from "./reverse-engineer-router";
 import { aiAgentRouter } from "./ai-agent-router";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
-import { fetchFromOanda, fetchFromYahoo } from "./market-data";
+import { fetchFromOanda, fetchFromYahoo, fetchRealtimePrice } from "./market-data";
 import {
   calcSMA, calcEMA, calcRSI, calcMACD, calcBB, calcATR, calcStochastic,
   calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters,
@@ -4237,7 +4237,16 @@ ${scanSummary}
         const highs   = candles.map(c => parseFloat(c.high));
         const lows    = candles.map(c => parseFloat(c.low));
         const opens   = candles.map(c => parseFloat(c.open));
-        const currentPrice = closes[closes.length - 1];
+        // Use a LIVE quote for the current price so it matches the live chart,
+        // instead of the last closed candle (which lags a whole bar). Falls back
+        // to the last close if no live quote is available.
+        const lastClose = closes[closes.length - 1];
+        let currentPrice = lastClose;
+        let priceSource = "إغلاق آخر شمعة";
+        try {
+          const rt = await fetchRealtimePrice(symbol);
+          if (rt && isFinite(rt.price) && rt.price > 0) { currentPrice = rt.price; priceSource = `سعر حي (${rt.source})`; }
+        } catch { /* keep last close */ }
 
         // ── Higher-timeframe (HTF) bias — top-down context ──────────────────
         let htf: { interval: string; trend: "صاعد" | "هابط" | "عرضي"; bias: "BUY" | "SELL" | "NEUTRAL"; note: string } = {
@@ -4332,7 +4341,7 @@ ${scanSummary}
 
         const marketContext = `═══════════════════════════════
 تحليل زوج ${input.pair} — الإطار الزمني: ${input.timeframe}
-السعر الحالي: ${fmt(currentPrice)}
+السعر الحالي: ${fmt(currentPrice)} (المصدر: ${priceSource})
 ═══════════════════════════════
 
 📊 المؤشرات التقنية:

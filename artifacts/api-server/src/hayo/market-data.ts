@@ -73,6 +73,48 @@ export async function fetchFromYahoo(symbol: string, interval: string, outputsiz
   return { status: "ok", values, meta: { source: "yahoo" } };
 }
 
+/**
+ * Latest real-time price (a live quote, not the last closed candle). Used so the
+ * analysis "current price" tracks the live chart instead of lagging a whole bar.
+ * OANDA live pricing (if configured) → Yahoo regularMarketPrice. Never throws.
+ */
+export async function fetchRealtimePrice(symbol: string): Promise<{ price: number; source: string } | null> {
+  // 1) OANDA live mid price (bid/ask) — needs token + account id
+  try {
+    const token = process.env.OANDA_API_TOKEN || process.env.OANDA_TOKEN;
+    const acct = process.env.OANDA_ACCOUNT_ID;
+    const inst = OANDA_INSTRUMENT[symbol];
+    if (token && acct && inst) {
+      const env = (process.env.OANDA_ENV || "practice").toLowerCase();
+      const base = env === "live" ? "https://api-fxtrade.oanda.com/v3" : "https://api-fxpractice.oanda.com/v3";
+      const res = await fetch(`${base}/accounts/${acct}/pricing?instruments=${inst}`, {
+        headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const j = await res.json() as any;
+        const p = j?.prices?.[0];
+        const bid = parseFloat(p?.bids?.[0]?.price), ask = parseFloat(p?.asks?.[0]?.price);
+        if (isFinite(bid) && isFinite(ask) && bid > 0 && ask > 0) return { price: (bid + ask) / 2, source: "oanda-live" };
+      }
+    }
+  } catch { /* next */ }
+  // 2) Yahoo regularMarketPrice — keyless, close to what TradingView shows for FX
+  try {
+    const tk = YAHOO_TICKER[symbol];
+    if (tk) {
+      const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(tk)}?interval=1m&range=1d`, {
+        headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const j = await res.json() as any;
+        const p = j?.chart?.result?.[0]?.meta?.regularMarketPrice;
+        if (typeof p === "number" && p > 0) return { price: p, source: "yahoo-live" };
+      }
+    }
+  } catch { /* next */ }
+  return null;
+}
+
 /** OANDA → Yahoo, returning the first that yields data (or null if both fail). */
 export async function fetchOhlcFallback(symbol: string, interval: string, outputsize: number): Promise<OhlcResult | null> {
   try { const o = await fetchFromOanda(symbol, interval, outputsize); if (o) return o; } catch { /* next */ }
