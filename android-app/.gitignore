@@ -1,0 +1,10 @@
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+gradle/wrapper/gradle-wrapper.jar
+gradlew
+gradlew.bat
+HAYO-AI.apk
