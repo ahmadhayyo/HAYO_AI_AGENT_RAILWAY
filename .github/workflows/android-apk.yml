@@ -1,7 +1,5 @@
 name: Build HAYO AI Android APK
 
-# Produces an installable APK you can download from the run's "Artifacts".
-# Run manually from the Actions tab (Run workflow), or on changes to android-app/.
 on:
   workflow_dispatch:
   push:
@@ -17,50 +15,57 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Diag - after checkout
+        run: |
+          mkdir -p android-app
+          echo "stage1: checkout OK ($(date))" > android-app/_diag.txt
+          echo "runner: $RUNNER_OS $(uname -a)" >> android-app/_diag.txt
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # ubuntu-latest ships the Android SDK (ANDROID_SDK_ROOT) and Gradle, so we
-      # use them directly and keep ALL output in build-log.txt for diagnosability.
+      - name: Diag - after java
+        run: echo "stage2: java OK -> $(java -version 2>&1 | head -1)" >> android-app/_diag.txt
+
       - name: Build debug APK
         working-directory: android-app
         run: |
-          set -o pipefail
+          set +e
+          echo "stage3: build step started" >> _diag.txt
           {
             echo "== env =="
-            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-            echo "ANDROID_HOME=$ANDROID_HOME"
-            echo "JAVA_HOME=$JAVA_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT ANDROID_HOME=$ANDROID_HOME JAVA_HOME=$JAVA_HOME"
             SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
             SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
             [ -x "$SDKM" ] || SDKM="$(command -v sdkmanager || echo sdkmanager)"
-            echo "sdkmanager=$SDKM"
-            echo "== installed platforms =="; ls "$SDK/platforms" 2>/dev/null || true
-            echo "== ensure SDK 34 =="
+            echo "sdkmanager=$SDKM"; ls "$SDK/platforms" 2>/dev/null || true
             yes | "$SDKM" --licenses >/dev/null 2>&1 || true
-            "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0" 2>&1 | tail -5 || echo "sdkmanager exit=$?"
-            echo "== gradle version =="
-            gradle --version || true
-            echo "== generate wrapper (pin 8.7) =="
-            gradle wrapper --gradle-version 8.7 --distribution-type bin 2>&1 | tail -5
-            echo "== build =="
-            ./gradlew :app:assembleDebug --no-daemon --stacktrace
+            "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0" 2>&1 | tail -3
+            echo "== gradle =="; gradle --version 2>&1 | head -6
+            echo "== wrapper =="; gradle wrapper --gradle-version 8.7 --distribution-type bin 2>&1 | tail -3
+            echo "== assembleDebug =="; ./gradlew :app:assembleDebug --no-daemon --stacktrace
           } 2>&1 | tee build-log.txt
+          echo "stage4: build step ended rc=${PIPESTATUS[0]}" >> _diag.txt
+          ls -la app/build/outputs/apk/debug/ >> _diag.txt 2>&1 || echo "no apk dir" >> _diag.txt
 
-      - name: Upload build log (always)
+      - name: Upload diagnostics (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: android-app/build-log.txt
-          if-no-files-found: ignore
+          name: diag
+          path: |
+            android-app/_diag.txt
+            android-app/build-log.txt
+          if-no-files-found: warn
 
-      - name: Stage APK
+      - name: Publish APK
         working-directory: android-app
-        run: cp app/build/outputs/apk/debug/app-debug.apk HAYO-AI.apk
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk HAYO-AI.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
