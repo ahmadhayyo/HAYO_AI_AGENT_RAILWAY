@@ -9549,9 +9549,33 @@ export async function runWebPentest(targetUrl: string): Promise<{
   // ═══ FALSE-POSITIVE FILTER — rejects JS code snippets from secret results ═══
   const JS_CODE_INDICATORS = /(?:function\s*[\(\{]|=>\s*[\{\(]|\breturn\s|\.(?:map|filter|reduce|forEach|push|pop|join|split|replace|match|test|exec|call|apply|bind|prototype|constructor|toString|valueOf|length|slice|indexOf|includes|then|catch|finally|async|await)\b|(?:var|let|const|this|new|delete|typeof|void|class|extends|import|export|require|module|if|else|for|while|do|switch|case|break|continue|throw|try|catch|finally)\b|\{\s*(?:get|set)\s|[;{}()\[\]].*[;{}()\[\]]|[!=]==|&&|\|\||<<|>>|\?\.|\.\.\.)/;
   const JS_NOISE_VALUES = new Set(["same-origin", "no-cors", "include", "omit", "no-referrer", "no-cache", "reload", "force-cache", "navigate", "cors", "undefined", "null", "true", "false", "anonymous", "use-credentials"]);
+  // Natural-language label / i18n words that are NOT secrets. Prevents false
+  // positives like  password:"Password" / "Passwort"  (UI strings, not credentials).
+  const COMMON_LABEL_WORDS = new Set([
+    // "password" across languages
+    "password", "passwort", "passwoord", "wachtwoord", "motdepasse", "passe", "senha", "clave",
+    "contrasena", "parola", "parole", "haslo", "lozinka", "salasana", "adgangskode", "losenord",
+    "losenord", "kennwort", "sifre", "sifra", "parool", "heslo", "jelszo", "salawat",
+    // common UI labels frequently captured next to password/secret keys
+    "username", "user", "email", "login", "logout", "signin", "signup", "register", "submit",
+    "continue", "cancel", "welcome", "required", "optional", "placeholder", "example", "sample",
+    "changeme", "yourpassword", "enterpassword", "newpassword", "oldpassword", "confirmpassword",
+    "currentpassword", "forgotpassword", "resetpassword", "credentials", "credential", "secret",
+    "token", "apikey", "loading", "settings", "account", "profile", "dashboard",
+  ]);
   const PLACEHOLDER_EMAILS = new Set(["name@example.com", "user@example.com", "test@example.com", "admin@example.com", "info@example.com", "noreply@example.com", "mail@example.com", "email@example.com", "sample@example.com", "demo@example.com", "hello@example.com"]);
   function isRealSecret(value: string, type: string): boolean {
     if (JS_NOISE_VALUES.has(value.toLowerCase())) return false;
+    // Reject natural-language label words wrongly captured as secrets (e.g. i18n
+    // strings: password:"Password" / "Passwort"). These are UI labels, not credentials.
+    const lower = value.toLowerCase().trim();
+    if (COMMON_LABEL_WORDS.has(lower)) return false;
+    // A single natural-language word (letters only, no digit/symbol) is a label, not a
+    // real hardcoded credential — real passwords/secrets have entropy (digits/symbols/mixed).
+    if (/^[a-z]+$/i.test(value) && !/[0-9!@#$%^&*_\-+=./]/.test(value) &&
+        /Hardcoded (?:Password|Secret|Credential)/.test(type)) {
+      return false;
+    }
     if (value.length < 8 && type !== "Email Address") return false;
     // Filter placeholder/generic emails
     if (type === "Email Address") {
