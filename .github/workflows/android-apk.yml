@@ -38,7 +38,17 @@ jobs:
 
       - name: Build debug APK
         working-directory: android-app
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build-log.txt
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: android-app/build-log.txt
+          if-no-files-found: ignore
 
       - name: Stage APK
         working-directory: android-app
