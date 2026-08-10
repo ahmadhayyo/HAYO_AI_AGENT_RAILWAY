@@ -1,7 +1,7 @@
 name: Build HAYO AI Android APK
 
 # Produces an installable APK you can download from the run's "Artifacts".
-# Run manually from the Actions tab (Run workflow), or it runs on changes to android-app/.
+# Run manually from the Actions tab (Run workflow), or on changes to android-app/.
 on:
   workflow_dispatch:
   push:
@@ -27,17 +27,20 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Generate Gradle wrapper (8.7)
-        working-directory: android-app
-        run: gradle wrapper --gradle-version 8.7 --distribution-type bin
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
       - name: Build debug APK
         working-directory: android-app
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Rename APK
+      - name: Stage APK
         working-directory: android-app
         run: cp app/build/outputs/apk/debug/app-debug.apk HAYO-AI.apk
 
