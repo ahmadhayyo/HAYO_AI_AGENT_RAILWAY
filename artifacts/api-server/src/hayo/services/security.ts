@@ -117,6 +117,9 @@ export function securityHeaders(req: any, res: any, next: any) {
       "img-src 'self' data: blob: https:",
       "connect-src 'self' https: wss:",
       "worker-src 'self' blob:",
+      // Allow embedding the TradingView chart widget (iframe). Without an explicit
+      // frame-src it falls back to default-src 'self' and the chart is blocked.
+      "frame-src 'self' https://www.tradingview.com https://s.tradingview.com https://*.tradingview.com",
       "frame-ancestors 'self'",
       "object-src 'none'",
       "base-uri 'self'",

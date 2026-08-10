@@ -48,6 +48,13 @@ const trpcClient = trpc.createClient({
   ],
 });
 
+// Register the PWA service worker so the app is installable on Android/iOS.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => { /* non-fatal */ });
+  });
+}
+
 createRoot(document.getElementById("root")!).render(
   <trpc.Provider client={trpcClient} queryClient={queryClient}>
     <QueryClientProvider client={queryClient}>

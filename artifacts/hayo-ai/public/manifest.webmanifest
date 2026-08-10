@@ -1,0 +1,19 @@
+{
+  "name": "HAYO — محلل الأسواق المالية",
+  "short_name": "HAYO Markets",
+  "description": "محلل الأسواق المالية بالذكاء الاصطناعي — شارت + تحليل AI + إشارات",
+  "start_url": "/trading",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0e0e14",
+  "theme_color": "#0e0e14",
+  "lang": "ar",
+  "dir": "rtl",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "/logo.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
