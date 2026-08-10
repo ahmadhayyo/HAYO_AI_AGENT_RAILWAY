@@ -26,11 +26,6 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install SDK packages
-        run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -40,7 +35,22 @@ jobs:
         working-directory: android-app
         run: |
           set -o pipefail
-          gradle :app:assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build-log.txt
+          {
+            echo "== env =="
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            echo "JAVA_HOME=$JAVA_HOME"
+            SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            if [ ! -x "$SDKM" ]; then SDKM="$(command -v sdkmanager || true)"; fi
+            echo "sdkmanager=$SDKM"
+            echo "== accept licenses & install SDK 34 =="
+            yes | "$SDKM" --licenses || true
+            "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0" || echo "sdkmanager exit=$?"
+            echo "== gradle =="
+            command -v gradle && gradle --version
+            echo "== build =="
+            gradle :app:assembleDebug --no-daemon --stacktrace
+          } 2>&1 | tee build-log.txt
 
       - name: Upload build log (always)
         if: always()
