@@ -78,7 +78,37 @@ export async function fetchFromYahoo(symbol: string, interval: string, outputsiz
  * analysis "current price" tracks the live chart instead of lagging a whole bar.
  * OANDA live pricing (if configured) → Yahoo regularMarketPrice. Never throws.
  */
+const BINANCE_SYMBOL: Record<string, string> = { "BTC/USD": "BTCUSDT", "ETH/USD": "ETHUSDT" };
+
 export async function fetchRealtimePrice(symbol: string): Promise<{ price: number; source: string } | null> {
+  // 0) Crypto → Binance spot: matches the BINANCE:*USDT TradingView chart EXACTLY.
+  try {
+    const b = BINANCE_SYMBOL[symbol];
+    if (b) {
+      const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${b}`, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const j = await res.json() as any;
+        const p = parseFloat(j?.price);
+        if (isFinite(p) && p > 0) return { price: p, source: "binance-live" };
+      }
+    }
+  } catch { /* next */ }
+  // 0.5) Twelve Data /price (uses the rotating key) — real-time quote for FX/metals/indices.
+  try {
+    const { getTwelveDataKey, markKeyExhausted, isRateLimitError } = await import("../lib/twelvedata-keys.js");
+    const key = getTwelveDataKey();
+    if (key) {
+      const res = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${key}`, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const j = await res.json() as any;
+        if (isRateLimitError(j)) { markKeyExhausted(key); }
+        else {
+          const p = parseFloat(j?.price);
+          if (isFinite(p) && p > 0) return { price: p, source: "twelvedata-live" };
+        }
+      }
+    }
+  } catch { /* next */ }
   // 1) OANDA live mid price (bid/ask) — needs token + account id
   try {
     const token = process.env.OANDA_API_TOKEN || process.env.OANDA_TOKEN;
