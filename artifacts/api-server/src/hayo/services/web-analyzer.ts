@@ -83,6 +83,34 @@ export interface RuntimeVariable {
   origin: string;
 }
 
+export interface SecurityFinding {
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  title: string;
+  detail: string;
+  evidence?: string;
+}
+
+export interface WafProbe {
+  name: string;
+  method: string;
+  status: number;
+  blocked: boolean;
+  note: string;
+}
+
+export interface WafFirewallResult {
+  edgeVendor: string;        // CDN / edge in front (e.g. Railway, Cloudflare)
+  wafDetected: boolean;
+  wafVendor: string;         // named WAF if fingerprinted, else "none-detected"
+  rateLimited: boolean;
+  rateLimitInfo?: string;
+  serverBanner?: string;
+  poweredBy?: string;
+  reactsToSuspicious: boolean; // did a benign suspicious-looking request get blocked?
+  probes: WafProbe[];
+  summary: string;
+}
+
 export interface HeadlessBrowserResult {
   success: boolean;
   url: string;
@@ -143,7 +171,12 @@ export interface HeadlessBrowserResult {
     cspViolations: string[];
     exposedSourceMaps: string[];
     serviceWorkers: string[];
+    findings?: SecurityFinding[];
+    headerAudit?: Record<string, { present: boolean; value?: string; note?: string }>;
+    riskScore?: number;
   };
+
+  wafFirewall?: WafFirewallResult;
 
   generatedAt: string;
 }
@@ -195,11 +228,156 @@ function categorizeEndpoint(url: string): string {
 }
 
 function isAPIRequest(url: string, resourceType: string, contentType?: string): boolean {
+  // Never treat static assets as APIs (fixes fonts/images being misreported as endpoints)
+  if (["stylesheet", "image", "font", "media", "document", "texttrack", "manifest", "other", "ping", "prefetch"].includes(resourceType)) return false;
+  if (/\.(?:woff2?|ttf|otf|eot|css|png|jpe?g|gif|webp|svg|ico|mp4|webm|avif|map|js)(?:\?|$)/i.test(url)) return false;
   if (resourceType === "xhr" || resourceType === "fetch") return true;
-  if (/\/api\/|\/v[0-9]+\/|\/rest\/|\/graphql/i.test(url)) return true;
+  if (/\/api\/|\/trpc\/|\/v[0-9]+\/|\/rest\/|\/graphql/i.test(url)) return true;
   if (contentType?.includes("application/json")) return true;
   if (/\.json$/i.test(url) && !/manifest\.json|package\.json/i.test(url)) return true;
   return false;
+}
+
+// ── Security header audit: turns collected response headers into real findings ──
+function auditSecurityHeaders(h: Record<string, string>): {
+  findings: SecurityFinding[];
+  headerAudit: Record<string, { present: boolean; value?: string; note?: string }>;
+} {
+  const g = (k: string) => h[k] ?? h[k.toLowerCase()];
+  const findings: SecurityFinding[] = [];
+  const audit: Record<string, { present: boolean; value?: string; note?: string }> = {};
+  const mark = (name: string, val: string | undefined, note: string) => { audit[name] = { present: !!val, value: val, note }; };
+
+  const csp = g("content-security-policy");
+  mark("Content-Security-Policy", csp, "سياسة أمان المحتوى");
+  if (!csp) {
+    findings.push({ severity: "high", title: "لا توجد سياسة CSP", detail: "غياب Content-Security-Policy يزيل طبقة دفاع أساسية ضد XSS وحقن الموارد.", evidence: "الرأس غير موجود" });
+  } else {
+    const script = /script-src([^;]*)/i.exec(csp)?.[1] || "";
+    if (/'unsafe-inline'/i.test(script)) findings.push({ severity: "medium", title: "CSP يسمح بـ unsafe-inline في script-src", detail: "يسمح بتنفيذ سكربتات inline — يضعف الحماية من XSS.", evidence: `script-src${script.trim()}` });
+    if (/'unsafe-eval'/i.test(script)) findings.push({ severity: "medium", title: "CSP يسمح بـ unsafe-eval في script-src", detail: "يسمح بـ eval()/new Function — سطح هجوم إضافي.", evidence: `script-src${script.trim()}` });
+    if (!/object-src\s+'none'/i.test(csp)) findings.push({ severity: "low", title: "CSP بدون object-src 'none'", detail: "يُنصح بتعطيل الإضافات القديمة (Flash/plugins).", evidence: csp.slice(0, 160) });
+  }
+
+  const hsts = g("strict-transport-security");
+  mark("Strict-Transport-Security", hsts, "فرض HTTPS");
+  if (!hsts) findings.push({ severity: "medium", title: "لا يوجد HSTS", detail: "غياب Strict-Transport-Security يسمح بهجمات downgrade/SSL-strip.", evidence: "الرأس غير موجود" });
+
+  const xfo = g("x-frame-options");
+  const frameAnc = csp && /frame-ancestors/i.test(csp);
+  mark("X-Frame-Options", xfo, "حماية من Clickjacking");
+  if (!xfo && !frameAnc) findings.push({ severity: "medium", title: "لا حماية من Clickjacking", detail: "لا X-Frame-Options ولا frame-ancestors في CSP.", evidence: "كلاهما غير موجود" });
+
+  const xcto = g("x-content-type-options");
+  mark("X-Content-Type-Options", xcto, "منع MIME sniffing");
+  if (!/nosniff/i.test(xcto || "")) findings.push({ severity: "low", title: "لا يوجد X-Content-Type-Options: nosniff", detail: "قد يسمح بـ MIME sniffing.", evidence: xcto || "غير موجود" });
+
+  const refpol = g("referrer-policy");
+  mark("Referrer-Policy", refpol, "ضبط تسريب Referrer");
+  if (!refpol) findings.push({ severity: "low", title: "لا يوجد Referrer-Policy", detail: "قد يُسرّب مسارات كاملة إلى أطراف ثالثة.", evidence: "غير موجود" });
+
+  mark("Permissions-Policy", g("permissions-policy"), "تقييد واجهات المتصفح");
+
+  // Info leaks
+  const xpb = g("x-powered-by");
+  mark("X-Powered-By", xpb, "كشف إطار العمل");
+  if (xpb) findings.push({ severity: "low", title: "تسريب معلومات: X-Powered-By", detail: "يكشف إطار العمل الخلفي — يُفضّل إزالته.", evidence: `X-Powered-By: ${xpb}` });
+  const server = g("server");
+  mark("Server", server, "بصمة الخادم");
+  if (server && /\d/.test(server)) findings.push({ severity: "info", title: "بصمة الخادم مكشوفة", detail: "رأس Server يكشف البرمجية/الإصدار.", evidence: `Server: ${server}` });
+
+  // Dangerous CORS combo
+  const acao = g("access-control-allow-origin");
+  const acac = g("access-control-allow-credentials");
+  if (acao === "*" && /true/i.test(acac || "")) {
+    findings.push({ severity: "high", title: "CORS خطير: * مع credentials", detail: "Allow-Origin=* مع Allow-Credentials=true يسمح بقراءة الردود المُصادَقة من أي أصل.", evidence: `ACAO:* + ACAC:true` });
+  }
+
+  // Deprecated
+  const xxss = g("x-xss-protection");
+  if (xxss && /1/.test(xxss)) findings.push({ severity: "info", title: "رأس مهمَل: X-XSS-Protection", detail: "أُزيل من المتصفحات الحديثة؛ اعتمد على CSP بدلاً منه.", evidence: `X-XSS-Protection: ${xxss}` });
+
+  return { findings, headerAudit: audit };
+}
+
+// ── WAF / cloud-edge firewall DETECTION (fingerprint + benign reaction probes) ──
+// Detection only — no bypass/evasion. Low volume (≤4 lightweight requests).
+async function detectWafFirewall(targetUrl: string, mainHeaders: Record<string, string>): Promise<WafFirewallResult> {
+  const g = (k: string) => mainHeaders[k] ?? mainHeaders[k.toLowerCase()];
+  const server = g("server");
+  const poweredBy = g("x-powered-by");
+
+  // Edge / CDN / WAF fingerprint from headers
+  const sig: Array<[RegExp | string, string, string]> = [
+    ["cf-ray", "Cloudflare", "waf"], ["cf-cache-status", "Cloudflare", "edge"],
+    ["x-akamai-transformed", "Akamai", "edge"], ["x-sucuri-id", "Sucuri", "waf"],
+    ["x-iinfo", "Imperva Incapsula", "waf"], ["x-cdn", "Generic CDN", "edge"],
+    ["x-amz-cf-id", "AWS CloudFront", "edge"], ["x-amzn-requestid", "AWS API GW", "edge"],
+    ["x-railway-edge", "Railway Edge", "edge"], ["x-fastly-request-id", "Fastly", "edge"],
+    ["x-served-by", "Fastly/Varnish", "edge"],
+  ];
+  let edgeVendor = "unknown";
+  let wafVendor = "none-detected";
+  let wafDetected = false;
+  for (const [hk, name, kind] of sig) {
+    if (g(hk as string) !== undefined) {
+      if (kind === "waf") { wafDetected = true; wafVendor = name; }
+      if (edgeVendor === "unknown") edgeVendor = name;
+    }
+  }
+  if (/cloudflare/i.test(server || "")) { wafDetected = true; wafVendor = "Cloudflare"; edgeVendor = "Cloudflare"; }
+  if (/railway/i.test(server || "") && edgeVendor === "unknown") edgeVendor = "Railway";
+
+  const rateLimitHdr = g("x-ratelimit-limit") || g("ratelimit-limit") || g("retry-after");
+  const rateLimited = !!rateLimitHdr;
+
+  // Benign reaction probes — a normal request vs a "suspicious-looking" (but harmless) one.
+  const probes: WafProbe[] = [];
+  const fetchProbe = async (name: string, path: string, method: string): Promise<WafProbe | null> => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const r = await fetch(new URL(path, targetUrl).toString(), {
+        method,
+        redirect: "manual",
+        headers: { "User-Agent": "HAYO-WAF-Probe/1.0 (authorized-self-scan)" },
+        signal: ctrl.signal,
+      });
+      const blocked = [403, 406, 429, 501, 503].includes(r.status);
+      return { name, method, status: r.status, blocked, note: blocked ? "استجابة حجب/تقييد" : "مرّ دون حجب" };
+    } catch (e: any) {
+      return { name, method, status: 0, blocked: false, note: `تعذّر: ${String(e?.name || e).slice(0, 40)}` };
+    } finally { clearTimeout(t); }
+  };
+
+  const baseline = await fetchProbe("baseline (طلب عادي)", "/", "GET");
+  if (baseline) probes.push(baseline);
+  const notFound = await fetchProbe("مسار غير موجود", `/hayo-probe-${Math.random().toString(36).slice(2, 8)}`, "GET");
+  if (notFound) probes.push(notFound);
+  // Suspicious-looking but 100% harmless query (no real payload executed server-side)
+  const suspicious = await fetchProbe("نمط مشبوه حميد", `/?q=${encodeURIComponent("<script>1</script>")}&id=1%27`, "GET");
+  if (suspicious) probes.push(suspicious);
+
+  const reactsToSuspicious = !!(suspicious?.blocked) && !(baseline?.blocked);
+
+  const parts: string[] = [];
+  parts.push(edgeVendor === "unknown" ? "لم تُكتشف حافة/CDN مميّزة" : `الحافة: ${edgeVendor}`);
+  parts.push(wafDetected ? `WAF مُكتشف: ${wafVendor}` : "لا WAF مخصّص مُكتشف من الرؤوس");
+  parts.push(rateLimited ? `تحديد معدّل فعّال${rateLimitHdr ? ` (${rateLimitHdr})` : ""}` : "لا تحديد معدّل ظاهر");
+  parts.push(reactsToSuspicious ? "يتفاعل مع الأنماط المشبوهة (حجب)" : "لا يحجب الأنماط المشبوهة الحميدة");
+
+  return {
+    edgeVendor,
+    wafDetected,
+    wafVendor,
+    rateLimited,
+    rateLimitInfo: rateLimitHdr,
+    serverBanner: server,
+    poweredBy,
+    reactsToSuspicious,
+    probes,
+    summary: parts.join(" · "),
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -650,12 +828,25 @@ export async function analyzeWithHeadlessBrowser(targetUrl: string): Promise<Hea
 
     // CORS headers from main response
     const corsHeaders: Record<string, string> = {};
+    let secFindings: SecurityFinding[] = [];
+    let headerAudit: Record<string, { present: boolean; value?: string; note?: string }> = {};
+    let wafFirewall: WafFirewallResult | undefined;
     if (navResponse) {
       const mainHeaders = navResponse.headers();
       for (const key of ["access-control-allow-origin", "access-control-allow-methods", "access-control-allow-headers", "access-control-allow-credentials", "access-control-expose-headers"]) {
         if (mainHeaders[key]) corsHeaders[key] = mainHeaders[key];
       }
+      // ═══ REAL SECURITY ANALYSIS (from collected headers, values unmasked) ═══
+      const audit = auditSecurityHeaders(mainHeaders);
+      secFindings = audit.findings;
+      headerAudit = audit.headerAudit;
+      // ═══ WAF / cloud-edge firewall detection (fingerprint + benign probes) ═══
+      try { wafFirewall = await detectWafFirewall(targetUrl, mainHeaders); } catch {}
     }
+    if (exposedSourceMaps.length) secFindings.push({ severity: "medium", title: "خرائط مصدر مكشوفة", detail: `عُثر على ${exposedSourceMaps.length} خريطة مصدر (.map) — قد تكشف الكود المصدري.`, evidence: exposedSourceMaps.slice(0, 3).join(", ") });
+    if (insecureRequests.length) secFindings.push({ severity: "high", title: "طلبات عبر HTTP غير مشفّرة", detail: `${insecureRequests.length} طلب عبر HTTP على صفحة HTTPS.`, evidence: insecureRequests.slice(0, 3).join(", ") });
+    const riskWeights: Record<string, number> = { critical: 40, high: 20, medium: 10, low: 4, info: 1 };
+    const secRiskScore = Math.min(100, secFindings.reduce((s, f) => s + (riskWeights[f.severity] || 0), 0));
 
     // ═══ HIDDEN ENDPOINT DISCOVERY ═══
     // Look for API endpoints mentioned in JS but not yet called
@@ -792,7 +983,12 @@ export async function analyzeWithHeadlessBrowser(targetUrl: string): Promise<Hea
         cspViolations,
         exposedSourceMaps: [...new Set(exposedSourceMaps)].slice(0, 20),
         serviceWorkers: serviceWorkerUrls,
+        findings: secFindings,
+        headerAudit,
+        riskScore: secRiskScore,
       },
+
+      wafFirewall,
 
       generatedAt: new Date().toISOString(),
     };
