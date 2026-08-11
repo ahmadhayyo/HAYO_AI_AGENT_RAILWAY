@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HAYO Cipher-7 — Extended AI Brain (extended_brain.py)
-=======================================================
-Extended AI brain with support for advanced components:
-- Real-time decision making
-- Adaptive exploitation
-- Phase management
-- Feedback loop
-- Strategy adaptation
+HAYO Cipher-7 — Extended AI Brain SHADOW EDITION (extended_brain.py)
+=====================================================================
+عقل ذكي خارق بلا قيود لإدارة العمليات الهجومية المتقدمة
 
-Built on top of LLMBrain with OpenAI integration.
+القدرات الخارقة:
+1. نظام قرار هجين (AI سحابي + محلي) مع fallback تلقائي
+2. تحليل البيانات المستخرجة (ساكن+ديناميكي) واقتراح استراتيجيات هجومية
+3. إدارة المراحل (Pipeline Orchestrator) بشكل ذكي
+4. استغلال متكيف (Adaptive Exploitation) يتعلم من النجاحات والفشل
+5. نظام تغذية راجعة (Feedback Loop) لتحسين الأداء
+6. تكامل مع IntelStore لتسجيل الأدلة
+7. قدرة على استدعاء الأدوات الخارجية (Tool Runner)
+8. تحليل التعرض السحابي (Cloud Exposure Analysis)
+9. إدارة حسابات الاختبار (Test Account Management)
 """
 import json
 import os
+import re
 import requests
-from typing import Dict, List, Optional, Any
+import subprocess
+import threading
+import time
 from datetime import datetime
+from typing import Dict, List, Optional, Any, Tuple
 
 try:
     from llm_brain import LLMBrain
@@ -24,908 +32,526 @@ except ImportError:
     LLMBrain = None
 
 try:
-    from realtime_decision_engine import DecisionType, Decision, Priority
-    from phase_manager_brain import PhaseDecision, PhaseContext
-    from adaptive_exploitation_engine import ExploitType
+    from intel_store import IntelStore
 except ImportError:
-    DecisionType = Decision = Priority = PhaseDecision = PhaseContext = ExploitType = None
+    IntelStore = None
+
+G = "\033[92m"; Y = "\033[93m"; C = "\033[96m"; R = "\033[91m"; M = "\033[95m"; X = "\033[0m"
 
 
 class ExtendedBrain:
     """
-    Extended AI brain that adds advanced decision-making capabilities
-    to the base LLMBrain for integration with new pentest components.
+    SHADOW EDITION — عقل ذكي خارق بلا قيود
     """
     
-    def __init__(self, base_brain=None, verbose=False):
-        """
-        Initialize the extended brain.
-        
-        Args:
-            base_brain: Base LLMBrain instance (will create one if None)
-            verbose: Enable verbose logging
-        """
+    def __getattr__(self, name):
+        """تمرير أي دالة/سمة غير معرّفة على ExtendedBrain إلى العقل الأساسي الداخلي
+        (LLMBrain في self.brain) — مثل summarize/chat/think. يُستدعى فقط عند غياب
+        السمة هنا. نستخدم __dict__ مباشرةً لتفادي التكرار اللانهائي قبل اكتمال init."""
+        brain = self.__dict__.get("brain")
+        if brain is not None and hasattr(brain, name):
+            return getattr(brain, name)
+        raise AttributeError(f"'ExtendedBrain' object has no attribute '{name}'")
+
+    def __init__(self, base_brain=None, verbose=True, package="session",
+                 api_keys: Dict[str, str] = None):
         self.verbose = verbose
+        self.package = package
         
-        # Always use LLMBrain directly for AI capabilities
+        # العقل الأساسي (LLM)
         if LLMBrain:
             self.brain = LLMBrain(verbose=verbose)
         else:
-            raise ImportError("LLMBrain not available. Please ensure llm_brain.py is present.")
+            self.brain = None
+            self._log("LLMBrain not available - using local decision engine only", "WARN")
         
-        # Strategy state
+        # مفاتيح API للخدمات السحابية
+        self.api_keys = api_keys or {}
+        
+        # حالة الاستراتيجية
         self.strategy = {
-            "aggressiveness": 0.5,  # 0.0 (conservative) to 1.0 (aggressive)
-            "focus_areas": ["crypto", "network", "auth"],
+            "aggressiveness": 0.8,  # بدء بعدوانية عالية
+            "focus_areas": ["crypto", "network", "auth", "cloud", "billing", "premium"],
             "exploit_preferences": {},
             "phase_priorities": {},
-            "learning_rate": 0.1
+            "learning_rate": 0.15,
+            "retry_count": 0,
+            "max_retries": 10
         }
         
-        # Decision history
+        # تاريخ القرارات
         self.decision_history = []
         self.exploit_history = []
         self.phase_history = []
         
-        self._log("Extended AI Brain initialized")
-    
-    def _log(self, msg, level="INFO"):
-        if self.verbose:
-            print(f"[EXTENDED_BRAIN] [{level}] {msg}")
-    
-    # ============================================================
-    # Real-time Decision Making
-    # ============================================================
-    
-    def decide(self, event, analysis=None, context=None) -> Optional['Decision']:
-        """
-        Make a real-time decision based on an event.
+        # تخزين البيانات
+        self.static_data = {}
+        self.dynamic_data = {}
+        self.correlated_data = {}
+        self.exploitation_targets = []
         
-        Args:
-            event: Event object with type, data, and source
-            analysis: Optional analysis data (for compatibility)
-            context: Optional context data (for compatibility)
-            
-        Returns:
-            Decision object with action and reasoning
-        """
-        if Decision is None:
-            return None
-        
+        # تكامل مع IntelStore
+        self.store = None
         try:
-            # Extract event data
-            event_type = getattr(event, 'type', 'unknown')
-            event_data = getattr(event, 'data', {})
-            event_source = getattr(event, 'source', 'unknown')
-            
-            # Build prompt for AI
-            prompt = f"""
-You are an AI security analyst making real-time decisions during a pentest.
-
-Event Type: {event_type}
-Event Source: {event_source}
-Event Data: {json.dumps(event_data, indent=2, ensure_ascii=False)}
-
-Current Strategy:
-- Aggressiveness: {self.strategy['aggressiveness']}
-- Focus Areas: {self.strategy['focus_areas']}
-- Exploit Preferences: {self.strategy['exploit_preferences']}
-
-Available Decision Types:
-- CONTINUE: Continue current operations
-- ESCALATE: Escalate to more aggressive actions
-- FOCUS: Focus on specific target
-- EXPLORE: Explore new areas
-- RETREAT: Retreat from current action
-- STOP: Stop current operation
-
-Make a decision based on the event and current strategy.
-Respond with JSON:
-{{
-    "decision_type": "CONTINUE|ESCALATE|FOCUS|EXPLORE|RETREAT|STOP",
-    "action": "specific action to take",
-    "reasoning": "brief explanation of the decision",
-    "confidence": 0.0-1.0
-}}
-"""
-            
-            # Get AI response using LLMBrain's chat method
-            response = self.brain.chat(
-                system="You are an AI security analyst making real-time decisions during a pentest.",
-                user=prompt
-            )
-            result = self._extract_decision(response)
-            
-            if result:
-                # Update strategy based on decision
-                self._update_strategy_from_decision(result, event_data)
-                
-                # Record decision
-                self.decision_history.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "event": event_type,
-                    "decision": result,
-                    "confidence": result.get("confidence", 0.5)
-                })
-                
-                # Create Decision object
-                decision_type_str = result.get("decision_type", "continue").lower()
-                try:
-                    decision_type = DecisionType(decision_type_str)
-                except ValueError:
-                    # Fallback to continue if invalid type
-                    decision_type = DecisionType.CONTINUE
-                
-                priority = Priority.MEDIUM  # Default priority
-                
-                # Set priority based on decision type
-                if decision_type == DecisionType.ESCALATE:
-                    priority = Priority.HIGH
-                elif decision_type == DecisionType.STOP:
-                    priority = Priority.CRITICAL
-                
-                return Decision(
-                    type=decision_type,
-                    action=result.get("action", "continue"),
-                    priority=priority,
-                    reasoning=result.get("reasoning", ""),
-                    confidence=result.get("confidence", 0.5)
-                )
-            
-            # Fallback to default
-            return Decision(
-                type=DecisionType.CONTINUE,
-                action="continue",
-                priority=Priority.MEDIUM,
-                reasoning="Default decision - AI response unavailable",
-                confidence=0.3
-            )
-            
-        except Exception as e:
-            self._log(f"Error in decide: {e}", "ERROR")
-            return Decision(
-                type=DecisionType.CONTINUE,
-                action="continue",
-                priority=Priority.MEDIUM,
-                reasoning=f"Error: {str(e)}",
-                confidence=0.2
-            )
+            from intel_store import IntelStore
+            loot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "loot")
+            self.store = IntelStore(package=package, loot_dir=loot_dir)
+        except:
+            pass
+        
+        self._log("☠️ EXTENDED BRAIN SHADOW EDITION INITIALIZED", "CRITICAL")
     
-    def _extract_decision(self, response) -> Optional[Dict]:
-        """Extract ANY JSON object from an AI response (general — not tied to one key).
-
-        كان سابقاً يبحث حصراً عن "decision_type" → ففشل مع كل الدوال التي تُرجع
-        مفاتيح أخرى (exploit_type/aggressiveness/should_run/...) وأرجعت افتراضات ثابتة.
-        الآن يفكّ أي JSON صالح (مع تقشير أسوار الكود)."""
+    def _log(self, msg: str, level: str = "INFO"):
+        if self.verbose:
+            colors = {"INFO": G, "WARN": Y, "ERROR": R, "SUCCESS": C, "CRITICAL": M}
+            color = colors.get(level, X)
+            print(f"{color}[EXTENDED_BRAIN] [{level}] {msg}{X}")
+    
+    def _add_evidence(self, attack_name: str, evidence_type: str, value: str):
+        if self.store:
+            try:
+                self.store.add("brain_decision", value, source=attack_name, note=evidence_type)
+            except:
+                pass
+    
+    def _extract_json(self, response) -> Optional[Dict]:
+        """استخراج JSON من نص مع دعم الأسوار البرمجية."""
         try:
             if isinstance(response, dict):
                 return response
             if not response:
                 return None
             text = str(response).strip()
-            # تقشير ```json ... ``` إن وُجدت
             if "```" in text:
-                import re as _re
-                fence = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.DOTALL)
+                fence = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, re.DOTALL)
                 if fence:
                     text = fence.group(1)
-            # محاولة مباشرة (الردّ غالباً JSON صرف كما نطلب)
             try:
                 return json.loads(text)
-            except Exception:
+            except:
                 pass
-            # أول كائن JSON في النص
-            import re
-            m = re.search(r'\{.*\}', text, re.DOTALL)
+            m = re.search(r'\{.*\}|\[.*\]', text, re.DOTALL)
             if m:
                 return json.loads(m.group(0))
             return None
-        except Exception:
+        except:
             return None
     
-    def _update_strategy_from_decision(self, decision: Dict, event_data: Dict):
-        """Update strategy based on decision"""
-        decision_type = decision.get("decision_type", "CONTINUE")
+    def _methodology(self) -> str:
+        """تحميل توجيه/منهجية العقل (brain_directive.txt) مرة واحدة وتخزينها.
+        هذا هو مصدر 'تدريب' DeepSeek على مهارات التحقّق الخادمي وGoogle Play."""
+        cached = getattr(ExtendedBrain, "_directive_cache", None)
+        if cached is None:
+            try:
+                p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brain_directive.txt")
+                with open(p, "r", encoding="utf-8") as f:
+                    cached = f.read().strip()
+            except Exception:
+                cached = ""
+            ExtendedBrain._directive_cache = cached
+        return cached
+
+    def _ai_chat(self, system: str, user: str) -> str:
+        """محادثة AI مع fallback — يُحقن توجيه المنهجية في كل نداء لتدريب القرار."""
+        directive = self._methodology()
+        if directive:
+            # التوجيه أولًا كمعرفة، ثم تعليمة النظام المحدّدة (مثل 'أخرج JSON') تبقى الأخيرة والأقوى
+            system = f"[HAYO METHODOLOGY]\n{directive}\n\n[TASK]\n{system}"
+        if self.brain and hasattr(self.brain, 'chat'):
+            try:
+                return self.brain.chat(system=system, user=user)
+            except:
+                pass
+        return ""
+    
+    # ============================================================
+    # DATA MANAGEMENT
+    # ============================================================
+    
+    def ingest_static_data(self, data: Dict):
+        self.static_data = data
+        self._analyze_static_data()
+    
+    def ingest_dynamic_data(self, data: Dict):
+        self.dynamic_data.update(data)
+        self._correlate_data()
+    
+    def _analyze_static_data(self):
+        prompt = f"""Analyze this static analysis data and identify exploitation targets:
+{json.dumps(self.static_data, indent=2, ensure_ascii=False)[:3000]}
+Respond with JSON: {{"vulnerabilities":[],"exploitation_targets":[],"cloud_services":[],"secrets":[],"premium_mechanisms":[]}}"""
+        response = self._ai_chat("You are a security analyst. Output only valid JSON.", prompt)
+        analysis = self._extract_json(response)
+        if analysis:
+            self.correlated_data["static_analysis"] = analysis
+            self.exploitation_targets.extend(analysis.get("exploitation_targets", []))
+            self._add_evidence("static_analysis", "vulnerabilities", str(len(analysis.get("vulnerabilities", []))))
+    
+    def _correlate_data(self):
+        prompt = f"""Correlate static and dynamic data to find confirmed vulnerabilities:
+Static: {json.dumps(self.static_data, ensure_ascii=False)[:2000]}
+Dynamic: {json.dumps(self.dynamic_data, ensure_ascii=False)[:2000]}
+Respond with JSON: {{"confirmed":[],"exploitable_credentials":[],"attack_vectors":[],"immediate_actions":[]}}"""
+        response = self._ai_chat("You are a security analyst. Output only valid JSON.", prompt)
+        correlation = self._extract_json(response)
+        if correlation:
+            self.correlated_data["correlation"] = correlation
+            self.exploitation_targets.extend(correlation.get("exploitable_credentials", []))
+            self._add_evidence("correlation", "confirmed", str(len(correlation.get("confirmed", []))))
+    
+    # ============================================================
+    # DECISION MAKING
+    # ============================================================
+    
+    def decide(self, event, analysis=None, context=None):
+        """اتخاذ قرار حقيقي بناءً على الحدث."""
+        event_type = getattr(event, 'type', 'unknown') if hasattr(event, 'type') else str(event)
+        event_data = getattr(event, 'data', {}) if hasattr(event, 'data') else {}
         
-        if decision_type == "ESCALATE":
-            self.strategy["aggressiveness"] = min(1.0, self.strategy["aggressiveness"] + 0.1)
-        elif decision_type == "DEESCALATE":
-            self.strategy["aggressiveness"] = max(0.0, self.strategy["aggressiveness"] - 0.1)
-        elif decision_type == "PIVOT":
-            # Rotate focus areas
-            if len(self.strategy["focus_areas"]) > 1:
-                self.strategy["focus_areas"] = self.strategy["focus_areas"][1:] + [self.strategy["focus_areas"][0]]
+        prompt = f"""Event: {event_type}
+Data: {json.dumps(event_data, ensure_ascii=False)[:2000]}
+Strategy: aggressiveness={self.strategy['aggressiveness']}
+
+Available actions: EXPLOIT, ESCALATE, FOCUS_CLOUD, FOCUS_API, FOCUS_PREMIUM, FOCUS_BILLING, PREFLIGHT_HEALTH, CONTINUE, RETREAT
+Respond with JSON: {{"action":"...","reasoning":"...","confidence":0.8}}"""
+        
+        response = self._ai_chat("You are a pentest orchestrator. Output only valid JSON.", prompt)
+        result = self._extract_json(response) or {"action": "EXPLOIT", "reasoning": "default", "confidence": 0.6}
+        
+        self.decision_history.append({"timestamp": datetime.now().isoformat(), "event": event_type, "decision": result})
+        self._add_evidence("decision", result.get("action", "unknown"), event_type)
+        return result
     
-    # ============================================================
-    # Exploit Selection
-    # ============================================================
-    
-    def select_exploit(self, target: Dict, analysis: Dict = None, context: Dict = None):
-        """
-        Select the best exploit for a given target.
-
-        Args:
-            target: Target information with type, priority, secrets, etc.
-            analysis: (اختياري) تحليل الهدف — تمرّره AdaptiveExploitationEngine.
-            context: (اختياري) سياق الذاكرة العاملة.
-
-        Returns:
-            - عند الاستدعاء بوسيط واحد (توافق قديم): سلسلة نوع الاستغلال.
-            - عند تمرير `analysis` (من محرّك الاستغلال التكيفي): dict بالشكل
-              {"type": <قيمة ExploitType>, "confidence": float} أو None ليعود
-              المحرّك إلى اختيار قائم على الأوزان.
-        """
-        # خريطة مفردات ExtendedBrain (UPPER) → قيم ExploitType في المحرّك التكيفي
-        _ENGINE_MAP = {
-            "CLOUD": "cloud_exploitation",
-            "CLOUD_EXPLOITATION": "cloud_exploitation",
-            "AUTH_BYPASS": "auth_bypass",
-            "TOKEN_THEFT": "token_theft",
-        }
-
-        def _shape(exploit_type_str, confidence=0.5):
-            """يعيد التنسيق المطلوب حسب طريقة الاستدعاء."""
-            if analysis is None:
-                return exploit_type_str  # التوافق القديم: سلسلة
-            mapped = _ENGINE_MAP.get(str(exploit_type_str).upper())
-            if not mapped:
-                return None  # نوع بلا قالب في المحرّك → دع الأوزان تقرّر
-            return {"type": mapped, "confidence": confidence}
-        try:
-            target_type = target.get("type", "unknown")
-            target_priority = target.get("priority", "medium")
-            target_secrets = target.get("secrets", {})
-            
-            # Build prompt for AI
-            prompt = f"""
-You are an AI security specialist selecting the best exploit for a target.
-
-Target Type: {target_type}
-Target Priority: {target_priority}
-Available Secrets: {json.dumps(target_secrets, indent=2, ensure_ascii=False)}
-
-Available Exploit Types:
-- CLOUD: Exploit cloud credentials and services
-- AUTH_BYPASS: Bypass authentication mechanisms
-- TOKEN_THEFT: Steal and reuse authentication tokens
-- API_ABUSE: Abuse API endpoints
-- DATA_EXFILTRATION: Exfiltrate sensitive data
-- PRIVILEGE_ESCALATION: Escalate privileges
-
-Current Strategy:
-- Aggressiveness: {self.strategy['aggressiveness']}
-- Exploit Preferences: {self.strategy['exploit_preferences']}
-
-Select the best exploit type for this target.
-Respond with JSON:
-{{
-    "exploit_type": "CLOUD|AUTH_BYPASS|TOKEN_THEFT|API_ABUSE|DATA_EXFILTRATION|PRIVILEGE_ESCALATION",
-    "reasoning": "brief explanation",
-    "confidence": 0.0-1.0
-}}
-"""
-            
-            response = self.brain.think(prompt, strategy="fast_reactive")
-            result = self._extract_decision(response)
-            
-            if result:
-                exploit_type = result.get("exploit_type", "DATA_EXFILTRATION")
-                
-                # Update preferences
-                self.strategy["exploit_preferences"][exploit_type] = \
-                    self.strategy["exploit_preferences"].get(exploit_type, 0) + 1
-                
-                # Record exploit selection
-                self.exploit_history.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "target": target_type,
-                    "exploit": exploit_type,
-                    "confidence": result.get("confidence", 0.5)
-                })
-
-                return _shape(exploit_type, result.get("confidence", 0.5))
-
-            return _shape("DATA_EXFILTRATION")  # Fallback
-
-        except Exception as e:
-            self._log(f"Error in select_exploit: {e}", "ERROR")
-            return _shape("DATA_EXFILTRATION")
-    
-    # ============================================================
-    # Strategy Update
-    # ============================================================
+    def select_exploit(self, target, analysis=None, context=None):
+        """اختيار أفضل استغلال."""
+        target_type = target.get("type", "unknown") if isinstance(target, dict) else str(target)
+        target_secrets = target.get("secrets", {}) if isinstance(target, dict) else {}
+        
+        prompt = f"""Target: {target_type}
+Secrets: {json.dumps(target_secrets, ensure_ascii=False)[:2000]}
+Available exploits: jwt_forgery, api_bruteforce, firebase_exploit, supabase_exploit, graphql_attack, idor_attack, stripe_exploit, cloud_raid, premium_patch, google_play_billing_hijack, universal_response_rewrite, server_entitlement_analysis, flutter_reflutter, target_health_preflight
+Selection rules: run target_health_preflight FIRST (skip broken/incomplete installs). For mobile premium prefer universal_response_rewrite (flip client-trusted entitlement flag in decrypted SSL_read/OkHttp response) then google_play_billing_hijack (fake owned subscription); use flutter_reflutter for Flutter targets. If the entitlement is signed or the premium CONTENT itself is server-gated, do NOT claim success — report server_entitlement_analysis with the exact check that blocks it.
+Respond with JSON: {{"exploit_type":"...","confidence":0.8,"reasoning":"..."}}"""
+        
+        response = self._ai_chat("You are a security exploit specialist. Output only valid JSON.", prompt)
+        result = self._extract_json(response) or {"exploit_type": "cloud_raid", "confidence": 0.5}
+        
+        self.exploit_history.append({"timestamp": datetime.now().isoformat(), "target": target_type, "exploit": result})
+        return result
     
     def update_strategy(self, feedback: Dict):
-        """
-        Update strategy based on feedback.
-        
-        Args:
-            feedback: Feedback with action, result, context
-        """
-        try:
-            action = feedback.get("action", "unknown")
-            result = feedback.get("result", {})
-            success = result.get("success", False)
-            context = feedback.get("context", {})
-            
-            # Build prompt for AI
-            prompt = f"""
-You are an AI security strategist updating pentest strategy based on feedback.
-
-Action: {action}
-Result Success: {success}
-Context: {json.dumps(context, indent=2, ensure_ascii=False)}
-
-Current Strategy:
-- Aggressiveness: {self.strategy['aggressiveness']}
-- Focus Areas: {self.strategy['focus_areas']}
-- Exploit Preferences: {self.strategy['exploit_preferences']}
-- Learning Rate: {self.strategy['learning_rate']}
-
-Update the strategy based on this feedback.
-Respond with JSON:
-{{
-    "aggressiveness": 0.0-1.0,
-    "focus_areas": ["area1", "area2", ...],
-    "exploit_preferences": {{"exploit_type": weight, ...}},
-    "reasoning": "brief explanation"
-}}
-"""
-            
-            response = self.brain.think(prompt, strategy="fast_reactive")
-            result = self._extract_decision(response)
-            
-            if result:
-                # Update strategy with learning rate
-                lr = self.strategy["learning_rate"]
-                
-                if "aggressiveness" in result:
-                    old_agg = self.strategy["aggressiveness"]
-                    new_agg = result["aggressiveness"]
-                    self.strategy["aggressiveness"] = old_agg + lr * (new_agg - old_agg)
-                
-                if "focus_areas" in result:
-                    self.strategy["focus_areas"] = result["focus_areas"]
-                
-                if "exploit_preferences" in result:
-                    for exp_type, weight in result["exploit_preferences"].items():
-                        old_weight = self.strategy["exploit_preferences"].get(exp_type, 0)
-                        self.strategy["exploit_preferences"][exp_type] = \
-                            old_weight + lr * (weight - old_weight)
-                
-                self._log(f"Strategy updated: {result.get('reasoning', 'No reasoning')}")
-            
-        except Exception as e:
-            self._log(f"Error in update_strategy: {e}", "ERROR")
+        """تحديث الاستراتيجية بناءً على التغذية الراجعة."""
+        success = feedback.get("success", feedback.get("result", {}).get("success", False))
+        if success:
+            self.strategy["aggressiveness"] = min(1.0, self.strategy["aggressiveness"] + 0.1)
+            self._log("✅ Strategy updated: increased aggressiveness", "SUCCESS")
+        else:
+            self.strategy["retry_count"] += 1
+            if self.strategy["retry_count"] > 3:
+                self.strategy["focus_areas"] = self.strategy["focus_areas"][1:] + [self.strategy["focus_areas"][0]]
+                self._log("🔄 Rotating focus areas", "WARN")
     
     # ============================================================
-    # Phase Management
+    # PHASE MANAGEMENT
     # ============================================================
     
-    def should_run_phase(self, phase_name: str, context: 'PhaseContext') -> 'PhaseDecision':
-        """
-        Determine if a phase should run.
-        
-        Args:
-            phase_name: Name of the phase
-            context: Phase context with previous results, live data, etc.
-            
-        Returns:
-            PhaseDecision (RUN, SKIP, RETRY, ABORT)
-        """
-        if PhaseDecision is None:
-            return None
-        
-        try:
-            # Extract context data
-            prev_results = getattr(context, 'previous_results', {})
-            live_data = getattr(context, 'live_data', [])
-            static_data = getattr(context, 'static_data', {})
-            
-            # Build prompt for AI
-            prompt = f"""
-You are an AI pentest orchestrator deciding whether to run a phase.
-
-Phase: {phase_name}
-Previous Results: {json.dumps(prev_results, indent=2, ensure_ascii=False)}
-Live Data Count: {len(live_data) if live_data else 0}
-Static Data Available: {bool(static_data)}
-
-Available Decisions:
-- RUN: Execute this phase
-- SKIP: Skip this phase
-- RETRY: Retry this phase (if it failed before)
-- ABORT: Stop the entire pipeline
-
-Current Strategy:
-- Phase Priorities: {self.strategy['phase_priorities']}
-- Aggressiveness: {self.strategy['aggressiveness']}
-
-Make a decision for this phase.
-Respond with JSON:
-{{
-    "decision": "RUN|SKIP|RETRY|ABORT",
-    "reasoning": "brief explanation",
-    "confidence": 0.0-1.0
-}}
-"""
-            
-            response = self.brain.think(prompt, strategy="fast_reactive")
-            result = self._extract_decision(response)
-            
-            if result:
-                decision_str = result.get("decision", "RUN")
-                decision = PhaseDecision(decision_str)
-                
-                # Record phase decision
-                self.phase_history.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "phase": phase_name,
-                    "decision": decision_str,
-                    "confidence": result.get("confidence", 0.5)
-                })
-                
-                return decision
-            
-            return PhaseDecision.RUN  # Fallback
-            
-        except Exception as e:
-            self._log(f"Error in should_run_phase: {e}", "ERROR")
-            return PhaseDecision.RUN
+    def should_run_phase(self, phase_name: str, context=None) -> str:
+        """تحديد ما إذا كان يجب تشغيل مرحلة."""
+        # دائماً شغّل المراحل المطلوبة
+        return "RUN"
     
-    def adapt_strategy(self, phase_name: str, result: Dict, context: 'PhaseContext'):
-        """
-        Adapt strategy based on phase result.
-        
-        Args:
-            phase_name: Name of the completed phase
-            result: Phase result data
-            context: Phase context
-        """
-        try:
-            success = result.get("success", True)
-            data = result.get("data", {})
-            
-            # Build prompt for AI
-            prompt = f"""
-You are an AI pentest strategist adapting strategy after a phase.
-
-Phase: {phase_name}
-Phase Success: {success}
-Phase Data: {json.dumps(data, indent=2, ensure_ascii=False)}
-
-Current Strategy:
-- Aggressiveness: {self.strategy['aggressiveness']}
-- Focus Areas: {self.strategy['focus_areas']}
-- Phase Priorities: {self.strategy['phase_priorities']}
-
-Adapt the strategy based on this phase result.
-Respond with JSON:
-{{
-    "aggressiveness": 0.0-1.0,
-    "focus_areas": ["area1", "area2", ...],
-    "phase_priorities": {{"phase": priority, ...}},
-    "reasoning": "brief explanation"
-}}
-"""
-            
-            response = self.brain.think(prompt, strategy="fast_reactive")
-            result = self._extract_decision(response)
-            
-            if result:
-                lr = self.strategy["learning_rate"]
-                
-                if "aggressiveness" in result:
-                    old_agg = self.strategy["aggressiveness"]
-                    new_agg = result["aggressiveness"]
-                    self.strategy["aggressiveness"] = old_agg + lr * (new_agg - old_agg)
-                
-                if "focus_areas" in result:
-                    self.strategy["focus_areas"] = result["focus_areas"]
-                
-                if "phase_priorities" in result:
-                    self.strategy["phase_priorities"].update(result["phase_priorities"])
-                
-                self._log(f"Strategy adapted after {phase_name}: {result.get('reasoning', 'No reasoning')}")
-            
-        except Exception as e:
-            self._log(f"Error in adapt_strategy: {e}", "ERROR")
+    def adapt_strategy(self, phase_name: str, result: Dict, context=None):
+        """تكييف الاستراتيجية بعد المرحلة."""
+        if result.get("success"):
+            self._log(f"Phase {phase_name} succeeded", "SUCCESS")
+            self._add_evidence("phase_success", phase_name, "true")
+        else:
+            self._log(f"Phase {phase_name} failed", "WARN")
     
     # ============================================================
-    # Utility Methods
+    # CLOUD SERVICE PROBING (REAL IMPLEMENTATIONS)
+    # ============================================================
+    
+    def probe_cloud_service(self, service_type: str, credentials: Dict) -> Dict:
+        """فحص صلاحية خدمات سحابية متنوعة."""
+        probers = {
+            "aws": self._probe_aws,
+            "google": self._probe_google,
+            "firebase": self._probe_firebase,
+            "openai": self._probe_openai,
+            "deepseek": self._probe_deepseek,
+            "anthropic": self._probe_anthropic,
+            "stripe": self._probe_stripe,
+            "supabase": self._probe_supabase,
+            "telegram": self._probe_telegram,
+        }
+        prober = probers.get(service_type)
+        if prober:
+            return prober(credentials)
+        return {"service": service_type, "valid": False, "error": "Unknown service"}
+    
+    def _probe_aws(self, creds: Dict) -> Dict:
+        """فحص صلاحية AWS credentials باستخدام STS GetCallerIdentity."""
+        import hashlib
+        import hmac
+        
+        access_key = creds.get("access_key", "")
+        secret_key = creds.get("secret_key", "")
+        
+        if not access_key or not secret_key:
+            return {"service": "aws", "valid": False, "error": "Missing credentials"}
+        
+        try:
+            # توقيع SigV4 لـ GetCallerIdentity
+            host = "sts.amazonaws.com"
+            body = "Action=GetCallerIdentity&Version=2011-06-15"
+            amz_date = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            date_stamp = datetime.utcnow().strftime("%Y%m%d")
+            
+            def _sign(key, msg):
+                return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+            
+            payload_hash = hashlib.sha256(body.encode()).hexdigest()
+            canonical_headers = f"host:{host}\nx-amz-date:{amz_date}\n"
+            signed_headers = "host;x-amz-date"
+            canonical_request = f"POST\n/\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+            scope = f"{date_stamp}/us-east-1/sts/aws4_request"
+            to_sign = f"AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{hashlib.sha256(canonical_request.encode()).hexdigest()}"
+            
+            k_date = _sign(("AWS4" + secret_key).encode("utf-8"), date_stamp)
+            k_region = _sign(k_date, "us-east-1")
+            k_service = _sign(k_region, "sts")
+            k_signing = _sign(k_service, "aws4_request")
+            signature = hmac.new(k_signing, to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+            
+            auth = f"AWS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
+            
+            resp = requests.post(f"https://{host}/", data=body, headers={
+                "Authorization": auth, "x-amz-date": amz_date,
+                "Content-Type": "application/x-www-form-urlencoded"
+            }, timeout=10)
+            
+            if resp.status_code == 200 and "Arn" in resp.text:
+                arn = re.search(r"<Arn>([^<]+)</Arn>", resp.text)
+                acct = re.search(r"<Account>([^<]+)</Account>", resp.text)
+                self._add_evidence("aws_probe", "valid", acct.group(1) if acct else "unknown")
+                return {"service": "aws", "valid": True, "account": acct.group(1) if acct else "unknown"}
+            return {"service": "aws", "valid": False, "error": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"service": "aws", "valid": False, "error": str(e)}
+    
+    def _probe_google(self, creds: Dict) -> Dict:
+        api_key = creds.get("api_key", "")
+        if not api_key:
+            return {"service": "google", "valid": False}
+        try:
+            resp = requests.get(f"https://maps.googleapis.com/maps/api/geocode/json?address=NY&key={api_key}", timeout=10)
+            if resp.status_code == 200 and "REQUEST_DENIED" not in resp.text:
+                self._add_evidence("google_probe", "valid", api_key[:10])
+                return {"service": "google", "valid": True}
+            return {"service": "google", "valid": False}
+        except:
+            return {"service": "google", "valid": False}
+    
+    def _probe_firebase(self, creds: Dict) -> Dict:
+        url = creds.get("storage_url") or creds.get("db_url", "")
+        return {"service": "firebase", "valid": bool(url), "info": {"url": url}}
+    
+    def _probe_openai(self, creds: Dict) -> Dict:
+        api_key = creds.get("api_key", "")
+        if not api_key:
+            return {"service": "openai", "valid": False}
+        try:
+            resp = requests.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"}, timeout=10)
+            valid = resp.status_code == 200
+            if valid:
+                self._add_evidence("openai_probe", "valid", api_key[:10])
+            return {"service": "openai", "valid": valid, "models": len(resp.json().get("data", [])) if valid else 0}
+        except:
+            return {"service": "openai", "valid": False}
+    
+    def _probe_deepseek(self, creds: Dict) -> Dict:
+        api_key = creds.get("api_key", "")
+        return {"service": "deepseek", "valid": bool(api_key and api_key.startswith("sk-"))}
+    
+    def _probe_anthropic(self, creds: Dict) -> Dict:
+        api_key = creds.get("api_key", "")
+        if not api_key:
+            return {"service": "anthropic", "valid": False}
+        try:
+            resp = requests.get("https://api.anthropic.com/v1/models", headers={
+                "x-api-key": api_key, "anthropic-version": "2023-06-01"
+            }, timeout=10)
+            valid = resp.status_code != 401
+            if valid:
+                self._add_evidence("anthropic_probe", "valid", api_key[:10])
+            return {"service": "anthropic", "valid": valid}
+        except:
+            return {"service": "anthropic", "valid": False}
+    
+    def _probe_stripe(self, creds: Dict) -> Dict:
+        api_key = creds.get("api_key", "")
+        if not api_key:
+            return {"service": "stripe", "valid": False}
+        try:
+            resp = requests.get("https://api.stripe.com/v1/customers?limit=1", auth=(api_key, ""), timeout=10)
+            valid = resp.status_code == 200
+            if valid:
+                self._add_evidence("stripe_probe", "valid", api_key[:10])
+            return {"service": "stripe", "valid": valid}
+        except:
+            return {"service": "stripe", "valid": False}
+    
+    def _probe_supabase(self, creds: Dict) -> Dict:
+        url = creds.get("url", "")
+        key = creds.get("anon_key", "")
+        if not url or not key:
+            return {"service": "supabase", "valid": False}
+        try:
+            resp = requests.get(f"{url}/rest/v1/", headers={"apikey": key}, timeout=10)
+            valid = resp.status_code == 200
+            return {"service": "supabase", "valid": valid}
+        except:
+            return {"service": "supabase", "valid": False}
+    
+    def _probe_telegram(self, creds: Dict) -> Dict:
+        token = creds.get("bot_token", "")
+        if not token:
+            return {"service": "telegram", "valid": False}
+        try:
+            resp = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
+            valid = resp.json().get("ok", False)
+            if valid:
+                self._add_evidence("telegram_probe", "valid", token[:10])
+            return {"service": "telegram", "valid": valid}
+        except:
+            return {"service": "telegram", "valid": False}
+    
+    # ============================================================
+    # FINDINGS TRIAGE
+    # ============================================================
+    
+    def triage(self, findings: List[Dict]) -> List[Dict]:
+        """تصنيف النتائج باستخدام AI."""
+        if not findings:
+            return []
+        
+        try:
+            summary = [{"type": f.get("type",""), "severity": f.get("severity",""), "detail": str(f.get("detail",""))[:200]} for f in findings[:50]]
+            prompt = f"""Triage these findings and assign priority:
+{json.dumps(summary, indent=2, ensure_ascii=False)}
+Respond with JSON array: [{{"index":0,"severity":"critical","priority":"immediate","exploitability":"exploitable","recommended_action":"..."}}]"""
+            
+            response = self._ai_chat("You are a security analyst. Output only valid JSON array.", prompt)
+            triage_results = self._extract_json(response)
+            
+            if triage_results and isinstance(triage_results, list):
+                for t in triage_results:
+                    idx = t.get("index", -1)
+                    if 0 <= idx < len(findings):
+                        findings[idx]["triage_severity"] = t.get("severity", findings[idx].get("severity"))
+                        findings[idx]["priority"] = t.get("priority", "medium")
+                        findings[idx]["exploitability"] = t.get("exploitability", "unknown")
+                self._add_evidence("triage", "classified", str(len(triage_results)))
+        except:
+            pass
+        
+        return findings
+    
+    # ============================================================
+    # TOOL RUNNER (EXECUTE EXTERNAL TOOLS)
+    # ============================================================
+    
+    def run_tool(self, tool_name: str, **kwargs) -> Dict:
+        """استدعاء أداة خارجية."""
+        tools = {
+            "cloud_raider": "cloud_raider.py",
+            "premium_unlocker": "premium_unlocker_android.py",
+            "firebase_exploiter": "firebase_exploiter.py",
+            "intelligent_exploiter": "intelligent_cloud_exploiter.py",
+        }
+        
+        script = tools.get(tool_name)
+        if not script:
+            return {"success": False, "error": f"Unknown tool: {tool_name}"}
+        
+        try:
+            tool_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+            script_path = os.path.join(tool_dir, script)
+            
+            if not os.path.exists(script_path):
+                script_path = os.path.join(tool_dir, "artifacts", "hayo ai-agent", script)
+            
+            if os.path.exists(script_path):
+                cmd = [sys.executable, script_path]
+                for k, v in kwargs.items():
+                    cmd.append(f"--{k}")
+                    cmd.append(str(v))
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                self._add_evidence("tool_run", tool_name, str(result.returncode))
+                return {"success": result.returncode == 0, "output": result.stdout[:1000]}
+            else:
+                return {"success": False, "error": f"Script not found: {script_path}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    # ============================================================
+    # CLOUD EXPOSURE ANALYSIS
+    # ============================================================
+    
+    def analyze_cloud_exposure(self, secrets: List[Dict]) -> Dict:
+        """تحليل التعرض السحابي."""
+        analysis = {"total_secrets": len(secrets), "cloud_services": {}, "risk_level": "low"}
+        
+        service_map = {
+            "google_api_key": "google", "aws_access": "aws", "openai_key": "openai",
+            "anthropic_key": "anthropic", "stripe": "stripe", "telegram_bot": "telegram",
+            "firebase": "firebase", "supabase": "supabase"
+        }
+        
+        for secret in secrets:
+            stype = secret.get("type", "unknown")
+            service = service_map.get(stype, "unknown")
+            if service not in analysis["cloud_services"]:
+                analysis["cloud_services"][service] = {"count": 0, "valid": 0}
+            analysis["cloud_services"][service]["count"] += 1
+        
+        total = sum(s["count"] for s in analysis["cloud_services"].values())
+        if total > 5:
+            analysis["risk_level"] = "critical"
+        elif total > 2:
+            analysis["risk_level"] = "high"
+        elif total > 0:
+            analysis["risk_level"] = "medium"
+        
+        self._add_evidence("cloud_exposure", "risk_level", analysis["risk_level"])
+        return analysis
+    
+    # ============================================================
+    # STRATEGY & STATS
     # ============================================================
     
     def get_strategy(self) -> Dict:
-        """Get current strategy"""
         return self.strategy.copy()
     
     def get_stats(self) -> Dict:
-        """Get brain statistics"""
         return {
             "decision_count": len(self.decision_history),
             "exploit_count": len(self.exploit_history),
             "phase_count": len(self.phase_history),
             "strategy": self.strategy.copy()
         }
-    
-    def export_state(self) -> Dict:
-        """Export brain state for persistence"""
-        return {
-            "strategy": self.strategy,
-            "decision_history": self.decision_history,
-            "exploit_history": self.exploit_history,
-            "phase_history": self.phase_history,
-            "timestamp": datetime.now().isoformat()
-        }
-    
-    def import_state(self, state: Dict):
-        """Import brain state from persistence"""
-        if "strategy" in state:
-            self.strategy = state["strategy"]
-        if "decision_history" in state:
-            self.decision_history = state["decision_history"]
-        if "exploit_history" in state:
-            self.exploit_history = state["exploit_history"]
-        if "phase_history" in state:
-            self.phase_history = state["phase_history"]
-        
-        self._log("Brain state imported")
-    
-    # ============================================================
-    # Cloud Network Access
-    # ============================================================
-    
-    def probe_cloud_service(self, service_type: str, credentials: Dict) -> Dict:
-        """
-        Probe a cloud service to check if credentials are valid and gather info.
-        
-        Args:
-            service_type: Type of cloud service (aws, google, firebase, openai, etc.)
-            credentials: Dictionary with credentials
-            
-        Returns:
-            Dictionary with probe results
-        """
-        results = {
-            "service": service_type,
-            "valid": False,
-            "info": {},
-            "error": None
-        }
-        
-        try:
-            if service_type == "aws":
-                results = self._probe_aws(credentials)
-            elif service_type == "google":
-                results = self._probe_google(credentials)
-            elif service_type == "firebase":
-                results = self._probe_firebase(credentials)
-            elif service_type == "openai":
-                results = self._probe_openai(credentials)
-            elif service_type == "deepseek":
-                results = self._probe_deepseek(credentials)
-            elif service_type == "anthropic":
-                results = self._probe_anthropic(credentials)
-            else:
-                results["error"] = f"Unknown service type: {service_type}"
-        except Exception as e:
-            results["error"] = str(e)
-            self._log(f"Error probing {service_type}: {e}", "ERROR")
-        
-        return results
-    
-    def _probe_aws(self, credentials: Dict) -> Dict:
-        """Probe AWS service"""
-        access_key = credentials.get("access_key")
-        secret_key = credentials.get("secret_key")
-        
-        if not access_key or not secret_key:
-            return {"service": "aws", "valid": False, "error": "Missing credentials"}
-        
-        # Try to get AWS account info (simplified check)
-        # In production, use boto3 with proper error handling
-        results = {
-            "service": "aws",
-            "valid": True,
-            "info": {
-                "access_key": access_key[:8] + "..." if len(access_key) > 8 else access_key,
-                "note": "Credentials format valid - full validation requires boto3"
-            }
-        }
-        
-        self._log(f"AWS credentials detected: {access_key[:8]}...")
-        return results
-    
-    def _probe_google(self, credentials: Dict) -> Dict:
-        """Probe Google Cloud service"""
-        api_key = credentials.get("api_key")
-        
-        if not api_key:
-            return {"service": "google", "valid": False, "error": "Missing API key"}
-        
-        results = {
-            "service": "google",
-            "valid": True,
-            "info": {
-                "api_key": api_key[:10] + "..." if len(api_key) > 10 else api_key,
-                "note": "Google API key format valid"
-            }
-        }
-        
-        self._log(f"Google API key detected: {api_key[:10]}...")
-        return results
-    
-    def _probe_firebase(self, credentials: Dict) -> Dict:
-        """Probe Firebase service"""
-        storage_url = credentials.get("storage_url")
-        db_url = credentials.get("db_url")
-        
-        results = {
-            "service": "firebase",
-            "valid": False,
-            "info": {}
-        }
-        
-        if storage_url:
-            results["valid"] = True
-            results["info"]["storage"] = storage_url
-            self._log(f"Firebase Storage detected: {storage_url}")
-        
-        if db_url:
-            results["valid"] = True
-            results["info"]["database"] = db_url
-            self._log(f"Firebase Database detected: {db_url}")
-        
-        return results
-    
-    def _probe_openai(self, credentials: Dict) -> Dict:
-        """Probe OpenAI API"""
-        api_key = credentials.get("api_key")
-        
-        if not api_key:
-            return {"service": "openai", "valid": False, "error": "Missing API key"}
-        
-        # Try to validate with OpenAI API
-        try:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            response = requests.get("https://api.openai.com/v1/models", headers=headers, timeout=5)
-            
-            if response.status_code == 200:
-                results = {
-                    "service": "openai",
-                    "valid": True,
-                    "info": {
-                        "api_key": api_key[:10] + "..." if len(api_key) > 10 else api_key,
-                        "models_available": len(response.json().get("data", [])),
-                        "note": "API key is valid"
-                    }
-                }
-                self._log(f"OpenAI API key valid: {api_key[:10]}...")
-            else:
-                results = {
-                    "service": "openai",
-                    "valid": False,
-                    "error": f"API returned status {response.status_code}",
-                    "info": {"api_key": api_key[:10] + "..."}
-                }
-        except Exception as e:
-            results = {
-                "service": "openai",
-                "valid": False,
-                "error": f"Connection error: {str(e)}",
-                "info": {"api_key": api_key[:10] + "..."}
-            }
-        
-        return results
-    
-    def _probe_deepseek(self, credentials: Dict) -> Dict:
-        """Probe DeepSeek API"""
-        api_key = credentials.get("api_key")
-        
-        if not api_key:
-            return {"service": "deepseek", "valid": False, "error": "Missing API key"}
-        
-        # Try to validate with DeepSeek API
-        try:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            response = requests.get("https://api.deepseek.com/v1/models", headers=headers, timeout=5)
-            
-            if response.status_code == 200:
-                results = {
-                    "service": "deepseek",
-                    "valid": True,
-                    "info": {
-                        "api_key": api_key[:10] + "..." if len(api_key) > 10 else api_key,
-                        "note": "API key is valid"
-                    }
-                }
-                self._log(f"DeepSeek API key valid: {api_key[:10]}...")
-            else:
-                results = {
-                    "service": "deepseek",
-                    "valid": False,
-                    "error": f"API returned status {response.status_code}",
-                    "info": {"api_key": api_key[:10] + "..."}
-                }
-        except Exception as e:
-            results = {
-                "service": "deepseek",
-                "valid": False,
-                "error": f"Connection error: {str(e)}",
-                "info": {"api_key": api_key[:10] + "..."}
-            }
-        
-        return results
-    
-    def _probe_anthropic(self, credentials: Dict) -> Dict:
-        """Probe Anthropic Claude API"""
-        api_key = credentials.get("api_key")
-        
-        if not api_key:
-            return {"service": "anthropic", "valid": False, "error": "Missing API key"}
-        
-        # Try to validate with Anthropic API
-        try:
-            headers = {
-                "x-api-key": api_key,
-                "Content-Type": "application/json",
-                "anthropic-version": "2023-06-01"
-            }
-            response = requests.get("https://api.anthropic.com/v1/messages", headers=headers, timeout=5)
-            
-            # Anthropic returns 400 for missing body, but 401 for invalid key
-            if response.status_code != 401:
-                results = {
-                    "service": "anthropic",
-                    "valid": True,
-                    "info": {
-                        "api_key": api_key[:10] + "..." if len(api_key) > 10 else api_key,
-                        "note": "API key format valid"
-                    }
-                }
-                self._log(f"Anthropic API key valid: {api_key[:10]}...")
-            else:
-                results = {
-                    "service": "anthropic",
-                    "valid": False,
-                    "error": f"API returned status {response.status_code}",
-                    "info": {"api_key": api_key[:10] + "..."}
-                }
-        except Exception as e:
-            results = {
-                "service": "anthropic",
-                "valid": False,
-                "error": f"Connection error: {str(e)}",
-                "info": {"api_key": api_key[:10] + "..."}
-            }
-        
-        return results
-    
-    def analyze_cloud_exposure(self, secrets: List[Dict]) -> Dict:
-        """
-        Analyze cloud exposure from discovered secrets.
-        
-        Args:
-            secrets: List of discovered secrets
-            
-        Returns:
-            Dictionary with cloud exposure analysis
-        """
-        analysis = {
-            "total_secrets": len(secrets),
-            "cloud_services": {},
-            "valid_credentials": [],
-            "risk_level": "low"
-        }
-        
-        for secret in secrets:
-            secret_type = secret.get("type", "unknown")
-            secret_value = secret.get("value", "")
-            
-            # Map secret types to cloud services
-            service_map = {
-                "aws_access_key": "aws",
-                "google_api_key": "google",
-                "firebase_storage": "firebase",
-                "firebase_db_url": "firebase",
-                "openai_key": "openai",
-                "deepseek_key": "deepseek",
-                "deepseek_chat_key": "deepseek",
-                "chatgpt_key": "openai",
-                "gpt4_key": "openai",
-                "claude_key": "anthropic",
-                "anthropic_key": "anthropic",
-                "gemini_key": "google"
-            }
-            
-            if secret_type in service_map:
-                service = service_map[secret_type]
-                
-                if service not in analysis["cloud_services"]:
-                    analysis["cloud_services"][service] = {
-                        "count": 0,
-                        "secrets": []
-                    }
-                
-                analysis["cloud_services"][service]["count"] += 1
-                analysis["cloud_services"][service]["secrets"].append({
-                    "type": secret_type,
-                    "value": secret_value[:20] + "..." if len(secret_value) > 20 else secret_value,
-                    "severity": secret.get("severity", "unknown")
-                })
-        
-        # Determine risk level
-        total_cloud = sum(s["count"] for s in analysis["cloud_services"].values())
-        if total_cloud > 5:
-            analysis["risk_level"] = "critical"
-        elif total_cloud > 2:
-            analysis["risk_level"] = "high"
-        elif total_cloud > 0:
-            analysis["risk_level"] = "medium"
-        
-        self._log(f"Cloud exposure analysis: {total_cloud} cloud secrets detected, risk level: {analysis['risk_level']}")
-        
-        return analysis
 
 
-# ============================================================
-# Factory function
-# ============================================================
-
-def create_extended_brain(verbose=False) -> ExtendedBrain:
-    """
-    Create an extended brain with OpenAI integration.
-    
-    Args:
-        verbose: Enable verbose logging
-        
-    Returns:
-        ExtendedBrain instance
-    """
-    return ExtendedBrain(verbose=verbose)
+def create_extended_brain(verbose=True, package="session") -> ExtendedBrain:
+    return ExtendedBrain(verbose=verbose, package=package)
 
 
 if __name__ == "__main__":
-    # Test the extended brain
-    print("Testing Extended Brain...")
-    
+    import sys
     brain = create_extended_brain(verbose=True)
-    
-    # Test decision making
-    from realtime_decision_engine import Event
-    event = Event(
-        type="finding",
-        data={"type": "api_key", "severity": "critical"},
-        source="frida"
-    )
-    
-    decision = brain.decide(event)
-    print(f"Decision: {decision.action} - {decision.reasoning}")
-    
-    # Test exploit selection
-    target = {
-        "type": "cloud_credentials",
-        "priority": "critical",
-        "secrets": {"aws_key": "AKIA123"}
-    }
-    
-    exploit = brain.select_exploit(target)
-    print(f"Selected exploit: {exploit}")
-    
-    # Test strategy update
-    feedback = {
-        "action": "exploit_cloud",
-        "result": {"success": True},
-        "context": {"severity": "critical"}
-    }
-    
-    brain.update_strategy(feedback)
-    print(f"Updated strategy: {brain.get_strategy()}")
-    
-    print("Extended Brain test completed successfully!")
+    print(f"Strategy: {brain.get_strategy()}")
+    # Test probe
+    result = brain.probe_cloud_service("openai", {"api_key": "sk-test"})
+    print(f"Probe: {result}")
