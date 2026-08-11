@@ -15,6 +15,44 @@ export type AIProvider = "claude" | "gpt4" | "gemini" | "geminiPro" | "deepseek"
 /** DeepSeek API key — stored as DEEPSEEK_API_KEY or OPENAI_API_KEY_ (both valid) */
 const dsKey = () => process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY_ || "";
 
+/**
+ * OpenRouter (openrouter.ai) — one key → many models, incl. FREE ones. Used as an
+ * automatic fallback so each model slot keeps working when its native key is
+ * missing OR fails (e.g. out of credit) — at zero cost via `:free` models.
+ * Set OPENROUTER_API_KEY. Override any slot's model via OPENROUTER_MODEL_<SLOT>.
+ */
+const orKey = () => process.env.OPENROUTER_API_KEY || "";
+const OPENROUTER_MODEL: Record<AIProvider, string> = {
+  claude:    process.env.OPENROUTER_MODEL_CLAUDE    || "deepseek/deepseek-r1:free",
+  gpt4:      process.env.OPENROUTER_MODEL_GPT4      || "meta-llama/llama-3.3-70b-instruct:free",
+  gemini:    process.env.OPENROUTER_MODEL_GEMINI    || "google/gemini-2.0-flash-exp:free",
+  geminiPro: process.env.OPENROUTER_MODEL_GEMINIPRO || "google/gemini-2.0-flash-exp:free",
+  deepseek:  process.env.OPENROUTER_MODEL_DEEPSEEK  || "deepseek/deepseek-chat:free",
+};
+
+async function callOpenRouter(model: string, systemPrompt: string, userMessage: string, maxTokens = 8192): Promise<string> {
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${orKey()}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://hayoaiagentrailway-production.up.railway.app",
+      "X-Title": "HAYO AI",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: Math.min(maxTokens, 8192),
+      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }],
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+  const data = await res.json() as any;
+  if (!res.ok || data.error) throw new Error(`OpenRouter ${res.status}: ${data.error?.message || JSON.stringify(data).slice(0, 140)}`);
+  const content = data.choices?.[0]?.message?.content || "";
+  if (!content) throw new Error("OpenRouter: رد فارغ");
+  return content;
+}
+
 export interface ProviderConfig {
   id: AIProvider;
   name: string;
@@ -73,7 +111,8 @@ export const PROVIDER_CONFIGS: Record<AIProvider, ProviderConfig> = {
   },
 };
 
-export function isProviderAvailable(provider: AIProvider): boolean {
+/** True only when the provider's OWN (native) key is configured. */
+function isNativeAvailable(provider: AIProvider): boolean {
   if (provider === "claude") {
     return !!(process.env.ANTHROPIC_API_KEY || process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY);
   }
@@ -85,6 +124,11 @@ export function isProviderAvailable(provider: AIProvider): boolean {
   }
   const config = PROVIDER_CONFIGS[provider];
   return !!(process.env[config.envKey]);
+}
+
+/** A slot is usable if it has a native key OR OpenRouter can serve it. */
+export function isProviderAvailable(provider: AIProvider): boolean {
+  return isNativeAvailable(provider) || !!orKey();
 }
 
 export function getAvailableProviders(): ProviderConfig[] {
@@ -112,11 +156,19 @@ export async function callProvider(
     enrichedPrompt = withModelInstruction(resolveModelId(provider), systemPrompt);
   } catch {}
 
-  // Determine the actual provider to use (fallback to best available)
+  // Determine the actual provider to use.
   let actualProvider: AIProvider = provider;
-  if (!isProviderAvailable(provider)) {
-    if (isProviderAvailable("gpt4")) actualProvider = "gpt4";
-    else actualProvider = "deepseek";
+  if (!isNativeAvailable(provider)) {
+    // No native key for this slot → serve it via OpenRouter (free model), keeping the label.
+    if (orKey()) {
+      try {
+        const content = await callOpenRouter(OPENROUTER_MODEL[provider], enrichedPrompt, userMessage);
+        return { content, provider, duration: Date.now() - startTime };
+      } catch (e: any) { console.warn(`[callProvider] openrouter ${provider}:`, e.message?.slice(0, 90)); }
+    }
+    // Else fall back to another native provider that has a key.
+    if (isNativeAvailable("gpt4")) actualProvider = "gpt4";
+    else if (isNativeAvailable("deepseek")) actualProvider = "deepseek";
   }
 
   try {
@@ -243,6 +295,13 @@ export async function callProvider(
       duration: Date.now() - startTime,
     };
   } catch (error: any) {
+    // Native call failed (e.g. out of credit / rate-limited) → OpenRouter free fallback for this slot.
+    if (orKey()) {
+      try {
+        const content = await callOpenRouter(OPENROUTER_MODEL[provider], enrichedPrompt, userMessage);
+        if (content) return { content, provider, duration: Date.now() - startTime };
+      } catch (e: any) { console.warn(`[callProvider] openrouter fallback ${provider}:`, e.message?.slice(0, 90)); }
+    }
     throw new Error(`[${actualProvider}] ${error.message}`);
   }
 }
@@ -371,6 +430,16 @@ export async function callPowerAI(
     if (res.ok && !data.error) return { content: data.choices?.[0]?.message?.content || "", modelUsed: "deepseek-reasoner" };
   }
 
+  // 6. OpenRouter (free models) — last resort so heavy tasks work with no paid keys.
+  if (orKey()) {
+    for (const model of [OPENROUTER_MODEL.claude, OPENROUTER_MODEL.deepseek, OPENROUTER_MODEL.gpt4]) {
+      try {
+        const content = await callOpenRouter(model, systemPrompt, userMessage, maxTokens);
+        if (content) return { content, modelUsed: `openrouter:${model}` };
+      } catch (e: any) { console.warn("[callPowerAI] openrouter error:", e.message?.slice(0, 80)); }
+    }
+  }
+
   throw new Error("لا يوجد نموذج AI قوي متاح. يرجى التحقق من الإعدادات.");
 }
 
@@ -448,6 +517,12 @@ export async function callOfficeAI(
     } catch (e: any) {
       console.warn(`[callOfficeAI] ${model} failed:`, e.message?.slice(0, 80));
     }
+  }
+
+  // 4. OpenRouter (free) fallback
+  if (orKey()) {
+    try { return await callOpenRouter(OPENROUTER_MODEL.deepseek, systemPrompt, userMessage, maxTokens); }
+    catch (e: any) { console.warn("[callOfficeAI] openrouter error:", e.message?.slice(0, 80)); }
   }
 
   throw new Error("لا يوجد مزود AI متاح. يرجى التحقق من الإعدادات.");
