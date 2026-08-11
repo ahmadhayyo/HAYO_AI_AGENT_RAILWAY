@@ -28,7 +28,8 @@ jobs:
           java-version: '17'
 
       - name: Diag - after java
-        run: echo "stage2: java OK -> $(java -version 2>&1 | head -1)" >> android-app/_diag.txt
+        run: |
+          echo "stage2 java OK -> $(java -version 2>&1 | head -1)" >> android-app/_diag.txt
 
       - name: Build debug APK
         working-directory: android-app
