@@ -1,0 +1,59 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="hexbg" x1="80" y1="40" x2="440" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#05221c"/>
+      <stop offset="0.5" stop-color="#071a2e"/>
+      <stop offset="1" stop-color="#0a0f24"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="256" y1="28" x2="256" y2="484" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22ffa6"/>
+      <stop offset="0.5" stop-color="#12e6c8"/>
+      <stop offset="1" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="mono" x1="150" y1="150" x2="380" y2="380" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#eafff6"/>
+      <stop offset="1" stop-color="#7cffd4"/>
+    </linearGradient>
+    <radialGradient id="core" cx="0.5" cy="0.5" r="0.5">
+      <stop stop-color="#ffffff"/>
+      <stop offset="0.4" stop-color="#22ffa6"/>
+      <stop offset="1" stop-color="#0a7d5a" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="g" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- hexagon crest -->
+  <path d="M256 28 L452 140 V372 L256 484 L60 372 V140 Z" fill="url(#hexbg)"/>
+  <path d="M256 28 L452 140 V372 L256 484 L60 372 V140 Z" fill="none" stroke="url(#edge)" stroke-width="9" stroke-linejoin="round"/>
+  <path d="M256 60 L424 156 V356 L256 452 L88 356 V156 Z" fill="none" stroke="#22ffa6" stroke-opacity="0.18" stroke-width="2"/>
+
+  <!-- matrix digital rain streaks -->
+  <g fill="#22ffa6" font-family="Consolas, monospace" font-size="19" opacity="0.5">
+    <text x="118" y="180">1</text><text x="118" y="205">0</text><text x="118" y="230">1</text>
+    <text x="372" y="300">0</text><text x="372" y="325">1</text><text x="372" y="350">1</text>
+  </g>
+  <g stroke="#22ffa6" stroke-width="2" opacity="0.25">
+    <path d="M124 168 V150 M124 232 V252"/><path d="M378 288 V270 M378 352 V372"/>
+  </g>
+
+  <!-- circuit nodes -->
+  <g fill="#12e6c8" opacity="0.85">
+    <circle cx="150" cy="256" r="5"/><circle cx="362" cy="256" r="5"/>
+    <circle cx="256" cy="150" r="5"/><circle cx="256" cy="362" r="5"/>
+  </g>
+
+  <!-- H + 7 cipher monogram -->
+  <g filter="url(#g)">
+    <path d="M182 168 V344" stroke="url(#mono)" stroke-width="34" stroke-linecap="round"/>
+    <path d="M182 256 H300" stroke="url(#mono)" stroke-width="34" stroke-linecap="round"/>
+    <!-- the 7 -->
+    <path d="M296 168 H336 L300 344" stroke="url(#mono)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+
+  <!-- glowing cipher core -->
+  <circle cx="256" cy="256" r="46" fill="url(#core)"/>
+  <circle cx="256" cy="256" r="14" fill="#eafff6"/>
+</svg>

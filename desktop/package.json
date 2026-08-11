@@ -1,0 +1,57 @@
+{
+  "name": "hayo-ai-desktop",
+  "version": "1.0.0",
+  "description": "HAYO AI - واجهة القيادة لسطح المكتب (Windows)",
+  "main": "main.js",
+  "author": "HAYO AI",
+  "license": "MIT",
+  "scripts": {
+    "icons": "node scripts/gen-icons.mjs",
+    "start": "electron .",
+    "dev": "electron .",
+    "dist": "npm run icons && electron-builder --win",
+    "pack": "npm run icons && electron-builder --win --dir"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "png-to-ico": "^2.1.8",
+    "sharp": "^0.33.5"
+  },
+  "build": {
+    "appId": "com.hayo.cipher7",
+    "productName": "HAYO Cipher-7",
+    "copyright": "Copyright © 2026 HAYO Cipher-7",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/**/*",
+      "build/icon.ico"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "HAYO Cipher-7",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "HAYO-Cipher-7-Portable-${version}.${ext}"
+    }
+  }
+}

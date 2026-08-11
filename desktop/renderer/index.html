@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self';"
+    />
+    <title>HAYO Cipher-7</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <canvas id="matrix"></canvas>
+
+    <!-- ===== Title bar ===== -->
+    <header class="titlebar">
+      <div class="titlebar__brand">
+        <img src="../assets/logo.svg" alt="H7" class="titlebar__logo" />
+        <span class="titlebar__name">HAYO&nbsp;Cipher-7</span>
+        <span class="titlebar__tag">لوحة التحكم الموحّدة</span>
+      </div>
+      <div class="titlebar__controls">
+        <button id="btn-min" class="winbtn" title="تصغير"><svg viewBox="0 0 12 12"><rect x="2" y="5.4" width="8" height="1.2"/></svg></button>
+        <button id="btn-max" class="winbtn" title="تكبير"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke-width="1.2"/></svg></button>
+        <button id="btn-close" class="winbtn winbtn--close" title="إغلاق"><svg viewBox="0 0 12 12"><path d="M3 3 L9 9 M9 3 L3 9" stroke-width="1.3"/></svg></button>
+      </div>
+    </header>
+
+    <main class="app">
+      <!-- ===== Hero ===== -->
+      <section class="hero">
+        <div class="hero__badge"><img src="../assets/logo.svg" alt="" /></div>
+        <div class="hero__text">
+          <h1 class="hero__title">HAYO <span class="grad">Cipher-7</span></h1>
+          <p class="hero__desc">
+            محرك الاختبار الديناميكي الشامل — يقود محاكي أندرويد لتحليل التطبيقات واعتراض حركة
+            المرور واختبار الحماية عبر مسار موحّد بقيادة الذكاء الاصطناعي. اختر الجهاز والتطبيق
+            المستهدف من تبويب «الهدف والجهاز»، ثم شغّل الوحدات من الأسفل.
+          </p>
+        </div>
+        <div class="hero__side">
+          <div class="target-badge">
+            <span class="target-badge__label">الجهاز</span>
+            <span id="hero-device" class="target-badge__value">—</span>
+          </div>
+          <div class="target-badge">
+            <span class="target-badge__label">الهدف</span>
+            <span id="hero-pkg" class="target-badge__value">لم يُحدَّد</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Tabs ===== -->
+      <nav class="tabs" id="tabs">
+        <button class="tab is-active" data-tab="target">② الهدف والجهاز</button>
+        <button class="tab" data-tab="static">① التحليل الساكن</button>
+        <button class="tab" data-tab="engines">③ المحرّكات الديناميكية</button>
+        <button class="tab" data-tab="web">🌐 محرك الويب</button>
+        <button class="tab" data-tab="advanced">④ أدوات متقدّمة</button>
+        <button class="tab" data-tab="cloudtools">🔬 أدوات سحابية متقدّمة</button>
+        <button class="tab" data-tab="keytester">🔑 اختبار مفاتيح وروابط</button>
+        <button class="tab" data-tab="settings">⚙ الإعدادات</button>
+      </nav>
+
+      <!-- ===== Panels ===== -->
+      <section class="panels">
+        <!-- Target / device -->
+        <div class="panel is-active" data-panel="target">
+          <div class="field">
+            <label>الجهاز (Emulator / Device)</label>
+            <div class="row">
+              <select id="device-select" class="input mono"></select>
+              <button id="btn-refresh-devices" class="btn btn--ghost">تحديث الأجهزة</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>اسم الحزمة المستهدفة</label>
+            <div class="row">
+              <input id="pkg-input" class="input mono" placeholder="com.example.app" />
+              <button id="btn-refresh-pkgs" class="btn btn--ghost">تحديث القائمة</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>التطبيقات المثبّتة (اضغط للاختيار)</label>
+            <input id="pkg-filter" class="input" placeholder="فلترة القائمة…" />
+            <ul id="pkg-list" class="pkglist"><li class="pkglist__hint">اضغط «تحديث القائمة» لعرض تطبيقات الجهاز.</li></ul>
+          </div>
+        </div>
+
+        <!-- Static analysis -->
+        <div class="panel" data-panel="static">
+          <div class="secgrid" id="grid-static"></div>
+        </div>
+
+        <!-- Dynamic engines -->
+        <div class="panel" data-panel="engines">
+          <div class="pipeline">
+            <div class="pipeline__head">
+              <div>
+                <h3>المسار الكامل بقيادة الذكاء الاصطناعي</h3>
+                <p>ساكن ← ديناميكي ← العقل المدبّر ← السحابة ← الاستغلال ← التقرير — مباشرة داخل اللوحة.</p>
+              </div>
+              <div class="pipeline__dur">
+                <label>مدة المرحلة الديناميكية (ث)</label>
+                <input id="dur-input" class="input mono" value="180" />
+              </div>
+            </div>
+            <div class="row">
+              <button id="btn-pipeline" class="btn btn--danger btn--lg">🤖 تشغيل المسار الكامل</button>
+              <button id="btn-pipeline-stop" class="btn btn--ghost" disabled>⏹ إيقاف</button>
+            </div>
+          </div>
+          <div class="secgrid" id="grid-engines"></div>
+        </div>
+
+                <!-- Web Engine -->
+        <div class="panel" data-panel="web">
+          <div class="pipeline" style="margin-bottom: 20px;">
+            <div class="pipeline__head">
+              <div>
+                <h3>🌐 محرك فحص واختبار أمان الويب (Web Pentest Engine)</h3>
+                <p>فحص شامل للمواقع والواجهات البرمجية (APIs)، اكتشاف الثغرات النشطة والتسلل الهيكلي والتسريب عبر المحرك الذكي.</p>
+              </div>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label>رابط الموقع / النطاق المستهدف (Web Target URL / Domain)</label>
+              <div class="row">
+                <input id="web-url-input" class="input mono" placeholder="https://example.com" value="https://example.com" />
+                <button id="btn-run-full-web-scan" class="btn btn--danger">⚡ تشغيل الفحص الشامل للويب</button>
+              </div>
+            </div>
+            <div class="row" style="margin-top: 10px; align-items: flex-end;">
+              <div class="field" style="flex: 0 0 auto; margin: 0;">
+                <label>مدة فتح الصفحة (ث) — الحدّ الأدنى 60</label>
+                <input id="web-duration-input" class="input mono" style="width: 100px; text-align:center;" value="60" />
+              </div>
+              <div class="field" style="flex: 1; margin: 0;">
+                <label>بريد تسجيل الدخول (اختياري)</label>
+                <input id="web-login-user" class="input mono" placeholder="you@example.com" />
+              </div>
+              <div class="field" style="flex: 1; margin: 0;">
+                <label>كلمة المرور (اختياري — لا تُعرض في السجلّ)</label>
+                <input id="web-login-pass" type="password" class="input mono" placeholder="••••••••" />
+              </div>
+              <div class="field" style="flex: 1; margin: 0;">
+                <label>رابط صفحة تسجيل الدخول (اختياري)</label>
+                <input id="web-login-url" class="input mono" placeholder="https://example.com/login" />
+              </div>
+            </div>
+            <p class="hint" style="margin-top:6px;">إن أدخلت بيانات دخول، سيملأها المحرّك تلقائيًا داخل نافذة المتصفح الحيّة (Chromium مرئي) عند فحص الصفحة أو اختبار الاشتراك، ويكمل التفاعل مع الموقع فعليًا.</p>
+          </div>
+          <div class="secgrid" id="grid-web"></div>
+        </div>
+
+        <!-- Advanced -->
+        <div class="panel" data-panel="advanced">
+          <div class="secgrid" id="grid-advanced"></div>
+        </div>
+
+        <!-- Advanced Cloud Tools (bespoke input forms) -->
+        <div class="panel" data-panel="cloudtools">
+          <p class="hint" style="color: var(--muted); margin-bottom: 14px;">
+            أدوات متقدّمة تتطلّب مدخلات محدّدة (JWT مُستخرَج، تجزئة، رقم مشروع Firebase، ملف تقرير…) بدل رابط أو حزمة بسيطة —
+            نفّذها بعد استخراج القيم من مراحل الفحص السابقة (تجدها في مجلد <code>loot/</code>).
+          </p>
+          <div class="toolcards" id="cloud-tools-list"></div>
+        </div>
+
+        <!-- Key & URL Tester -->
+        <div class="panel" data-panel="keytester">
+          <div class="pipeline" style="margin-bottom: 20px;">
+            <div class="pipeline__head">
+              <div>
+                <h3>🔑 اختبار مفاتيح وروابط (Key & URL Tester)</h3>
+                <p>يكتشف نوع أي مفتاح/رابط تلقائيًا، ويختبره فعليًا عبر الإنترنت الحقيقي مقابل عدّة خدمات/صلاحيات —
+                  فيتّضح بدقة أين هو مفتوح وأين مقيَّد وأين غير صالح. النتيجة الكاملة تظهر في نافذة طرفية منفصلة تُفتَح تلقائيًا.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="toolcard">
+            <div class="toolcard__head">
+              <span class="toolcard__emoji">🧪</span>
+              <div>
+                <h4 class="toolcard__title">فحص فردي</h4>
+                <p class="toolcard__desc">الصق مفتاحًا واحدًا أو رابطًا واحدًا — يكتشف النوع تلقائيًا (OpenAI · Anthropic · Google · Firebase · Stripe · AWS · GitHub · Telegram · SendGrid · JWT · رابط عام) ويفحصه فعليًا.</p>
+              </div>
+            </div>
+            <div class="toolcard__fields" style="grid-template-columns: 2fr 1fr;">
+              <div class="toolcard__field">
+                <label>المفتاح / السرّ / الرابط</label>
+                <input id="kt-value" class="input mono" placeholder="AIzaSy… / sk-… / https://… / eyJhbGciOi…" />
+              </div>
+              <div class="toolcard__field">
+                <label>نوع مفروض (اختياري)</label>
+                <select id="kt-type" class="input mono">
+                  <option value="">— كشف تلقائي —</option>
+                  <optgroup label="نماذج الذكاء الاصطناعي">
+                    <option value="openai_key">OpenAI</option>
+                    <option value="anthropic_key">Anthropic (Claude)</option>
+                    <option value="google_api_key">Google (Gemini)</option>
+                    <option value="deepseek_key">DeepSeek</option>
+                    <option value="groq_key">Groq</option>
+                    <option value="xai_key">xAI (Grok)</option>
+                    <option value="openrouter_key">OpenRouter</option>
+                    <option value="mistral_key">Mistral AI</option>
+                    <option value="cohere_key">Cohere</option>
+                    <option value="perplexity_key">Perplexity</option>
+                    <option value="replicate_key">Replicate</option>
+                    <option value="huggingface_key">HuggingFace</option>
+                  </optgroup>
+                  <optgroup label="خدمات وسحابة">
+                    <option value="stripe_key">Stripe</option>
+                    <option value="github_token">GitHub</option>
+                    <option value="telegram_token">Telegram Bot</option>
+                    <option value="sendgrid_key">SendGrid</option>
+                    <option value="aws_access_key">AWS Access Key</option>
+                  </optgroup>
+                  <optgroup label="أخرى">
+                    <option value="jwt_token">JWT</option>
+                    <option value="url">رابط عام (Firebase/Supabase/S3/API)</option>
+                  </optgroup>
+                </select>
+              </div>
+            </div>
+            <div class="toolcard__fields" style="grid-template-columns: 1fr 1fr;">
+              <div class="toolcard__field">
+                <label>قيمة ثانوية (AWS Secret Key / Supabase anon key / Bearer بديل)</label>
+                <input id="kt-secondary" class="input mono" placeholder="اختياري" />
+              </div>
+              <div class="toolcard__field">
+                <label>رابط أساسي إضافي (لاختبار JWT/مفتاح غير معروف حيًّا)</label>
+                <input id="kt-baseurl" class="input mono" placeholder="https://target-api.com" />
+              </div>
+            </div>
+            <button id="btn-kt-single" class="btn btn--primary btn--sm">🔍 فحص الآن</button>
+          </div>
+
+          <div class="toolcard" style="margin-top:16px;">
+            <div class="toolcard__head">
+              <span class="toolcard__emoji">🧠</span>
+              <div>
+                <h4 class="toolcard__title">الفحص الجماعي بقيادة العقل</h4>
+                <p class="toolcard__desc">الصق كل مستخرجات الفحص (من ملفات <code>loot/</code>) كما هي — سيستخرج العقل المُدرَّب كل المفاتيح/الروابط منها تلقائيًا،
+                  يحدّد الأولوية طبقًا لتعليماتك، يفحص كل واحد فعليًا، ثم يكتب ملخّصًا نهائيًا أمينًا يجيب عمّا طلبته بالضبط.</p>
+              </div>
+            </div>
+            <div class="field">
+              <label>1) الصق المستخرجات كاملة هنا</label>
+              <textarea id="kt-bulk-data" class="input mono" rows="7" placeholder="الصق محتوى ملف/ملفات loot هنا (JSON أو نص خام — لا مشكلة)…"></textarea>
+            </div>
+            <div class="field">
+              <label>2) تعليماتك للعقل — ماذا يجب أن يفعل؟</label>
+              <textarea id="kt-bulk-instructions" class="input mono" rows="3" placeholder="مثال: اختبر فقط مفاتيح Google وFirebase، وتجاهل أي JWT منتهي الصلاحية. لخّص لي أي مفتاح يمكن استخدامه لفتح ميزة مدفوعة."></textarea>
+            </div>
+            <button id="btn-kt-bulk" class="btn btn--danger btn--sm">🚀 تشغيل الفحص الذكي الشامل</button>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div class="panel" data-panel="settings">
+          <div class="field">
+            <label>مجلد المحرّك (Agent directory)</label>
+            <div class="row"><input id="cfg-agent" class="input mono" /><button class="btn btn--ghost" data-browse="agent">استعراض</button></div>
+          </div>
+          <div class="field">
+            <label>مسار adb.exe</label>
+            <div class="row"><input id="cfg-adb" class="input mono" /><button class="btn btn--ghost" data-browse="adb">استعراض</button></div>
+          </div>
+          <div class="field">
+            <label>مسار python.exe</label>
+            <div class="row"><input id="cfg-py" class="input mono" /><button class="btn btn--ghost" data-browse="py">استعراض</button></div>
+          </div>
+          <div class="row">
+            <button id="btn-save-cfg" class="btn btn--primary">💾 حفظ الإعدادات</button>
+            <button id="btn-open-web" class="btn btn--ghost">🌐 فتح منصة الويب</button>
+          </div>
+          <p class="hint" id="cfg-saved" hidden>✓ تم الحفظ.</p>
+        </div>
+      </section>
+
+      <!-- ===== Log ===== -->
+      <section class="logbox">
+        <div class="logbox__bar">
+          <span class="logbox__title">◈ السجل المباشر</span>
+          <span id="phase" class="logbox__phase"></span>
+          <button id="btn-clear-log" class="btn btn--ghost btn--sm">مسح</button>
+        </div>
+        <pre id="log" class="log"></pre>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>HAYO Cipher-7 • <span id="app-version">v1.0.0</span></span>
+      <span id="footer-status" class="footer__status">جاهز</span>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
