@@ -8,7 +8,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { callProvider, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
-import { fetchOhlcFallback } from "../hayo/market-data";
+import { fetchOhlcFallback, dropFormingCandle } from "../hayo/market-data";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
   calcPivotPoints, calcADX, calcStrategies, calcFilters,
@@ -49,11 +49,11 @@ const PAIRS: Record<string, PairInfo> = {
 // TwelveData interval config per bot timeframe key
 interface TfConfig { interval: string; outputsize: number; label: string }
 const TIMEFRAMES: Record<string, TfConfig> = {
-  "1m":  { interval: "1min",  outputsize: 60,  label: "1 دقيقة"  },
-  "5m":  { interval: "5min",  outputsize: 60,  label: "5 دقائق"  },
-  "15m": { interval: "15min", outputsize: 60,  label: "15 دقيقة" },
-  "30m": { interval: "30min", outputsize: 60,  label: "30 دقيقة" },
-  "1h":  { interval: "1h",    outputsize: 60,  label: "ساعة"     },
+  "1m":  { interval: "1min",  outputsize: 250, label: "1 دقيقة"  },
+  "5m":  { interval: "5min",  outputsize: 250, label: "5 دقائق"  },
+  "15m": { interval: "15min", outputsize: 250, label: "15 دقيقة" },
+  "30m": { interval: "30min", outputsize: 250, label: "30 دقيقة" },
+  "1h":  { interval: "1h",    outputsize: 250, label: "ساعة"     },
 };
 
 // ─── Auto-Signal Config ───────────────────────────────────────────────
@@ -279,7 +279,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   let json: any = null;
   // Try TwelveData first (when a key exists), with key rotation on rate limits.
   for (let attempt = 0; apiKey && attempt < 6; attempt++) {
-    const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(p.tdSymbol)}&interval=${tfCfg.interval}&outputsize=${tfCfg.outputsize}&apikey=${apiKey}`;
+    const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(p.tdSymbol)}&interval=${tfCfg.interval}&outputsize=${tfCfg.outputsize}&timezone=UTC&apikey=${apiKey}`;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
       if (res.status === 429) {
@@ -312,7 +312,8 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
     throw new Error((json && json.message) || "لا توجد بيانات سوق (TwelveData/OANDA/Yahoo)");
   }
 
-  const rawCandles = [...json.values].reverse();
+  // Closed candles only — same rule as the web engine, so both agree.
+  const rawCandles = [...dropFormingCandle(json.values, tfCfg.interval)].reverse();
   if (rawCandles.length < 20) throw new Error("بيانات غير كافية من TwelveData");
 
   const closes = rawCandles.map((c: any) => parseFloat(c.close));
@@ -334,7 +335,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   // Extra indicators for the full 15-strategy set (same as the web engine).
   const STOCH  = calcStochastic(closes, highs, lows);
   const WILLR  = calcWilliamsR(closes, highs, lows);
-  const PIVOTS = calcPivotPoints(highs, lows, closes);
+  const PIVOTS = calcPivotPoints(highs, lows, closes, rawCandles.map((c: any) => c.datetime));
   const ADX    = calcADX(highs, lows, closes);
   const strategies = calcStrategies(closes, highs, lows, SMA20, SMA50, SMA200, RSI, MACD, BB, ATR, STOCH, WILLR, ADX, PIVOTS, opens);
   const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes);
@@ -382,9 +383,11 @@ function calcConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; 
 interface NewsEvent { currency: string; title: string; impact: string; time: string; forecast: string; previous: string; actual: string; minutesUntil: number | null }
 
 const PAIR_CURRENCIES: Record<string, string[]> = {
-  EURUSD: ["EUR","USD"], USDJPY: ["USD","JPY"], GBPUSD: ["GBP","USD"],
-  GBPJPY: ["GBP","JPY"], XAUUSD: ["USD","XAU"],
-  BTCUSD: ["BTC","USD"], USDCHF: ["USD","CHF"], AUDUSD: ["AUD","USD"], XAGUSD: ["XAG","USD"],
+  EURUSD: ["EUR", "USD"], USDJPY: ["USD", "JPY"], GBPUSD: ["GBP", "USD"], GBPJPY: ["GBP", "JPY"],
+  USDCHF: ["USD", "CHF"], AUDUSD: ["AUD", "USD"], NZDUSD: ["NZD", "USD"], USDCAD: ["USD", "CAD"],
+  EURGBP: ["EUR", "GBP"], EURJPY: ["EUR", "JPY"], EURCHF: ["EUR", "CHF"], AUDCAD: ["AUD", "CAD"],
+  // Metals, crypto, oil and the Dow are USD-priced: USD releases move them.
+  XAUUSD: ["USD"], XAGUSD: ["USD"], BTCUSD: ["USD"], ETHUSD: ["USD"], USOIL: ["USD", "CAD"], US30: ["USD"],
 };
 
 // Raw news cache (single fetch, filter per-pair)
@@ -851,8 +854,18 @@ const CONVERGENCE_TFS: { key: string; cfg: TfConfig }[] = [
   { key: "15m", cfg: TIMEFRAMES["15m"] },
 ];
 
+// A full scan (all pairs × 3 TFs, throttled for API limits) can outlast the
+// interval; without this guard setInterval stacked concurrent scans.
+let convergenceScanRunning = false;
+
 async function runConvergenceScan(bot: TelegramBot, ownerChatId: number) {
   if (!convergenceConfig.enabled) return;
+  if (convergenceScanRunning) { console.log("[Convergence] previous scan still running — skipping this tick"); return; }
+  convergenceScanRunning = true;
+  try { await runConvergenceScanInner(bot, ownerChatId); } finally { convergenceScanRunning = false; }
+}
+
+async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
   const allPairs = Object.keys(PAIRS);
   console.log(`[Convergence] Scanning ${allPairs.length} pairs × 3 timeframes (1m, 5m, 15m)...`);
   try {

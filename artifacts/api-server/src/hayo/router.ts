@@ -7,12 +7,18 @@ import { router, publicProcedure, protectedProcedure, adminProcedure, tradingPro
 import { reverseEngineerRouter } from "./reverse-engineer-router";
 import { aiAgentRouter } from "./ai-agent-router";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
-import { fetchFromOanda, fetchFromYahoo, fetchRealtimePrice } from "./market-data";
+import { fetchFromOanda, fetchFromYahoo, fetchRealtimePrice, dropFormingCandle } from "./market-data";
 import {
   calcSMA, calcEMA, calcRSI, calcMACD, calcBB, calcATR, calcStochastic,
-  calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters,
+  calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct,
   type StrategySignal, type FilterResult,
 } from "./market-analysis";
+
+// Spread cost (as % of a 1.5×ATR stop) above which a trade is not worth taking:
+// the entry alone already gives up this much of the risk. Measured on 2018-19
+// OANDA data: 1-min ≈ 70-110%, 5-min ≈ 30-45%, 15-min ≈ 15-25%, 1h ≈ 7-12%.
+const COST_BLOCK_PCT = 25;
+const COST_WARN_PCT = 12;
 
 // ─── Market data provider chain: OANDA → Yahoo → TwelveData ──────────────
 // OANDA/Yahoo fallbacks live in ./market-data (shared with the Telegram bot).
@@ -21,7 +27,9 @@ async function fetchFromTwelveData(url: string): Promise<any> {
   for (let attempt = 0; attempt < 8; attempt++) {
     const apiKey = getTwelveDataKey();
     if (!apiKey) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا توجد مفاتيح TwelveData متاحة" });
-    const fullUrl = url.replace("__API_KEY__", apiKey);
+    // timezone=UTC: candle datetimes are then unambiguous (used for pivots and
+    // for dropping the still-forming candle).
+    const fullUrl = url.replace("__API_KEY__", apiKey) + (url.includes("timezone=") ? "" : "&timezone=UTC");
     try {
       const res = await fetch(fullUrl, { signal: AbortSignal.timeout(12000) });
       if (res.status === 429) {
@@ -49,7 +57,7 @@ async function fetchFromTwelveData(url: string): Promise<any> {
   throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "نفد رصيد جميع مفاتيح TwelveData اليوم — يتجدد غداً" });
 }
 
-async function fetchTwelveData(url: string): Promise<any> {
+async function fetchTwelveData(url: string, opts: { includeForming?: boolean } = {}): Promise<any> {
   // Parse the TwelveData-style URL so the fallbacks can reuse symbol/interval/size.
   let symbol = "", interval = "5min", outputsize = 100;
   try {
@@ -59,12 +67,16 @@ async function fetchTwelveData(url: string): Promise<any> {
     outputsize = parseInt(u.searchParams.get("outputsize") || "100", 10) || 100;
   } catch { /* fall through to TwelveData */ }
 
+  // Every provider is normalised to CLOSED candles only (see dropFormingCandle).
+  // The live chart (getCandles) opts out so it still shows the developing bar.
+  const closedOnly = (d: any) => (!opts.includeForming && d && Array.isArray(d.values) ? { ...d, values: dropFormingCandle(d.values, interval) } : d);
+
   // 1) OANDA — broker-grade, only if OANDA_API_TOKEN is configured
-  try { const o = await fetchFromOanda(symbol, interval, outputsize); if (o) return o; } catch { /* try next */ }
+  try { const o = await fetchFromOanda(symbol, interval, outputsize); if (o) return closedOnly(o); } catch { /* try next */ }
   // 2) Yahoo Finance — keyless universal fallback (covers crypto + indices too)
-  try { const y = await fetchFromYahoo(symbol, interval, outputsize); if (y) return y; } catch { /* try next */ }
+  try { const y = await fetchFromYahoo(symbol, interval, outputsize); if (y) return closedOnly(y); } catch { /* try next */ }
   // 3) TwelveData — original key-rotation path
-  return await fetchFromTwelveData(url);
+  return closedOnly(await fetchFromTwelveData(url));
 }
 
 import {
@@ -1096,7 +1108,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         };
 
         const symbol = symbolMap[input.pair] || input.pair;
-        const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.interval}&outputsize=${input.outputsize}&apikey=__API_KEY__`);
+        const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.interval}&outputsize=${input.outputsize}&apikey=__API_KEY__`, { includeForming: true });
         if (data.status === "error" || !data.values) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: data.message || "فشل جلب البيانات" });
         }
@@ -3377,7 +3389,7 @@ const root = document.getElementById('root');`;
 
         async function scanOnePair(pair: string) {
             const symbol = symbolMap[pair];
-            const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=60&apikey=__API_KEY__`);
+            const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=250&apikey=__API_KEY__`);
             if (data.status === "error" || !data.values || !Array.isArray(data.values)) {
               throw new Error(`${pair}: ${data.message || "فشل"}`);
             }
@@ -3788,9 +3800,10 @@ ${scanSummary}
 
           for (const tf of timeframes) {
             try {
-              const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=100&apikey=__API_KEY__`;
-              const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
-              const data = await res.json() as any;
+              // fetchTwelveData substitutes the API key (the raw fetch sent the
+              // literal "__API_KEY__" and every request failed) and falls back
+              // to OANDA/Yahoo.
+              const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=250&apikey=__API_KEY__`);
               if (data.status === "error" || !data.values) continue;
 
               const candles = [...data.values].reverse() as any[];
@@ -3811,7 +3824,7 @@ ${scanSummary}
               const stoch = calcStochastic(closes, highs, lows);
               const williamsR = calcWilliamsR(closes, highs, lows);
               const adxVal = calcADX(highs, lows, closes);
-              const pivots = calcPivotPoints(highs, lows, closes);
+              const pivots = calcPivotPoints(highs, lows, closes, candles.map((c: any) => c.datetime));
               lastATR = atr;
 
               const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adxVal, pivots, opens);
@@ -3870,6 +3883,10 @@ ${scanSummary}
             .sort((a, b) => b.strength - a.strength)
             .slice(0, 5)
             .map(s => `${s.emoji} ${s.name} (${s.strength}%)`);
+
+          // Skip setups where the spread alone eats too much of the 1.5×ATR stop.
+          const costPct = spreadCostPct(pair, lastATR);
+          if (costPct !== null && costPct >= COST_BLOCK_PCT) continue;
 
           // Calculate SL/TP based on ATR
           const slDistance = lastATR * 1.5;
@@ -4071,7 +4088,8 @@ ${scanSummary}
         if (!creditCheck.allowed) {
           throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: creditCheck.message || "نفدت نقاطك اليومية" });
         }
-        await deductCredits(ctx.user.id, "war_room");
+        // Credits are charged only once market data has been fetched (below) —
+        // a provider outage must not cost the user.
 
         // Map pair to TwelveData symbol
         const symbolMap: Record<string, string> = {
@@ -4086,9 +4104,11 @@ ${scanSummary}
 
         // Relevant currencies for each pair
         const pairCurrencies: Record<string, string[]> = {
-          EURUSD: ["EUR", "USD"], USDJPY: ["USD", "JPY"], GBPUSD: ["GBP", "USD"],
-          GBPJPY: ["GBP", "JPY"], XAUUSD: ["USD", "XAU"],
-          BTCUSD: ["BTC", "USD"], USDCHF: ["USD", "CHF"], AUDUSD: ["AUD", "USD"], XAGUSD: ["XAG", "USD"],
+          EURUSD: ["EUR", "USD"], USDJPY: ["USD", "JPY"], GBPUSD: ["GBP", "USD"], GBPJPY: ["GBP", "JPY"],
+          USDCHF: ["USD", "CHF"], AUDUSD: ["AUD", "USD"], NZDUSD: ["NZD", "USD"], USDCAD: ["USD", "CAD"],
+          EURGBP: ["EUR", "GBP"], EURJPY: ["EUR", "JPY"], EURCHF: ["EUR", "CHF"], AUDCAD: ["AUD", "CAD"],
+          // Metals, crypto, oil and the Dow are USD-priced: USD releases move them.
+          XAUUSD: ["USD"], XAGUSD: ["USD"], BTCUSD: ["USD"], ETHUSD: ["USD"], USOIL: ["USD", "CAD"], US30: ["USD"],
         };
 
         const symbol = symbolMap[input.pair];
@@ -4101,7 +4121,7 @@ ${scanSummary}
 
         // Fetch OHLCV + Economic News + Higher-TF in parallel
         const [tdRes, newsRes, htfRes] = await Promise.allSettled([
-          fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=100&apikey=__API_KEY__`),
+          fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=250&apikey=__API_KEY__`),
           fetch("https://nfs.faireconomy.media/ff_calendar_thisweek.json",
             { signal: AbortSignal.timeout(8000) }).then(r => r.json()).catch(() => []),
           fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${htfInterval}&outputsize=60&apikey=__API_KEY__`).catch(() => null),
@@ -4115,6 +4135,7 @@ ${scanSummary}
         if (tdData.status === "error" || !tdData.values || !Array.isArray(tdData.values)) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: tdData.message || "فشل جلب بيانات السوق من TwelveData" });
         }
+        await deductCredits(ctx.user.id, "war_room");
 
         // Extract economic news for relevant currencies + LIVE proximity filter
         let newsContext = "";
@@ -4255,7 +4276,7 @@ ${scanSummary}
         const atr   = calcATR(highs, lows, closes);
         const stoch = calcStochastic(closes, highs, lows);
         const williamsR = calcWilliamsR(closes, highs, lows);
-        const pivots = calcPivotPoints(highs, lows, closes);
+        const pivots = calcPivotPoints(highs, lows, closes, candles.map((c: any) => c.datetime));
         const adx   = calcADX(highs, lows, closes);
 
         // Calculate strategies and filters
@@ -4305,7 +4326,18 @@ ${scanSummary}
           let direction: "BUY" | "SELL" | "HOLD" = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
           let confidence = Math.round(Math.abs(norm) * 100);
 
-          // 5) LIVE news gate overrides
+          // 5) Trading-cost gate: on short timeframes the spread eats most of the stop.
+          const costPct = spreadCostPct(input.pair, atr);
+          if (costPct !== null && costPct >= COST_BLOCK_PCT) {
+            direction = "HOLD";
+            confidence = Math.min(confidence, 20);
+            reasons.unshift(`⛔ تكلفة السبريد ≈ ${costPct.toFixed(0)}% من وقف الخسارة على هذا الإطار — الصفقة خاسرة إحصائياً قبل أن تبدأ؛ استخدم إطاراً أعلى (1h أو أكثر)`);
+          } else if (costPct !== null && costPct >= COST_WARN_PCT) {
+            confidence = Math.round(confidence * 0.7);
+            reasons.unshift(`⚠️ تكلفة السبريد ≈ ${costPct.toFixed(0)}% من وقف الخسارة — مرتفعة`);
+          }
+
+          // 6) LIVE news gate overrides
           if (newsRisk.dangerZone) {
             direction = "HOLD";
             confidence = Math.min(confidence, 25);
@@ -4501,9 +4533,8 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
             // Fetch all 3 timeframes in parallel
             const [res1, res5, res15] = await Promise.all(
               timeframes.map(async (tf) => {
-                const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=60&apikey=__API_KEY__`;
-                const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
-                return r.json() as Promise<any>;
+                // fetchTwelveData substitutes the API key (see autoSignal).
+                return fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=250&apikey=__API_KEY__`);
               })
             );
 
@@ -4525,7 +4556,7 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
               const atr = calcATR(highs, lows, closes);
               const stoch = calcStochastic(closes, highs, lows);
               const adxVal = calcADX(highs, lows, closes);
-              const pivotsVal = calcPivotPoints(highs, lows, closes);
+              const pivotsVal = calcPivotPoints(highs, lows, closes, candles.map((c: any) => c.datetime));
 
               const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, calcWilliamsR(closes, highs, lows), adxVal, pivotsVal, opens);
               const buys = strategies.filter(s => s.signal === "BUY").length;

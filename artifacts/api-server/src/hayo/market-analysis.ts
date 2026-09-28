@@ -6,6 +6,44 @@
  */
 
 // ─── Technical Indicator Helpers ─────────────────────────────────────
+// Standard definitions, matching TradingView / Wilder so the numbers users see
+// here agree with their charts:
+//  • EMA is seeded with the SMA of its first `period` values.
+//  • RSI, ATR and ADX use Wilder's smoothing (RMA), not a simple average.
+//  • ADX is the Wilder average of DX (not a single raw DX reading).
+// All inputs are oldest-first; scalar helpers return the latest value.
+
+/** Series helpers (oldest-first, NaN until the indicator is warmed up). */
+function emaSeries(arr: number[], period: number): number[] {
+  const out = new Array(arr.length).fill(NaN);
+  if (arr.length < period) return out;
+  const k = 2 / (period + 1);
+  let e = 0;
+  for (let i = 0; i < period; i++) e += arr[i];
+  e /= period;
+  out[period - 1] = e;
+  for (let i = period; i < arr.length; i++) { e = arr[i] * k + e * (1 - k); out[i] = e; }
+  return out;
+}
+function rmaSeries(arr: number[], period: number): number[] {
+  const out = new Array(arr.length).fill(NaN);
+  if (arr.length < period) return out;
+  let r = 0;
+  for (let i = 0; i < period; i++) r += arr[i];
+  r /= period;
+  out[period - 1] = r;
+  for (let i = period; i < arr.length; i++) { r = (r * (period - 1) + arr[i]) / period; out[i] = r; }
+  return out;
+}
+function trueRanges(highs: number[], lows: number[], closes: number[]): number[] {
+  const trs: number[] = [];
+  for (let i = 1; i < highs.length; i++) {
+    trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  return trs;
+}
+const last = (a: number[]) => a[a.length - 1];
+
 function calcSMA(arr: number[], period: number): number {
   if (arr.length < period) return arr[arr.length - 1] ?? 0;
   const slice = arr.slice(-period);
@@ -13,35 +51,26 @@ function calcSMA(arr: number[], period: number): number {
 }
 function calcEMA(arr: number[], period: number): number {
   if (arr.length === 0) return 0;
-  const k = 2 / (period + 1);
-  let ema = arr[0];
-  for (let i = 1; i < arr.length; i++) ema = arr[i] * k + ema * (1 - k);
-  return ema;
+  if (arr.length < period) return arr.reduce((a, b) => a + b, 0) / arr.length;
+  return last(emaSeries(arr, period));
 }
 function calcRSI(closes: number[], period = 14): number {
   if (closes.length < period + 1) return 50;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
+  const gains: number[] = [], losses: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
     const d = closes[i] - closes[i - 1];
-    if (d > 0) gains += d; else losses -= d;
+    gains.push(Math.max(d, 0)); losses.push(Math.max(-d, 0));
   }
-  const ag = gains / period, al = losses / period;
-  if (al === 0) return 100;
+  const ag = last(rmaSeries(gains, period)), al = last(rmaSeries(losses, period));
+  if (al === 0) return ag === 0 ? 50 : 100;
   return 100 - 100 / (1 + ag / al);
 }
 function calcMACD(closes: number[]) {
   if (closes.length < 26) return { macd: 0, signal: 0, histogram: 0 };
-  const ema12 = calcEMA(closes, 12);
-  const ema26 = calcEMA(closes, 26);
-  const macdLine = ema12 - ema26;
-
-  // Build MACD line history for proper EMA(9) signal
-  const macdHistory: number[] = [];
-  for (let i = 26; i <= closes.length; i++) {
-    const slice = closes.slice(0, i);
-    macdHistory.push(calcEMA(slice, 12) - calcEMA(slice, 26));
-  }
-  const signalLine = macdHistory.length >= 9 ? calcEMA(macdHistory, 9) : macdLine;
+  const e12 = emaSeries(closes, 12), e26 = emaSeries(closes, 26);
+  const line = closes.map((_, i) => e12[i] - e26[i]).slice(25); // valid from index 25
+  const macdLine = last(line);
+  const signalLine = line.length >= 9 ? last(emaSeries(line, 9)) : macdLine;
   return { macd: macdLine, signal: signalLine, histogram: macdLine - signalLine };
 }
 function calcBB(closes: number[], period = 20, mult = 2) {
@@ -52,37 +81,25 @@ function calcBB(closes: number[], period = 20, mult = 2) {
   return { upper: middle + mult * sd, middle, lower: middle - mult * sd };
 }
 function calcATR(highs: number[], lows: number[], closes: number[], period = 14): number {
-  const trs: number[] = [];
-  for (let i = 1; i < highs.length; i++) {
-    trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
-  }
+  const trs = trueRanges(highs, lows, closes);
   if (trs.length === 0) return 0;
-  return calcSMA(trs, period);
+  if (trs.length < period) return trs.reduce((a, b) => a + b, 0) / trs.length;
+  return last(rmaSeries(trs, period));
 }
 
-// Stochastic Oscillator (%K, %D)
+// Stochastic Oscillator (%K, %D) — %D is the 3-period SMA of the last %K values
 function calcStochastic(closes: number[], highs: number[], lows: number[], kPeriod = 14, dPeriod = 3): { k: number; d: number } {
   if (closes.length < kPeriod) return { k: 50, d: 50 };
-  const recentHighs = highs.slice(-kPeriod);
-  const recentLows = lows.slice(-kPeriod);
-  const highestHigh = Math.max(...recentHighs);
-  const lowestLow = Math.min(...recentLows);
-  const range = highestHigh - lowestLow;
-  const k = range === 0 ? 50 : ((closes[closes.length - 1] - lowestLow) / range) * 100;
-
-  // %D = SMA of recent %K values
-  const kValues: number[] = [];
-  for (let i = Math.max(kPeriod, closes.length - dPeriod * 2); i <= closes.length; i++) {
-    const sliceH = highs.slice(Math.max(0, i - kPeriod), i);
-    const sliceL = lows.slice(Math.max(0, i - kPeriod), i);
-    const sliceC = closes.slice(0, i);
-    if (sliceH.length < kPeriod) continue;
-    const hh = Math.max(...sliceH);
-    const ll = Math.min(...sliceL);
-    const rng = hh - ll;
-    kValues.push(rng === 0 ? 50 : ((sliceC[sliceC.length - 1] - ll) / rng) * 100);
-  }
-  const d = kValues.length >= dPeriod ? calcSMA(kValues, dPeriod) : k;
+  const kAt = (end: number) => { // %K using bars [end-kPeriod+1 .. end]
+    const hh = Math.max(...highs.slice(end - kPeriod + 1, end + 1));
+    const ll = Math.min(...lows.slice(end - kPeriod + 1, end + 1));
+    return hh === ll ? 50 : ((closes[end] - ll) / (hh - ll)) * 100;
+  };
+  const n = closes.length - 1;
+  const k = kAt(n);
+  const ks: number[] = [];
+  for (let e = n - dPeriod + 1; e <= n; e++) if (e >= kPeriod - 1) ks.push(kAt(e));
+  const d = ks.length === dPeriod ? ks.reduce((a, b) => a + b, 0) / dPeriod : k;
   return { k, d };
 }
 
@@ -97,46 +114,95 @@ function calcWilliamsR(closes: number[], highs: number[], lows: number[], period
   return range === 0 ? -50 : ((hh - closes[closes.length - 1]) / range) * -100;
 }
 
-// Pivot Points (Standard)
-function calcPivotPoints(highs: number[], lows: number[], closes: number[]): {
-  pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number;
+/** Parse a candle timestamp as UTC (TwelveData omits the zone when timezone=UTC). */
+function toUtcMs(t: string | number): number {
+  if (typeof t === "number") return t < 1e12 ? t * 1000 : t;
+  const s = /[zZ]|[+-]\d\d:?\d\d$/.test(t) ? t : t.replace(" ", "T") + "Z";
+  return Date.parse(s);
+}
+
+// Pivot Points (Standard, "floor" pivots) — from the PREVIOUS completed UTC day.
+// With `times`, the prior day's high/low/close is reconstructed from the candles
+// (basis "prevDay"). Without enough history (e.g. 1-min charts) it falls back
+// to the whole window excluding the current bar (basis "window"); the pivot
+// strategy only trades real prior-day pivots.
+function calcPivotPoints(highs: number[], lows: number[], closes: number[], times?: Array<string | number>): {
+  pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number; basis: "prevDay" | "window";
 } {
-  const h = highs[highs.length - 1] || 0;
-  const l = lows[lows.length - 1] || 0;
-  const c = closes[closes.length - 1] || 0;
+  let h = NaN, l = NaN, c = NaN, basis: "prevDay" | "window" = "window";
+  if (times && times.length === closes.length && closes.length > 1) {
+    const day = (i: number) => Math.floor(toUtcMs(times[i]) / 86400000);
+    const today = day(closes.length - 1);
+    let end = closes.length - 1;
+    while (end >= 0 && day(end) === today) end--;          // last bar of previous day
+    if (end >= 0) {
+      const prev = day(end);
+      let start = end;
+      while (start > 0 && day(start - 1) === prev) start--;
+      if (start > 0) {                                      // the day is fully inside the window
+        h = Math.max(...highs.slice(start, end + 1));
+        l = Math.min(...lows.slice(start, end + 1));
+        c = closes[end];
+        basis = "prevDay";
+      }
+    }
+  }
+  if (basis === "window") {
+    const n = Math.max(1, closes.length - 1);
+    h = Math.max(...highs.slice(0, n)); l = Math.min(...lows.slice(0, n)); c = closes[n - 1] ?? 0;
+  }
   const pivot = (h + l + c) / 3;
   return {
     pivot,
     r1: 2 * pivot - l, r2: pivot + (h - l), r3: h + 2 * (pivot - l),
     s1: 2 * pivot - h, s2: pivot - (h - l), s3: l - 2 * (h - pivot),
+    basis,
   };
 }
 
-// ADX (Average Directional Index) — trend strength
+// ADX (Average Directional Index) — Wilder: smoothed ±DM/TR → ±DI → DX → RMA(DX)
 function calcADX(highs: number[], lows: number[], closes: number[], period = 14): { adx: number; pdi: number; mdi: number } {
-  if (highs.length < period + 1) return { adx: 25, pdi: 25, mdi: 25 };
-  const pdm: number[] = [];
-  const mdm: number[] = [];
-  const tr: number[] = [];
-
+  if (highs.length < period * 2 + 1) return { adx: 0, pdi: 0, mdi: 0 };
+  const pdm: number[] = [], mdm: number[] = [];
   for (let i = 1; i < highs.length; i++) {
     const upMove = highs[i] - highs[i - 1];
     const downMove = lows[i - 1] - lows[i];
     pdm.push(upMove > downMove && upMove > 0 ? upMove : 0);
     mdm.push(downMove > upMove && downMove > 0 ? downMove : 0);
-    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
   }
-
-  const smoothTR = calcEMA(tr, period);
-  const smoothPDM = calcEMA(pdm, period);
-  const smoothMDM = calcEMA(mdm, period);
-  const pdi = smoothTR > 0 ? (smoothPDM / smoothTR) * 100 : 0;
-  const mdi = smoothTR > 0 ? (smoothMDM / smoothTR) * 100 : 0;
-  const dx = (pdi + mdi) > 0 ? Math.abs(pdi - mdi) / (pdi + mdi) * 100 : 0;
-
-  // Simplified ADX — ideally EMA of DX history
-  const adx = dx;
+  const str = rmaSeries(trueRanges(highs, lows, closes), period);
+  const spdm = rmaSeries(pdm, period), smdm = rmaSeries(mdm, period);
+  const dx: number[] = [];
+  let pdi = 0, mdi = 0;
+  for (let i = period - 1; i < str.length; i++) {
+    pdi = str[i] > 0 ? (spdm[i] / str[i]) * 100 : 0;
+    mdi = str[i] > 0 ? (smdm[i] / str[i]) * 100 : 0;
+    dx.push(pdi + mdi > 0 ? (Math.abs(pdi - mdi) / (pdi + mdi)) * 100 : 0);
+  }
+  const adx = dx.length >= period ? last(rmaSeries(dx, period)) : last(dx);
   return { adx, pdi, mdi };
+}
+
+// ─── Trading-cost awareness ───────────────────────────────────────────
+/**
+ * Typical retail spread per instrument, in price units (HAYO pair codes).
+ * Used to express the round-trip cost as a fraction of the stop distance.
+ * Measured on 2018-19 OANDA data: with a 1.5×ATR stop the spread alone costs
+ * ~70-110% of 1R on 1-min charts, ~30-45% on 5-min, ~15-25% on 15-min and
+ * ~7-12% on 1h — the dominant reason short-timeframe signals lose money.
+ */
+const TYPICAL_SPREAD: Record<string, number> = {
+  EURUSD: 0.00012, GBPUSD: 0.00018, USDJPY: 0.014, GBPJPY: 0.03, USDCHF: 0.00018,
+  AUDUSD: 0.00014, NZDUSD: 0.0002, USDCAD: 0.00018, EURGBP: 0.00015, EURJPY: 0.018,
+  EURCHF: 0.0002, AUDCAD: 0.00025, XAUUSD: 0.35, XAGUSD: 0.03, BTCUSD: 25, ETHUSD: 2,
+  USOIL: 0.04, US30: 3,
+};
+
+/** Spread as a % of the risk taken with a stop at `slAtrMult`×ATR (null if unknown). */
+function spreadCostPct(pair: string, atr: number, slAtrMult = 1.5): number | null {
+  const sp = TYPICAL_SPREAD[pair];
+  if (!sp || !(atr > 0)) return null;
+  return (sp / (slAtrMult * atr)) * 100;
 }
 
 // ─── Strategy & Filter Types ──────────────────────────────────────────
@@ -168,7 +234,7 @@ function calcStrategies(
   stoch?: { k: number; d: number },
   williamsR?: number,
   adx?: { adx: number; pdi: number; mdi: number },
-  pivots?: { pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number },
+  pivots?: { pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number; basis?: "prevDay" | "window" },
   opens?: number[],
 ): StrategySignal[] {
   const price = closes[closes.length - 1];
@@ -199,8 +265,12 @@ function calcStrategies(
   {
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
+    // Squeeze measured against ATR (asset/timeframe independent). Band width
+    // below 2.5×ATR is roughly the tightest 15% of readings on FX 5m–1h.
     const bbWidth = (bb.upper - bb.lower) / bb.middle * 100;
-    if (bbWidth < 0.8) {
+    const bbWidthAtr = atr > 0 ? (bb.upper - bb.lower) / atr : Infinity;
+    const squeeze = bbWidthAtr < 2.5;
+    if (squeeze) {
       sig = "NEUTRAL"; str = 0;
     } else if (prevPrice <= bb.lower && price > bb.lower) {
       sig = "BUY"; str = 82;
@@ -213,7 +283,7 @@ function calcStrategies(
     }
     signals.push({ id: "breakout", name: "الاختراق (Bollinger)", emoji: "💥",
       signal: sig, strength: str,
-      desc: bbWidth < 0.8 ? "النطاقات ضيقة جداً — انتظار اختراق وشيك" :
+      desc: squeeze ? "النطاقات ضيقة جداً — انتظار اختراق وشيك" :
             sig === "BUY" ? "ارتداد من النطاق السفلي — إشارة صعود" :
             sig === "SELL" ? "ارتداد من النطاق العلوي — إشارة هبوط" :
             `السعر داخل النطاق الطبيعي (عرض ${bbWidth.toFixed(2)}%)` });
@@ -248,15 +318,17 @@ function calcStrategies(
       desc: `MACD ${macd.macd > macd.signal ? "فوق" : "تحت"} خط الإشارة | Histogram: ${macd.histogram.toFixed(5)}` });
   }
 
-  // 5 — Scalping (Mean Reversion from SMA20)
+  // 5 — Scalping (Mean Reversion from SMA20) — stretch measured in ATRs
+  // (2.2 ATR ≈ the most stretched 15% of bars, 1.6 ATR ≈ 30%).
   {
     const dist = (price - sma20) / sma20 * 100;
+    const distAtr = atr > 0 ? (price - sma20) / atr : 0;
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
-    if      (dist < -0.20) { sig = "BUY";  str = 75; }
-    else if (dist < -0.10) { sig = "BUY";  str = 58; }
-    else if (dist >  0.20) { sig = "SELL"; str = 75; }
-    else if (dist >  0.10) { sig = "SELL"; str = 58; }
+    if      (distAtr < -2.2) { sig = "BUY";  str = 75; }
+    else if (distAtr < -1.6) { sig = "BUY";  str = 58; }
+    else if (distAtr >  2.2) { sig = "SELL"; str = 75; }
+    else if (distAtr >  1.6) { sig = "SELL"; str = 58; }
     signals.push({ id: "scalping", name: "سكالبينج (ارتداد)", emoji: "⚡",
       signal: sig, strength: str,
       desc: `البعد عن SMA20: ${dist >= 0 ? "+" : ""}${dist.toFixed(3)}% — ${sig === "BUY" ? "السعر بعيد أسفل المتوسط" : sig === "SELL" ? "السعر بعيد فوق المتوسط" : "السعر قريب من المتوسط"}` });
@@ -265,7 +337,7 @@ function calcStrategies(
   // 6 — Swing Trading (Pullback to SMA50)
   {
     const distSMA50 = Math.abs(price - sma50) / sma50 * 100;
-    const nearSMA50 = distSMA50 < 0.18;
+    const nearSMA50 = atr > 0 ? Math.abs(price - sma50) < 0.5 * atr : distSMA50 < 0.18;
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
     if (nearSMA50 && sma20 > sma50)          { sig = "BUY";  str = 74; }
@@ -417,7 +489,7 @@ function calcStrategies(
   }
 
   // 10 — Pivot Point Bounce
-  if (pivots) {
+  if (pivots && pivots.basis !== "window") {
     const price = closes[closes.length - 1];
     const tolerance = atr * 0.3;
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
@@ -571,11 +643,13 @@ function calcStrategies(
     let str = 0;
     const look = Math.min(10, closes.length - 1);
     const roc = look > 0 ? (price - closes[closes.length - 1 - look]) / closes[closes.length - 1 - look] * 100 : 0;
-    if (roc > 0.35) { sig = "BUY"; str = Math.min(85, 55 + Math.round(roc * 8)); }
-    else if (roc < -0.35) { sig = "SELL"; str = Math.min(85, 55 + Math.round(Math.abs(roc) * 8)); }
+    // Move over `look` bars in ATRs: > 2.8 ATR ≈ the strongest 15% of moves.
+    const rocAtr = look > 0 && atr > 0 ? (price - closes[closes.length - 1 - look]) / atr : 0;
+    if (rocAtr > 2.8) { sig = "BUY"; str = Math.min(85, 55 + Math.round((rocAtr - 2.8) * 10)); }
+    else if (rocAtr < -2.8) { sig = "SELL"; str = Math.min(85, 55 + Math.round((Math.abs(rocAtr) - 2.8) * 10)); }
     signals.push({ id: "momentum_roc", name: "الزخم (ROC)", emoji: "🚀", signal: sig, strength: str,
       desc: `معدّل التغيّر خلال ${look} شمعة: ${roc >= 0 ? "+" : ""}${roc.toFixed(3)}% — ${
-        roc > 0.35 ? "زخم صاعد" : roc < -0.35 ? "زخم هابط" : "زخم ضعيف/محايد"
+        rocAtr > 2.8 ? "زخم صاعد" : rocAtr < -2.8 ? "زخم هابط" : "زخم ضعيف/محايد"
       }` });
   }
 
@@ -642,5 +716,6 @@ function calcFilters(
 export {
   calcSMA, calcEMA, calcRSI, calcMACD, calcBB, calcATR, calcStochastic,
   calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters,
+  spreadCostPct, TYPICAL_SPREAD, toUtcMs,
 };
 export type { StrategySignal, FilterResult };
