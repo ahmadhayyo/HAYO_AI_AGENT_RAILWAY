@@ -284,25 +284,45 @@ export async function testConnection(config: OandaConfig): Promise<{ success: bo
 }
 
 // ─── Convert HAYO pair format to OANDA format ────────────────────────
-export function toOandaInstrument(pair: string): string {
-  // HAYO uses: EURUSD, GBPUSD, etc.
-  // OANDA uses: EUR_USD, GBP_USD, etc.
-  const clean = pair.replace(/[^A-Z]/g, "").toUpperCase();
-  if (clean.length === 6) {
-    return `${clean.slice(0, 3)}_${clean.slice(3)}`;
-  }
-  // Crypto: BTCUSD → BTC_USD
-  if (clean.length === 7 && clean.startsWith("BTC")) {
-    return `${clean.slice(0, 3)}_${clean.slice(3)}`;
-  }
-  // Gold: XAUUSD → XAU_USD
-  if (clean.startsWith("XAU") || clean.startsWith("XAG")) {
-    return `${clean.slice(0, 3)}_${clean.slice(3)}`;
-  }
-  return clean;
+// Explicit map: guessing ("USOIL" → "USOIL") produced instruments OANDA rejects.
+const HAYO_TO_OANDA: Record<string, string> = {
+  EURUSD: "EUR_USD", USDJPY: "USD_JPY", GBPUSD: "GBP_USD", GBPJPY: "GBP_JPY",
+  USDCHF: "USD_CHF", AUDUSD: "AUD_USD", NZDUSD: "NZD_USD", USDCAD: "USD_CAD",
+  EURGBP: "EUR_GBP", EURJPY: "EUR_JPY", EURCHF: "EUR_CHF", AUDCAD: "AUD_CAD",
+  XAUUSD: "XAU_USD", XAGUSD: "XAG_USD", BTCUSD: "BTC_USD",
+  US30: "US30_USD", USOIL: "WTICO_USD",
+};
+
+export function toOandaInstrument(pair: string): string | null {
+  const clean = pair.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  return HAYO_TO_OANDA[clean] ?? null;
+}
+
+// ─── Quote → account-currency conversion ─────────────────────────────
+/**
+ * Value, in the ACCOUNT currency, of a 1.0 move in the instrument's QUOTE
+ * currency — i.e. what 1 unit loses per 1.0 of adverse price movement.
+ * Uses OANDA's own home-conversion factors (the rate OANDA applies to
+ * realised P/L), falling back to exact algebra when quote/base IS the account
+ * currency. Returns null when it can't be determined — callers must refuse.
+ */
+async function quoteToAccountRate(config: OandaConfig, instrument: string, accountCurrency: string, mid: number): Promise<number | null> {
+  const [base, quote] = instrument.split("_");
+  if (quote === accountCurrency) return 1;
+  try {
+    const data = await oandaFetch(config, `/accounts/${config.accountId}/pricing?instruments=${instrument}&includeHomeConversions=true`);
+    const conv = (data.homeConversions || []).find((h: any) => h.currency === quote);
+    const loss = parseFloat(conv?.accountLoss);
+    if (isFinite(loss) && loss > 0) return loss;
+  } catch { /* fall through */ }
+  if (base === accountCurrency && mid > 0) return 1 / mid;
+  return null;
 }
 
 // ─── Auto-Execute Signal ─────────────────────────────────────────────
+/** Hard ceiling on position notional vs. balance, independent of the stop. */
+const MAX_EFFECTIVE_LEVERAGE = 20;
+
 export async function autoExecuteSignal(
   config: OandaConfig,
   signal: {
@@ -314,44 +334,67 @@ export async function autoExecuteSignal(
   },
   riskPercent: number = 1,
 ): Promise<OandaOrderResult & { riskInfo?: string }> {
-  // 1. Get account info for position sizing
-  const account = await getAccountInfo(config);
-  
-  // 2. Calculate position size based on risk %
-  const riskAmount = account.balance * (riskPercent / 100);
-  const instrument = toOandaInstrument(signal.pair);
+  // 0. A protective stop is mandatory: no stop = unbounded risk.
+  const sl = signal.stopLoss;
+  if (sl === undefined || !isFinite(sl) || sl <= 0) {
+    return { success: false, error: "رُفض التنفيذ: لا يوجد وقف خسارة صالح — لا تُفتح صفقات بدون وقف" };
+  }
+  const risk = Math.min(Math.max(riskPercent, 0.1), 5);
 
-  // 3. Get current price
+  const instrument = toOandaInstrument(signal.pair);
+  if (!instrument) return { success: false, error: `الأداة ${signal.pair} غير مدعومة على OANDA` };
+
+  // 1. Account + live price
+  const account = await getAccountInfo(config);
   const prices = await getPrices(config, [instrument]);
   const price = prices[0];
-  if (!price) throw new Error(`لم يتم العثور على سعر ${instrument}`);
+  if (!price || !(price.bid > 0) || !(price.ask > 0)) {
+    return { success: false, error: `لم يتم العثور على سعر ${instrument}` };
+  }
+  const isBuy = signal.direction === "BUY";
+  const entry = isBuy ? price.ask : price.bid; // the side we actually fill at
+  const mid = (price.bid + price.ask) / 2;
 
-  // 4. Calculate units based on SL distance
-  let units = 1000; // default micro lot
-  if (signal.stopLoss) {
-    const slDistance = Math.abs(price.ask - signal.stopLoss);
-    if (slDistance > 0) {
-      // pip value calculation (simplified for major pairs)
-      const pipSize = instrument.includes("JPY") ? 0.01 : 0.0001;
-      const slPips = slDistance / pipSize;
-      units = Math.floor(riskAmount / (slPips * (pipSize * 10))); // rough calculation
-      units = Math.max(1, Math.min(units, 100000)); // clamp between 1 and 1 standard lot
-    }
+  // 2. Stop / target must sit on the correct side of the fill price.
+  if (isBuy ? sl >= price.bid : sl <= price.ask) {
+    return { success: false, error: `رُفض التنفيذ: وقف الخسارة ${sl} في الجهة الخاطئة من السعر (${isBuy ? "شراء" : "بيع"} @ ${entry})` };
+  }
+  const tp = signal.takeProfit;
+  if (tp !== undefined && (isBuy ? tp <= entry : tp >= entry)) {
+    return { success: false, error: `رُفض التنفيذ: الهدف ${tp} في الجهة الخاطئة من سعر الدخول ${entry}` };
   }
 
-  // 5. Place order
-  const order: OandaOrder = {
-    instrument,
-    units: signal.direction === "BUY" ? units : -units,
-    type: "MARKET",
-    stopLossPrice: signal.stopLoss,
-    takeProfitPrice: signal.takeProfit,
-  };
+  // 3. Risk-based size: units = riskAmount / (stop distance × quote→account rate)
+  const slDistance = Math.abs(entry - sl);
+  const rate = await quoteToAccountRate(config, instrument, account.currency, mid);
+  if (!rate) {
+    return { success: false, error: `تعذّر تحويل عملة التسعير لـ ${instrument} إلى ${account.currency} — رُفض التنفيذ بدل تخمين الحجم` };
+  }
+  const riskAmount = account.balance * (risk / 100);
+  const lossPerUnit = slDistance * rate;
+  let units = Math.floor(riskAmount / lossPerUnit);
 
-  const result = await placeOrder(config, order);
-  
+  // Leverage ceiling: a very tight stop must not produce a huge position.
+  const notionalPerUnit = mid * rate;
+  const maxUnits = Math.floor((account.balance * MAX_EFFECTIVE_LEVERAGE) / notionalPerUnit);
+  const capped = units > maxUnits;
+  if (capped) units = maxUnits;
+  if (units < 1) {
+    return { success: false, error: `الحجم المحسوب أقل من وحدة واحدة (مخاطرة ${riskAmount.toFixed(2)} ${account.currency}، الوقف بعيد جداً)` };
+  }
+
+  // 4. Place order
+  const result = await placeOrder(config, {
+    instrument,
+    units: isBuy ? units : -units,
+    type: "MARKET",
+    stopLossPrice: sl,
+    takeProfitPrice: tp,
+  });
+
+  const actualRisk = units * lossPerUnit;
   return {
     ...result,
-    riskInfo: `المخاطرة: ${riskPercent}% = $${riskAmount.toFixed(2)} | الحجم: ${units} وحدة | السعر: ${price.ask.toFixed(5)}`,
+    riskInfo: `المخاطرة: ${(actualRisk / account.balance * 100).toFixed(2)}% = ${actualRisk.toFixed(2)} ${account.currency} | الحجم: ${units} وحدة${capped ? ` (مقيّد بسقف رافعة ${MAX_EFFECTIVE_LEVERAGE}x)` : ""} | الدخول: ${entry}`,
   };
 }

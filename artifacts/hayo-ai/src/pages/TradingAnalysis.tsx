@@ -382,6 +382,9 @@ function QuickScanPanel({ onSelectPair }: { onSelectPair: (pair: string, tf: str
 // ─── Convergence Panel (التطابق) ──────────────────────────────────────
 function ConvergencePanel({ onSelectPair }: { onSelectPair: (pair: string, tf: string) => void }) {
   const INTERVALS = [1, 2, 3, 5, 7, 10, 15];
+  // Reconfiguring the global scanner is owner-only (enforced server-side too).
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const statusQuery = trpc.tradingAnalysis.convergenceStatus.useQuery(undefined, { refetchInterval: 15000 });
   const toggleMut = trpc.tradingAnalysis.convergenceToggle.useMutation({ onSuccess: () => statusQuery.refetch() });
   const setIntMut = trpc.tradingAnalysis.convergenceSetInterval.useMutation({ onSuccess: () => statusQuery.refetch() });
@@ -414,6 +417,7 @@ function ConvergencePanel({ onSelectPair }: { onSelectPair: (pair: string, tf: s
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {isAdmin && (<>
           <select
             value={config?.intervalMinutes || 3}
             onChange={e => setIntMut.mutate({ intervalMinutes: parseInt(e.target.value) })}
@@ -450,6 +454,7 @@ function ConvergencePanel({ onSelectPair }: { onSelectPair: (pair: string, tf: s
               : <><Crosshair className="w-3 h-3" /> فحص فوري</>
             }
           </Button>
+          </>)}
 
           <button onClick={() => setExpanded(!expanded)} className="text-white/40 hover:text-white/70">
             {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -1299,41 +1304,22 @@ export default function TradingAnalysis() {
   });
 
   // Auto-Signal: Multi-timeframe confluence
-  // ─── OANDA Auto-Execute ─────────────────────────────────────────
-  const [oandaToken, setOandaToken] = useState(() => localStorage.getItem("hayo-oanda-token") || "");
-  const [oandaAccount, setOandaAccount] = useState(() => localStorage.getItem("hayo-oanda-account") || "");
-  const [oandaEnv, setOandaEnv] = useState<"practice" | "live">(() => (localStorage.getItem("hayo-oanda-env") as any) || "practice");
-  const [autoExecuteEnabled, setAutoExecuteEnabled] = useState(false);
-  const [riskPercent, setRiskPercent] = useState(1);
-  const [showOandaSetup, setShowOandaSetup] = useState(false);
-
-  // Save OANDA credentials to localStorage
-  const saveOandaCredentials = () => {
-    localStorage.setItem("hayo-oanda-token", oandaToken);
-    localStorage.setItem("hayo-oanda-account", oandaAccount);
-    localStorage.setItem("hayo-oanda-env", oandaEnv);
-    toast.success("✅ تم حفظ إعدادات OANDA");
-    setShowOandaSetup(false);
-  };
-
-  const oandaConnected = !!(oandaToken && oandaAccount);
-
-  const autoExecuteMut = trpc.trading.autoExecute.useMutation({
-    onSuccess: (data: any) => {
-      if (data.success) {
-        toast.success(`✅ تم تنفيذ الصفقة! السعر: ${data.price} | ${data.riskInfo}`);
-      } else {
-        toast.error(`❌ فشل التنفيذ: ${data.error}`);
-      }
-    },
-    onError: (err: any) => toast.error(`خطأ: ${err.message}`),
-  });
+  // ─── Broker credentials live ONLY server-side (encrypted broker accounts).
+  // Older builds kept the OANDA token in localStorage — wipe any leftovers.
+  useEffect(() => {
+    try {
+      localStorage.removeItem("hayo-oanda-token");
+      localStorage.removeItem("hayo-oanda-account");
+      localStorage.removeItem("hayo-oanda-env");
+    } catch { /* storage unavailable */ }
+  }, []);
 
   // ─── Bridge: Saved Broker Accounts (auto-execute on real platforms) ──
   const brokerAccountsQ = trpc.hayo.broker.listAccounts.useQuery(undefined, { staleTime: 30_000 });
   const executeBrokerSignal = trpc.hayo.broker.executeSignal.useMutation({
     onSuccess: (r: any) => {
       if (r?.success) toast.success(`✅ تم تنفيذ الصفقة على المنصة (${r.platform})`);
+      else if (r?.manualOnly) toast.info(r.message);
       else toast.error(`فشل التنفيذ: ${r?.error || r?.message || "غير معروف"}`);
     },
     onError: (err: any) => toast.error(`خطأ في الجسر: ${err.message}`),
@@ -1350,8 +1336,11 @@ export default function TradingAnalysis() {
           a.autoTradeEnabled && a.isActive && a.connectionStatus !== "error"
         );
 
-        if (autoAccounts.length > 0) {
-          for (const sig of data.confirmedSignals) {
+        // Only execute signals the AI consensus actually confirmed (not HOLD).
+        const executable = data.confirmedSignals.filter((sig: any) => sig.aiConsensus?.signal === sig.signal);
+
+        if (autoAccounts.length > 0 && executable.length > 0) {
+          for (const sig of executable) {
             for (const acc of autoAccounts) {
               executeBrokerSignal.mutate({
                 accountId: acc.id,
@@ -1363,19 +1352,9 @@ export default function TradingAnalysis() {
               });
             }
           }
-          toast.info(`🤖 جسر التنفيذ: ${autoAccounts.length} حساب نشط × ${data.signalsFound} إشارة`);
-        } else if (autoExecuteEnabled && oandaConnected) {
-          // Legacy fallback (kept for backwards compat)
-          for (const sig of data.confirmedSignals) {
-            autoExecuteMut.mutate({
-              apiToken: oandaToken, accountId: oandaAccount, environment: oandaEnv,
-              pair: sig.pair, direction: sig.signal, confidence: sig.confidence,
-              stopLoss: parseFloat(sig.stopLoss) || undefined,
-              takeProfit: parseFloat(sig.takeProfit) || undefined,
-              riskPercent,
-            });
-          }
-          toast.info(`🤖 جاري تنفيذ ${data.signalsFound} صفقة تلقائياً على OANDA...`);
+          toast.info(`🤖 جسر التنفيذ: ${autoAccounts.length} حساب نشط × ${executable.length} إشارة مؤكدة`);
+        } else if (autoAccounts.length > 0) {
+          toast.info("⏸️ لم يؤكد إجماع AI أي إشارة — لم يُنفَّذ شيء");
         }
       } else {
         toast.info(`✅ تم فحص ${data.totalPairsScanned} أزواج — لا تقاطع حالياً`);
@@ -1834,68 +1813,15 @@ export default function TradingAnalysis() {
                     }
                   </Button>
 
-                  {/* OANDA Auto-Execute Toggle */}
-                  <Button
-                    size="sm"
-                    variant={autoExecuteEnabled ? "default" : "outline"}
-                    onClick={() => {
-                      if (!oandaConnected) { setShowOandaSetup(true); return; }
-                      setAutoExecuteEnabled(!autoExecuteEnabled);
-                      toast.info(autoExecuteEnabled ? "⏸️ تم إيقاف التنفيذ التلقائي" : "▶️ تم تفعيل التنفيذ التلقائي على OANDA");
-                    }}
-                    className={`gap-2 text-xs ${autoExecuteEnabled ? "bg-emerald-600 hover:bg-emerald-700" : "border-cyan-500/30 text-cyan-400"}`}
-                  >
-                    {autoExecuteEnabled ? "🟢 OANDA: مفعّل" : "⚡ ربط OANDA"}
-                  </Button>
-
-                  <Button size="sm" variant="ghost" onClick={() => setShowOandaSetup(!showOandaSetup)} className="text-xs gap-1 text-muted-foreground">
-                    ⚙️
-                  </Button>
+                  {/* Auto-execution is configured per saved broker account (credentials encrypted server-side) */}
+                  <Link href="/trading-brokers">
+                    <Button size="sm" variant="outline" className="gap-2 text-xs border-cyan-500/30 text-cyan-400">
+                      {(brokerAccountsQ.data || []).some((a: any) => a.autoTradeEnabled && a.isActive)
+                        ? "🟢 التنفيذ التلقائي: مفعّل"
+                        : "⚡ ربط حساب وساطة"}
+                    </Button>
+                  </Link>
                 </div>
-
-                {/* OANDA Setup Panel */}
-                {showOandaSetup && (
-                  <div className="bg-card border border-cyan-500/20 rounded-xl p-4 space-y-3 mt-3">
-                    <div className="flex items-center gap-2 text-sm font-bold text-cyan-400">
-                      ⚡ إعداد OANDA للتنفيذ التلقائي
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-muted-foreground">API Token</label>
-                        <input value={oandaToken} onChange={e => setOandaToken(e.target.value)} type="password" placeholder="OANDA API Token..." className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2 text-xs font-mono" dir="ltr" />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-muted-foreground">Account ID</label>
-                        <input value={oandaAccount} onChange={e => setOandaAccount(e.target.value)} placeholder="001-001-1234567-001" className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2 text-xs font-mono" dir="ltr" />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-muted-foreground">البيئة</label>
-                        <div className="flex gap-2">
-                          {(["practice", "live"] as const).map(env => (
-                            <button key={env} onClick={() => setOandaEnv(env)} className={`flex-1 px-3 py-1.5 rounded-lg border text-xs ${oandaEnv === env ? "bg-primary/15 border-primary text-primary" : "border-border text-muted-foreground"}`}>
-                              {env === "practice" ? "🧪 تجريبي" : "🔴 حقيقي"}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-muted-foreground">نسبة المخاطرة %</label>
-                        <input type="number" value={riskPercent} onChange={e => setRiskPercent(Math.max(0.1, Math.min(5, parseFloat(e.target.value) || 1)))} min={0.1} max={5} step={0.5} className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2 text-xs" />
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button size="sm" onClick={saveOandaCredentials} className="flex-1 text-xs bg-cyan-600 hover:bg-cyan-700">حفظ الإعدادات</Button>
-                      <Button size="sm" variant="outline" onClick={() => setShowOandaSetup(false)} className="text-xs">إغلاق</Button>
-                    </div>
-                    {oandaEnv === "live" && (
-                      <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-[10px] text-red-400">
-                        ⚠️ أنت في الوضع الحقيقي! الصفقات ستنفذ بأموال حقيقية. تأكد من ضبط نسبة المخاطرة بحذر.
-                      </div>
-                    )}
-                  </div>
-                )}
                 </>
               )}
             </motion.div>

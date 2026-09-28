@@ -159,6 +159,66 @@ async function evaluateSignalJournal(): Promise<void> {
 setInterval(() => { evaluateSignalJournal().catch(() => {}); }, 15 * 60 * 1000);
 setTimeout(() => { evaluateSignalJournal().catch(() => {}); }, 60 * 1000);
 
+// ── Telegram delivery targets for a user's trading messages ────────────
+// The server bot + TELEGRAM_OWNER_CHAT_ID belong to the platform owner, so only
+// admins may send there. Everyone else can only reach their OWN bot and the
+// chats that explicitly /start-ed it (telegram_chats, receiveSignals=true).
+async function resolveTelegramTargets(user: { id: number; role?: string | null }): Promise<{ botToken: string | null; chatIds: string[]; isOwnerChannel: boolean }> {
+  const envToken = process.env.TELEGRAM_BOT_TOKEN;
+  const ownerChat = process.env.TELEGRAM_OWNER_CHAT_ID;
+  if (user.role === "admin" && envToken && ownerChat) {
+    return { botToken: envToken, chatIds: [ownerChat], isOwnerChannel: true };
+  }
+  const { db } = await import("@workspace/db");
+  const { telegramBots, telegramChats } = await import("@workspace/db/schema");
+  const { and, eq } = await import("drizzle-orm");
+  const [bot] = await db.select().from(telegramBots).where(eq(telegramBots.userId, user.id)).limit(1);
+  if (!bot?.isActive || !bot.botToken) return { botToken: null, chatIds: [], isOwnerChannel: false };
+  let chatIds: string[] = [];
+  try {
+    const chats = await db.select().from(telegramChats)
+      .where(and(eq(telegramChats.userId, user.id), eq(telegramChats.isActive, true), eq(telegramChats.receiveSignals, true)));
+    chatIds = chats.map((c: { chatId: string }) => c.chatId);
+  } catch { /* table may not exist yet on first deploy */ }
+  return { botToken: bot.botToken, chatIds, isOwnerChannel: false };
+}
+
+async function sendTelegramToTargets(
+  targets: { botToken: string | null; chatIds: string[] },
+  text: string,
+  parseMode?: "HTML" | "Markdown",
+): Promise<number> {
+  if (!targets.botToken) return 0;
+  let sent = 0;
+  for (const chatId of targets.chatIds) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${targets.botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text, ...(parseMode ? { parse_mode: parseMode } : {}) }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r.ok) sent++;
+    } catch { /* try next chat */ }
+  }
+  return sent;
+}
+
+// ── OANDA credentials for a user's saved broker account (server-side only) ──
+async function getOandaConfigForUser(userId: number, brokerAccountId: number) {
+  const { db } = await import("@workspace/db");
+  const { brokerAccounts } = await import("@workspace/db/schema");
+  const { and, eq } = await import("drizzle-orm");
+  const { decryptCred } = await import("./services/trading-bridge.js");
+  const [acc] = await db.select().from(brokerAccounts)
+    .where(and(eq(brokerAccounts.id, brokerAccountId), eq(brokerAccounts.userId, userId)));
+  if (!acc) throw new TRPCError({ code: "NOT_FOUND", message: "حساب الوساطة غير موجود" });
+  if (acc.platform !== "oanda") throw new TRPCError({ code: "BAD_REQUEST", message: "هذا الحساب ليس حساب OANDA" });
+  const apiToken = decryptCred(acc.apiTokenEnc);
+  if (!apiToken || !acc.externalAccountId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "بيانات OANDA ناقصة لهذا الحساب" });
+  return { apiToken, accountId: acc.externalAccountId, environment: (acc.environment === "live" ? "live" : "practice") as "live" | "practice" };
+}
+
 // ── Desktop download token store (in-memory, 24h TTL) ────────────
 export const desktopDownloadMap = new Map<string, { zipPath: string; filename: string; expiresAt: number }>();
 
@@ -928,119 +988,91 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
   }),
 
   // ==================== Trading (OANDA Forex) ====================
+  // Credentials are NEVER sent from the browser: every call names one of the
+  // caller's saved OANDA broker accounts, whose token is decrypted server-side.
   trading: router({
     // Test OANDA connection
     testOanda: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-      }))
-      .mutation(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
         const { testConnection } = await import("./services/oanda-trading.js");
-        return testConnection(input);
+        return testConnection(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId));
       }),
 
     // Get account summary
     accountInfo: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-      }))
-      .query(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number() }))
+      .query(async ({ input, ctx }) => {
         const { getAccountInfo } = await import("./services/oanda-trading.js");
-        return getAccountInfo(input);
+        return getAccountInfo(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId));
       }),
 
     // Get live prices
     prices: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-        instruments: z.array(z.string()),
-      }))
-      .query(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number(), instruments: z.array(z.string().regex(/^[A-Z0-9]+_[A-Z0-9]+$/)).min(1).max(20) }))
+      .query(async ({ input, ctx }) => {
         const { getPrices } = await import("./services/oanda-trading.js");
-        return getPrices(input, input.instruments);
+        return getPrices(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId), input.instruments);
       }),
 
-    // Place order
+    // Place order — a protective stop-loss is mandatory
     placeOrder: tradingProcedure
       .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-        instrument: z.string(),
-        units: z.number(),
+        brokerAccountId: z.number(),
+        instrument: z.string().regex(/^[A-Z0-9]+_[A-Z0-9]+$/),
+        units: z.number().int().refine(u => u !== 0, "units must be non-zero"),
         type: z.enum(["MARKET", "LIMIT", "STOP"]).default("MARKET"),
-        price: z.number().optional(),
-        stopLossPrice: z.number().optional(),
-        takeProfitPrice: z.number().optional(),
+        price: z.number().positive().optional(),
+        stopLossPrice: z.number().positive(),
+        takeProfitPrice: z.number().positive().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { placeOrder } = await import("./services/oanda-trading.js");
         return placeOrder(
-          { apiToken: input.apiToken, accountId: input.accountId, environment: input.environment },
+          await getOandaConfigForUser(ctx.user.id, input.brokerAccountId),
           { instrument: input.instrument, units: input.units, type: input.type, price: input.price, stopLossPrice: input.stopLossPrice, takeProfitPrice: input.takeProfitPrice }
         );
       }),
 
     // Get open positions
     positions: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-      }))
-      .query(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number() }))
+      .query(async ({ input, ctx }) => {
         const { getOpenPositions } = await import("./services/oanda-trading.js");
-        return getOpenPositions(input);
+        return getOpenPositions(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId));
       }),
 
     // Get open trades
     trades: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-      }))
-      .query(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number() }))
+      .query(async ({ input, ctx }) => {
         const { getOpenTrades } = await import("./services/oanda-trading.js");
-        return getOpenTrades(input);
+        return getOpenTrades(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId));
       }),
 
     // Close trade
     closeTrade: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-        tradeId: z.string(),
-      }))
-      .mutation(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number(), tradeId: z.string().regex(/^\d+$/) }))
+      .mutation(async ({ input, ctx }) => {
         const { closeTrade } = await import("./services/oanda-trading.js");
-        return closeTrade(input, input.tradeId);
+        return closeTrade(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId), input.tradeId);
       }),
 
-    // Auto-execute signal from TradingAnalysis page
+    // Auto-execute a signal — stop-loss mandatory, risk-based sizing
     autoExecute: tradingProcedure
       .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
+        brokerAccountId: z.number(),
         pair: z.string(),
         direction: z.enum(["BUY", "SELL"]),
         confidence: z.number().min(0).max(100),
-        stopLoss: z.number().optional(),
-        takeProfit: z.number().optional(),
+        stopLoss: z.number().positive(),
+        takeProfit: z.number().positive().optional(),
         riskPercent: z.number().min(0.1).max(5).default(1),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { autoExecuteSignal } = await import("./services/oanda-trading.js");
         return autoExecuteSignal(
-          { apiToken: input.apiToken, accountId: input.accountId, environment: input.environment },
+          await getOandaConfigForUser(ctx.user.id, input.brokerAccountId),
           { pair: input.pair, direction: input.direction, confidence: input.confidence, stopLoss: input.stopLoss, takeProfit: input.takeProfit },
           input.riskPercent
         );
@@ -1458,7 +1490,6 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         platform: z.enum(["quotex", "iqoption", "pocketoption", "olymptrade", "oanda", "mt4", "mt5"]),
         accountEmail: z.string().email().optional().or(z.literal("")),
         accountName: z.string().min(1).max(128).optional(),
-        accountPassword: z.string().min(1).optional(),
         apiToken: z.string().min(1).optional(),
         apiSecret: z.string().min(1).optional(),
         externalAccountId: z.string().optional(),
@@ -1477,19 +1508,17 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         // Validate per-platform required fields
         const isOanda = input.platform === "oanda";
         const isMT = input.platform === "mt4" || input.platform === "mt5";
-        const isBinary = !isOanda && !isMT;
 
-        if (isBinary && (!input.accountEmail || !input.accountPassword)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "البريد الإلكتروني وكلمة المرور مطلوبان لمنصات الخيارات الثنائية" });
-        }
+        // Platform passwords are never collected: nothing can use them (no official
+        // API for binary options, no MT bridge yet) so storing them is pure liability.
         if (isOanda && (!input.apiToken || !input.externalAccountId)) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "OANDA يتطلب API Token + Account ID" });
         }
-        if (isMT && (!input.externalAccountId || !input.accountPassword || !input.serverHost)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "MT4/MT5 يتطلب رقم الحساب + كلمة المرور + اسم السيرفر" });
+        if (isMT && (!input.externalAccountId || !input.serverHost)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "MT4/MT5 يتطلب رقم الحساب + اسم السيرفر" });
         }
 
-        const accountPasswordEnc = encryptCred(input.accountPassword);
+        const accountPasswordEnc = null;
         const apiTokenEnc = encryptCred(input.apiToken);
         const apiSecretEnc = encryptCred(input.apiSecret);
 
@@ -1518,7 +1547,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           environment: input.environment,
           autoTradeEnabled: input.autoTradeEnabled,
           riskPercent: input.riskPercent.toString(),
-          connectionStatus: test.success ? "connected" : "error",
+          connectionStatus: test.status,
           connectionMessage: test.message,
           lastConnectedAt: test.success ? new Date() : null,
           balance: input.balance?.toString(),
@@ -1548,7 +1577,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         const r = await testBrokerConnection(account as any);
         await db.update(brokerAccounts)
           .set({
-            connectionStatus: r.success ? "connected" : "error",
+            connectionStatus: r.status,
             connectionMessage: r.message,
             lastConnectedAt: r.success ? new Date() : account.lastConnectedAt,
             updatedAt: new Date(),
@@ -1584,9 +1613,9 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }))
       .mutation(async ({ ctx, input }) => {
         const { db } = await import("@workspace/db");
-        const { brokerAccounts, brokerTrades, telegramBots } = await import("@workspace/db/schema");
+        const { brokerAccounts, brokerTrades } = await import("@workspace/db/schema");
         const { and, eq } = await import("drizzle-orm");
-        const { executeSignalOnBroker, broadcastToTelegram, formatSignalMessage } = await import("./services/trading-bridge.js");
+        const { executeSignalOnBroker, formatSignalMessage } = await import("./services/trading-bridge.js");
 
         const [account] = await db.select().from(brokerAccounts)
           .where(and(eq(brokerAccounts.id, input.accountId), eq(brokerAccounts.userId, ctx.user.id)));
@@ -1619,36 +1648,10 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           signalSource: "HAYO Auto-Bridge",
         });
 
-        // Broadcast to user's Telegram bot + global bot
-        const userBots = await db.select().from(telegramBots)
-          .where(eq(telegramBots.userId, ctx.user.id)).limit(1);
-        const userBotToken = userBots[0]?.botToken || null;
-
-        // Pull persisted chat_ids from telegram_chats (filled by /start in the webhook)
-        let userChatIds: number[] = [];
-        try {
-          const { telegramChats } = await import("@workspace/db/schema");
-          const chats = await db.select().from(telegramChats)
-            .where(and(eq(telegramChats.userId, ctx.user.id), eq(telegramChats.isActive, true)));
-          userChatIds = chats
-            .filter((c: any) => c.receiveSignals)
-            .map((c: any) => parseInt(c.chatId, 10))
-            .filter((n: number) => !Number.isNaN(n));
-        } catch { /* table may not exist yet on first deploy */ }
-
-        // Fallback: discover chatIds from the bot's recent updates if persistence empty
-        if (userBotToken && userChatIds.length === 0) {
-          try {
-            const upd = await fetch(`https://api.telegram.org/bot${userBotToken}/getUpdates?limit=20`).then(r => r.json()) as any;
-            if (upd?.ok && Array.isArray(upd.result)) {
-              const seen = new Set<number>();
-              for (const u of upd.result) {
-                const id = u?.message?.chat?.id;
-                if (typeof id === "number" && !seen.has(id)) { seen.add(id); userChatIds.push(id); }
-              }
-            }
-          } catch {/* ignore */}
-        }
+        // Notify ONLY this user's own channels: their bot + chats that /start-ed it
+        // (admins get the owner channel). Never the owner's chat for other users,
+        // and never "whoever messaged the bot recently" (getUpdates).
+        const targets = await resolveTelegramTargets(ctx.user);
 
         const text = formatSignalMessage(
           { pair: input.pair, direction: input.direction, confidence: input.confidence,
@@ -1658,13 +1661,11 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           result,
         );
 
-        const broadcast = await broadcastToTelegram({
-          userBotToken,
-          userChatIds,
-          globalBotToken: process.env.TELEGRAM_BOT_TOKEN || null,
-          globalChatId: process.env.TELEGRAM_OWNER_CHAT_ID || null,
-          text,
-        });
+        const sentCount = await sendTelegramToTargets(targets, text, "Markdown");
+        const broadcast = {
+          sentToUserBot: !targets.isOwnerChannel && sentCount > 0,
+          sentToGlobalBot: targets.isOwnerChannel && sentCount > 0,
+        };
 
         return { ...result, telegram: broadcast };
       }),
@@ -3513,12 +3514,14 @@ ${scanSummary}
       }),
 
     // ── Convergence (التطابق) ────────────────────────────────────────
+    // The scanner is a single global, owner-facing service: anyone may read its
+    // status, but only admins may reconfigure it, trigger scans or send tests.
     convergenceStatus: protectedProcedure.query(async () => {
       const { getConvergenceConfig, getConvergenceSignals } = await import("../telegram/bot.js");
       return { config: getConvergenceConfig(), signals: getConvergenceSignals() };
     }),
 
-    convergenceToggle: protectedProcedure
+    convergenceToggle: adminProcedure
       .input(z.object({ enabled: z.boolean() }))
       .mutation(async ({ input }) => {
         const { setConvergenceConfig, getConvergenceConfig } = await import("../telegram/bot.js");
@@ -3526,7 +3529,7 @@ ${scanSummary}
         return { config: getConvergenceConfig() };
       }),
 
-    convergenceSetInterval: protectedProcedure
+    convergenceSetInterval: adminProcedure
       .input(z.object({ intervalMinutes: z.number().min(1).max(15) }))
       .mutation(async ({ input }) => {
         const { setConvergenceConfig, getConvergenceConfig } = await import("../telegram/bot.js");
@@ -3534,14 +3537,14 @@ ${scanSummary}
         return { config: getConvergenceConfig() };
       }),
 
-    convergenceScanNow: protectedProcedure.mutation(async () => {
+    convergenceScanNow: adminProcedure.mutation(async () => {
       const { triggerConvergenceScan, getConvergenceSignals } = await import("../telegram/bot.js");
       const fn = triggerConvergenceScan();
       if (fn) await fn();
       return { signals: getConvergenceSignals() };
     }),
 
-    convergenceTestSignal: protectedProcedure.mutation(async () => {
+    convergenceTestSignal: adminProcedure.mutation(async () => {
       const { sendTestConvergenceSignal } = await import("../telegram/bot.js");
       const result = await sendTestConvergenceSignal();
       return { result };
@@ -3639,22 +3642,12 @@ ${scanSummary}
         })),
       }))
       .mutation(async ({ input, ctx }) => {
-        const botToken = process.env.TELEGRAM_BOT_TOKEN;
-        const chatId = process.env.TELEGRAM_OWNER_CHAT_ID;
-
-        if (!botToken) {
-          const { db } = await import("@workspace/db");
-          const { telegramBots } = await import("@workspace/db/schema");
-          const { eq } = await import("drizzle-orm");
-          const bots = await db.select().from(telegramBots)
-            .where(eq(telegramBots.userId, ctx.user.id)).limit(1);
-          if (!bots[0]?.isActive || !bots[0].botToken) {
-            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لم يتم ضبط بوت Telegram (TELEGRAM_BOT_TOKEN أو إعدادات البوت)" });
-          }
+        const targets = await resolveTelegramTargets(ctx.user);
+        if (!targets.botToken) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لم يتم ضبط بوت Telegram خاص بك — أضف بوتك من صفحة التكاملات" });
         }
-        const finalToken = botToken || "";
-        if (!chatId) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "TELEGRAM_OWNER_CHAT_ID غير مضبوط" });
+        if (targets.chatIds.length === 0) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا توجد محادثة مسجلة لبوتك — أرسل /start للبوت أولاً" });
         }
 
         const flagMap: Record<string, string> = {
@@ -3730,19 +3723,12 @@ ${scanSummary}
 
         const text = lines.join("\n");
 
-        const sendRes = await fetch(`https://api.telegram.org/bot${finalToken}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, text }),
-          signal: AbortSignal.timeout(10000),
-        });
-
-        if (!sendRes.ok) {
-          const err = await sendRes.json() as any;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `فشل الإرسال: ${err?.description || sendRes.statusText}` });
+        const sent = await sendTelegramToTargets(targets, text);
+        if (sent === 0) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "فشل الإرسال إلى Telegram" });
         }
 
-        return { success: true, chatId };
+        return { success: true, chatId: targets.chatIds[0] };
       }),
 
     // ── Auto Signal: Multi-Timeframe Cross Detection + Telegram Alert ──
@@ -4003,10 +3989,9 @@ ${scanSummary}
 
         // Send confirmed signals to Telegram (with AI analysis)
         if (input.sendToTelegram && aiConfirmedSignals.length > 0) {
-          const botToken = process.env.TELEGRAM_BOT_TOKEN;
-          const chatId = process.env.TELEGRAM_OWNER_CHAT_ID;
+          const targets = await resolveTelegramTargets(ctx.user);
 
-          if (botToken && chatId) {
+          if (targets.botToken && targets.chatIds.length > 0) {
             for (const sig of aiConfirmedSignals) {
               const sigEmoji = sig.signal === "BUY" ? "🟢" : "🔴";
               const sigLabel = sig.signal === "BUY" ? "شراء" : "بيع";
@@ -4060,15 +4045,8 @@ ${scanSummary}
                 `⚠️ للأغراض التعليمية فقط — ليست نصيحة مالية`,
               ].join("\n");
 
-              try {
-                await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" }),
-                  signal: AbortSignal.timeout(10000),
-                });
-              } catch (e: any) {
-                console.warn(`[AutoSignal] Failed to send to Telegram: ${e.message}`);
+              if (await sendTelegramToTargets(targets, msg, "HTML") === 0) {
+                console.warn(`[AutoSignal] Failed to send ${sig.pair} to Telegram`);
               }
             }
           }
@@ -4605,50 +4583,37 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
         // Send alerts to Telegram if any
         if (alerts.length > 0) {
           try {
-            const { db } = await import("@workspace/db");
-            const { telegramBots } = await import("@workspace/db/schema");
-            const { eq } = await import("drizzle-orm");
+            const targets = await resolveTelegramTargets(ctx.user);
 
-            const bots = await db.select().from(telegramBots).where(eq(telegramBots.userId, ctx.user.id)).limit(1);
-            const bot = bots[0];
+            if (targets.botToken && targets.chatIds.length > 0) {
+              for (const alert of alerts) {
+                const sigEmoji = alert.signal === "BUY" ? "🟢" : "🔴";
+                const sigLabel = alert.signal === "BUY" ? "شراء" : "بيع";
+                const now = new Date();
+                const utcTime = now.toISOString().slice(11, 16) + " UTC";
 
-            if (bot?.isActive && bot.botToken) {
-              const chatId = process.env.TELEGRAM_OWNER_CHAT_ID;
-              if (chatId) {
-                for (const alert of alerts) {
-                  const sigEmoji = alert.signal === "BUY" ? "🟢" : "🔴";
-                  const sigLabel = alert.signal === "BUY" ? "شراء" : "بيع";
-                  const now = new Date();
-                  const utcTime = now.toISOString().slice(11, 16) + " UTC";
+                const lines = [
+                  `🚨 <b>إشارة تلقائية — تقاطع 3 فريمات</b>`,
+                  ``,
+                  `${alert.flag} <b>${alert.pair.replace(/(.{3})(.{3})/, "$1/$2")}</b> | ${sigEmoji} <b>${sigLabel}</b>`,
+                  `💰 السعر: <code>${alert.price}</code>  ⏱ ${utcTime}`,
+                  `━━━━ توافق الفريمات ━━━━`,
+                  `⚡ 1M: ${alert.tf1.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf1.buys}/${alert.tf1.buys + alert.tf1.sells} استراتيجية | RSI ${alert.tf1.rsi.toFixed(1)} | قوة ${alert.tf1.strength}%`,
+                  `🕐 5M: ${alert.tf5.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf5.buys}/${alert.tf5.buys + alert.tf5.sells} استراتيجية | RSI ${alert.tf5.rsi.toFixed(1)} | قوة ${alert.tf5.strength}%`,
+                  `🕒 15M: ${alert.tf15.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf15.buys}/${alert.tf15.buys + alert.tf15.sells} استراتيجية | RSI ${alert.tf15.rsi.toFixed(1)} | قوة ${alert.tf15.strength}%`,
+                  `━━━━ التأكيدات ━━━━`,
+                  `💪 ADX: ${alert.adxStrength.toFixed(1)} ${alert.adxStrength > 25 ? "📈 اتجاه قوي" : "➡️ ضعيف"}`,
+                  `🔄 Stochastic: ${alert.stochK.toFixed(1)} ${alert.stochK > 80 ? "⚠️ ذروة شراء" : alert.stochK < 20 ? "⚠️ ذروة بيع" : "✅"}`,
+                  `📍 ${alert.pivotLevel}`,
+                  `━━━━━━━━━━━━━━━━━━━━`,
+                  `┌──────────────────────────┐`,
+                  `│ ${sigEmoji} توافق: <b>${sigLabel}</b>    ثقة: <b>${alert.confidence}%</b> │`,
+                  `└──────────────────────────┘`,
+                  ``,
+                  `⚠️ للأغراض التعليمية فقط — ليس نصيحة مالية`,
+                ];
 
-                  const lines = [
-                    `🚨 <b>إشارة تلقائية — تقاطع 3 فريمات</b>`,
-                    ``,
-                    `${alert.flag} <b>${alert.pair.replace(/(.{3})(.{3})/, "$1/$2")}</b> | ${sigEmoji} <b>${sigLabel}</b>`,
-                    `💰 السعر: <code>${alert.price}</code>  ⏱ ${utcTime}`,
-                    `━━━━ توافق الفريمات ━━━━`,
-                    `⚡ 1M: ${alert.tf1.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf1.buys}/${alert.tf1.buys + alert.tf1.sells} استراتيجية | RSI ${alert.tf1.rsi.toFixed(1)} | قوة ${alert.tf1.strength}%`,
-                    `🕐 5M: ${alert.tf5.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf5.buys}/${alert.tf5.buys + alert.tf5.sells} استراتيجية | RSI ${alert.tf5.rsi.toFixed(1)} | قوة ${alert.tf5.strength}%`,
-                    `🕒 15M: ${alert.tf15.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf15.buys}/${alert.tf15.buys + alert.tf15.sells} استراتيجية | RSI ${alert.tf15.rsi.toFixed(1)} | قوة ${alert.tf15.strength}%`,
-                    `━━━━ التأكيدات ━━━━`,
-                    `💪 ADX: ${alert.adxStrength.toFixed(1)} ${alert.adxStrength > 25 ? "📈 اتجاه قوي" : "➡️ ضعيف"}`,
-                    `🔄 Stochastic: ${alert.stochK.toFixed(1)} ${alert.stochK > 80 ? "⚠️ ذروة شراء" : alert.stochK < 20 ? "⚠️ ذروة بيع" : "✅"}`,
-                    `📍 ${alert.pivotLevel}`,
-                    `━━━━━━━━━━━━━━━━━━━━`,
-                    `┌──────────────────────────┐`,
-                    `│ ${sigEmoji} توافق: <b>${sigLabel}</b>    ثقة: <b>${alert.confidence}%</b> │`,
-                    `└──────────────────────────┘`,
-                    ``,
-                    `⚠️ للأغراض التعليمية فقط — ليس نصيحة مالية`,
-                  ];
-
-                  await fetch(`https://api.telegram.org/bot${bot.botToken}/sendMessage`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ chat_id: chatId, text: lines.join("\n"), parse_mode: "HTML" }),
-                    signal: AbortSignal.timeout(10000),
-                  });
-                }
+                await sendTelegramToTargets(targets, lines.join("\n"), "HTML");
               }
             }
           } catch (err: any) {
