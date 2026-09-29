@@ -293,37 +293,35 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
     return cached.data;
   }
 
-  let apiKey = getTwelveDataKey();
+  // Same provider order as the web engine: OANDA (broker-grade, if configured)
+  // → Yahoo (keyless, fast) → TwelveData. TwelveData went first before; with
+  // exhausted/rate-limited keys its retries (8s back-offs) cost ~60s per fetch,
+  // so one analysis took minutes and a convergence scan close to an hour.
   let json: any = null;
-  // Try TwelveData first (when a key exists), with key rotation on rate limits.
-  for (let attempt = 0; apiKey && attempt < 6; attempt++) {
+  let source = "";
+  try {
+    const fb = await fetchOhlcFallback(p.tdSymbol, tfCfg.interval, tfCfg.outputsize);
+    if (fb) { json = fb; source = fb.meta.source; }
+  } catch { /* try TwelveData */ }
+
+  let apiKey = json ? "" : getTwelveDataKey();
+  for (let attempt = 0; apiKey && attempt < 3; attempt++) {
     const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(p.tdSymbol)}&interval=${tfCfg.interval}&outputsize=${tfCfg.outputsize}&timezone=UTC&apikey=${apiKey}`;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (res.status === 429) {
-        rotateToNextKey(); apiKey = getTwelveDataKey();
-        await new Promise(r => setTimeout(r, 8000));
-        continue;
-      }
-      if (!res.ok) break; // fall through to OANDA/Yahoo fallback
+      if (res.status === 429) { rotateToNextKey(); apiKey = getTwelveDataKey(); continue; }
+      if (!res.ok) break;
       json = await res.json() as any;
       if (json.status === "error" && isRateLimitError(json)) {
         const isDailyDone = await checkAndMarkIfDailyExhausted(apiKey);
-        if (!isDailyDone) { rotateToNextKey(); await new Promise(r => setTimeout(r, 8000)); }
+        if (!isDailyDone) rotateToNextKey();
         apiKey = getTwelveDataKey();
         json = null;
-        if (!apiKey) break;
         continue;
       }
+      source = "twelvedata";
       break;
-    } catch { break; } // network error → fallback
-  }
-
-  // Fallback to OANDA (broker-grade) → Yahoo (keyless) when TwelveData is
-  // unavailable/exhausted, so Telegram signals keep working without TD credits.
-  if (!json || json.status === "error" || !json.values || !Array.isArray(json.values)) {
-    const fb = await fetchOhlcFallback(p.tdSymbol, tfCfg.interval, tfCfg.outputsize);
-    if (fb) { json = fb; console.log(`[Bot] market data via ${fb.meta.source} (TwelveData unavailable) — ${pair} ${tfCfg.interval}`); }
+    } catch { break; }
   }
 
   if (!json || json.status === "error" || !json.values || !Array.isArray(json.values)) {
@@ -332,7 +330,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
 
   // Closed candles only — same rule as the web engine, so both agree.
   const rawCandles = [...dropFormingCandle(json.values, tfCfg.interval)].reverse();
-  if (rawCandles.length < 20) throw new Error("بيانات غير كافية من TwelveData");
+  if (rawCandles.length < 20) throw new Error("بيانات غير كافية من مزود البيانات");
 
   const closes = rawCandles.map((c: any) => parseFloat(c.close));
   const highs  = rawCandles.map((c: any) => parseFloat(c.high));
@@ -372,7 +370,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   };
 
   marketCache.set(cacheKey, { data: marketResult, ts: Date.now() });
-  console.log(`[Bot] TwelveData ✅ ${pair} ${tfCfg.interval} — ${closes.length} candles, price: ${fmt(price)}`);
+  console.log(`[Bot] ✅ ${pair} ${tfCfg.interval} via ${source || "?"} — ${closes.length} candles, price: ${fmt(price)}`);
   return marketResult;
 }
 
@@ -1229,7 +1227,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
       const tfs = convergenceTfs();
       const topTf = tfs[tfs.length - 1];
       for (const { key, cfg } of tfs) {
-        await new Promise(r => setTimeout(r, 8500));
+        await new Promise(r => setTimeout(r, 2000)); // gentle pacing (Yahoo/OANDA first; TwelveData only as fallback)
         const d = await fetchMarket(pair, cfg);
         const cons = calcConsensus(d.strategies);
         results.push({ tf: key, direction: cons.direction, pct: cons.pct, data: d });
@@ -2090,7 +2088,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         await bot.sendMessage(chatId, "⚠️ اختر زوجاً واحداً على الأقل في إعدادات التطابق.", { reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }]] } });
         return;
       }
-      const estMin = Math.max(1, Math.round(c.pairs.length * 3 * 9 / 60));
+      const estMin = Math.max(1, Math.round(c.pairs.length * 3 * 3.5 / 60));
       await bot.editMessageText(
         `🎯 <b>جاري فحص التطابق...</b>\n${c.pairs.length} زوج × ${CONVERGENCE_PRESETS[c.preset].label} (${c.useAI ? "مع AI" : "بدون AI"})\n⏱ المدة التقريبية: ~${estMin} دقيقة\n<i>تصلك إشارة لكل تطابق فور حدوثه، ثم ملخص الفحص.</i>`,
         { chat_id: chatId, message_id: msgId, parse_mode: "HTML" }

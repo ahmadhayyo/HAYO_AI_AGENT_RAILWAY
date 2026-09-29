@@ -1317,8 +1317,8 @@ export default function TradingAnalysis() {
   }, []);
 
   // ─── Bridge: Saved Broker Accounts (auto-execute on real platforms) ──
-  const brokerAccountsQ = trpc.hayo.broker.listAccounts.useQuery(undefined, { staleTime: 30_000 });
-  const executeBrokerSignal = trpc.hayo.broker.executeSignal.useMutation({
+  const brokerAccountsQ = trpc.broker.listAccounts.useQuery(undefined, { staleTime: 30_000 });
+  const executeBrokerSignal = trpc.broker.executeSignal.useMutation({
     onSuccess: (r: any) => {
       if (r?.success) toast.success(`✅ تم تنفيذ الصفقة على المنصة (${r.platform})`);
       else if (r?.manualOnly) toast.info(r.message);
