@@ -6,12 +6,13 @@
  */
 
 import TelegramBot from "node-telegram-bot-api";
-import { callProvider, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
+import { callProvider, callProviderVision, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
+import { renderChartSnapshot } from "../hayo/services/chart-snapshot";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
 import { fetchOhlcFallback, dropFormingCandle } from "../hayo/market-data";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
-  calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct,
+  calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
   type StrategySignal, type FilterResult,
 } from "../hayo/market-analysis";
 
@@ -345,6 +346,12 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
     STOCH, WILLR, PIVOTS, ADX,
     strategies, filters,
     datetime: rawCandles[rawCandles.length - 1].datetime,
+    // Raw closed candles (epoch seconds) — used to draw the chart snapshot the
+    // vision models read, so image and indicators come from identical data.
+    candles: rawCandles.map((c: any, i: number) => ({
+      time: Math.floor(toUtcMs(String(c.datetime)) / 1000),
+      open: opens[i], high: highs[i], low: lows[i], close: closes[i],
+    })),
   };
 
   marketCache.set(cacheKey, { data: marketResult, ts: Date.now() });
@@ -430,7 +437,7 @@ async function fetchEconomicNews(pair: string): Promise<NewsEvent[]> {
 }
 
 // ─── AI Runner (5 models — matches platform) ──────────────────────────
-async function runAI(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>, news: NewsEvent[] = []) {
+async function runAI(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>, news: NewsEvent[] = [], chart: Buffer | null = null) {
   const buySigs  = d.strategies.filter(s=>s.signal==="BUY").length;
   const sellSigs = d.strategies.filter(s=>s.signal==="SELL").length;
   const avgStr   = Math.round(
@@ -478,6 +485,21 @@ ${news.some(e=>e.impact==="High")?"5. 📰 هناك أخبار عالية الت
 
 لا تُرجع أي نص خارج JSON. هذا تحليل تعليمي فقط.`;
 
+  // Chart-reading instructions (only for models that actually receive the image).
+  const visionSys = sys.replace(
+    `يجب أن ترد فقط بتنسيق JSON صحيح:`,
+    `📸 مرفق لقطة حيّة للشارت (نفس الشموع المغلقة التي حُسبت منها المؤشرات): شموع + SMA20 (برتقالي) + SMA50 (أزرق) + SMA200 (بنفسجي) + بولينجر (رمادي منقّط) + خطوط Pivot/R1/S1 إن وُجدت، وتحتها RSI(14) ثم MACD.
+اعمل بالترتيب:
+أ) اقرأ الشارت بصرياً بشكل مستقل قبل الأرقام: الاتجاه وبنية القمم والقيعان، أين السعر من المتوسطات والبولينجر، مستويات دعم/مقاومة ظاهرة، نماذج سعرية أو شموع انعكاسية، حالة RSI وMACD.
+ب) قارن قراءتك البصرية بمخرجات المؤشرات والاستراتيجيات والفلاتر أدناه: أين تتفق وأين تتناقض؟
+ج) أصدر القرار. إذا ناقض الشارتُ المؤشرات بوضوح فالقرار HOLD.
+
+يجب أن ترد فقط بتنسيق JSON صحيح:`,
+  ).replace(
+    `"risk":"LOW"|"MEDIUM"|"HIGH"}`,
+    `"risk":"LOW"|"MEDIUM"|"HIGH","chartReading":"ما تراه في الشارت في جملتين","chartAgrees":true|false}`,
+  );
+
   // ── 5 providers — same as platform ─────────────────────────────────
   const providers: AIProvider[] = ["claude","gpt4","gemini","geminiPro","deepseek"];
   const settled = await Promise.allSettled(
@@ -485,18 +507,25 @@ ${news.some(e=>e.impact==="High")?"5. 📰 هناك أخبار عالية الت
       const name = PROVIDER_CONFIGS[p].name;
       const icon = PROVIDER_CONFIGS[p].icon;
       if (!isProviderAvailable(p)) {
-        return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"المزود غير متاح", entry:"—", sl:"—", tp:"—", risk:"—" };
+        return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"المزود غير متاح", entry:"—", sl:"—", tp:"—", risk:"—", sawChart:false, chartReading:"", chartAgrees:null };
       }
       try {
-        const res = await callProvider(p, sys, ctx);
+        // Vision models get the chart + chart-reading instructions. If the image
+        // could not be delivered, callProviderVision falls back to text-only and
+        // sawImage=false — its "chartReading" is then discarded below.
+        const res = await callProviderVision(p, chart ? visionSys : sys, ctx, chart);
         const clean = res.content.replace(/```json\n?|```\n?/g,"").trim();
         const j = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}")+1));
+        const sig = ["BUY","SELL","HOLD"].includes(j.signal) ? j.signal : "HOLD";
         return { provider:p, name, icon,
-          signal:j.signal, confidence:Math.min(100,Math.max(0,Number(j.confidence)||50)),
-          reasoning:j.reasoning||"—", entry:j.entryZone||"—", sl:j.stopLoss||"—", tp:j.takeProfit||"—", risk:j.risk||"MEDIUM" };
+          signal:sig, confidence:Math.min(100,Math.max(0,Number(j.confidence)||50)),
+          reasoning:j.reasoning||"—", entry:j.entryZone||"—", sl:j.stopLoss||"—", tp:j.takeProfit||"—", risk:j.risk||"MEDIUM",
+          sawChart: res.sawImage,
+          chartReading: res.sawImage ? String(j.chartReading || "") : "",
+          chartAgrees: res.sawImage && typeof j.chartAgrees === "boolean" ? j.chartAgrees : null };
       } catch (err: any) {
         console.error(`[TelegramBot] ${name} error:`, err.message);
-        return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"", entry:"—", sl:"—", tp:"—", risk:"—" };
+        return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"", entry:"—", sl:"—", tp:"—", risk:"—", sawChart:false, chartReading:"", chartAgrees:null };
       }
     })
   );
@@ -537,6 +566,29 @@ function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fe
     ``,
     `<i>⚠️ للأغراض التعليمية فقط</i>`,
   ].join("\n");
+}
+
+/** AI text is untrusted: escape it before embedding in Telegram HTML. */
+function escHtml(t: string): string {
+  return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Snapshot of the live chart (same closed candles as the indicators); null if unavailable. */
+async function renderPairChart(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>): Promise<Buffer | null> {
+  const p = PAIRS[pair];
+  const levels: { price: number; label: string; color: string }[] = [];
+  const pv: any = d.PIVOTS;
+  if (pv && pv.basis === "prevDay") {
+    levels.push({ price: pv.r1, label: "R1", color: "#ef5350" }, { price: pv.pivot, label: "Pivot", color: "#fbc02d" }, { price: pv.s1, label: "S1", color: "#26a69a" });
+  }
+  return renderChartSnapshot({ title: `${p.label} · ${tf}`, candles: d.candles, decimals: p.decimals, levels });
+}
+
+async function sendChartPhoto(bot: TelegramBot, chatId: number, png: Buffer | null, caption: string): Promise<void> {
+  if (!png) return;
+  try {
+    await bot.sendPhoto(chatId, png, { caption }, { filename: "chart.png", contentType: "image/png" });
+  } catch (err: any) { console.warn("[TelegramBot] sendPhoto failed:", err.message); }
 }
 
 // ─── AI consensus ─────────────────────────────────────────────────────
@@ -616,6 +668,12 @@ export function computeRecommendation(
   if (costPct !== null && costPct >= 25) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
   if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
+  // Visual cross-check: if most models that SAW the chart say it contradicts the indicators → wait.
+  const readers = aiResults.filter((r: any) => r.sawChart && r.chartAgrees !== null);
+  const contradict = readers.filter((r: any) => r.chartAgrees === false).length;
+  if (readers.length >= 2 && contradict * 2 > readers.length) {
+    blockers.push(`قراءة الشارت البصرية تناقض المؤشرات (${contradict}/${readers.length} نماذج)`);
+  }
   if (blockers.length) dir = "HOLD";
 
   // ── Levels: AI levels only if they are sane, otherwise ATR-based ──
@@ -779,13 +837,14 @@ function buildAIMsg(
       `📰 أخبار متوسطة: ${news.map(e=>e.currency+"—"+e.title.slice(0,22)+fmtCd(e.minutesUntil)).join(" | ")}`,
     ] : []),
     ``,
-    `<b>━━ 🤖 الذكاء الاصطناعي (${aiResults.length} نماذج) ━━</b>`,
+    `<b>━━ 🤖 الذكاء الاصطناعي (${aiResults.length} نماذج — ${aiResults.filter((r:any)=>r.sawChart).length} قرأت الشارت 👁️) ━━</b>`,
     ...aiResults.map((r:any)=>r.signal==="ERROR"
       ? `${r.icon} <b>${r.name}</b>: ⚠️ غير متاح`
       : [
-          `${r.icon} <b>${r.name}</b>: ${r.signal==="BUY"?"🟢 شراء":r.signal==="SELL"?"🔴 بيع":"🟡 انتظار"} <code>${r.confidence}%</code> | خطر: ${r.risk==="LOW"?"🟢 منخفض":r.risk==="HIGH"?"🔴 مرتفع":"🟡 متوسط"}`,
-          `   💬 <i>${r.reasoning.slice(0,120)}${r.reasoning.length>120?"…":""}</i>`,
-          `   🎯 دخول <code>${r.entry}</code> | SL <code>${r.sl}</code> | TP <code>${r.tp}</code>`,
+          `${r.icon} <b>${r.name}</b>${r.sawChart?" 👁️":""}: ${r.signal==="BUY"?"🟢 شراء":r.signal==="SELL"?"🔴 بيع":"🟡 انتظار"} <code>${r.confidence}%</code> | خطر: ${r.risk==="LOW"?"🟢 منخفض":r.risk==="HIGH"?"🔴 مرتفع":"🟡 متوسط"}`,
+          ...(r.sawChart && r.chartReading ? [`   👁️ ${r.chartAgrees===false?"⚠️ الشارت يناقض المؤشرات":r.chartAgrees===true?"✅ الشارت يؤكد المؤشرات":"الشارت"}: <i>${escHtml(r.chartReading.slice(0,160))}${r.chartReading.length>160?"…":""}</i>`] : []),
+          `   💬 <i>${escHtml(r.reasoning.slice(0,120))}${r.reasoning.length>120?"…":""}</i>`,
+          `   🎯 دخول <code>${escHtml(r.entry)}</code> | SL <code>${escHtml(r.sl)}</code> | TP <code>${escHtml(r.tp)}</code>`,
         ].join("\n")
     ),
     ``,
@@ -827,8 +886,8 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         console.log(`[AutoScan] ${key}: consensus ${cons.pct}% ≥ ${minConsensus}% — running AI + news...`);
 
         // Fetch news first, then run AI with it
-        const news = await fetchEconomicNews(pair);
-        const aiResults = await runAI(pair, tf, d, news);
+        const [news, chart] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, d)]);
+        const aiResults = await runAI(pair, tf, d, news, chart);
         const valid = aiResults.filter((r:any) => r.signal !== "ERROR" && r.signal === cons.direction);
         const avgConf = valid.length
           ? Math.round(valid.reduce((a:number, r:any) => a + r.confidence, 0) / valid.length)
@@ -851,6 +910,7 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         }
         await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "telegram-auto");
         const msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias, await journalStatsLine());
+        await sendChartPhoto(bot, ownerChatId, chart, `📸 ${PAIRS[pair].label} | ${tf} — الشارت الحي الذي قرأته نماذج AI`);
         await bot.sendMessage(ownerChatId, msg, {
           parse_mode: "HTML",
           reply_markup: {
@@ -949,7 +1009,7 @@ export async function sendTestConvergenceSignal() {
     if (r.signal === "ERROR") return `${r.icon} <b>${r.name}</b>: ⚠️ غير متاح`;
     return [
       `${r.icon} <b>${r.name}</b>: ${r.signal === "BUY" ? "🟢 شراء" : r.signal === "SELL" ? "🔴 بيع" : "🟡 انتظار"} <code>${r.confidence}%</code>`,
-      `   🎯 دخول <code>${r.entry}</code> | SL <code>${r.sl}</code> | TP <code>${r.tp}</code>`,
+      `   🎯 دخول <code>${escHtml(r.entry)}</code> | SL <code>${escHtml(r.sl)}</code> | TP <code>${escHtml(r.tp)}</code>`,
       `   💬 <i>${r.reasoning}</i>`,
     ].join("\n");
   }).join("\n");
@@ -1042,8 +1102,8 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
 
       console.log(`[Convergence] 🎯 ${pair} MATCH! ${convergenceDir} across all 3 TFs — running AI...`);
 
-      const news = await fetchEconomicNews(pair);
-      const aiResults = await runAI(pair, "1m,5m,15m", results[2].data, news);
+      const [news, chart] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, "15m", results[2].data)]);
+      const aiResults = await runAI(pair, "1m,5m,15m", results[2].data, news, chart);
       const validAI = aiResults.filter((r: any) => r.signal !== "ERROR" && r.signal === convergenceDir);
       const avgConf = validAI.length
         ? Math.round(validAI.reduce((a: number, r: any) => a + r.confidence, 0) / validAI.length)
@@ -1089,7 +1149,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         if (r.signal === "ERROR") return `${r.icon} <b>${r.name}</b>: ⚠️ غير متاح`;
         return [
           `${r.icon} <b>${r.name}</b>: ${r.signal === "BUY" ? "🟢 شراء" : r.signal === "SELL" ? "🔴 بيع" : "🟡 انتظار"} <code>${r.confidence}%</code>`,
-          `   🎯 دخول <code>${r.entry}</code> | SL <code>${r.sl}</code> | TP <code>${r.tp}</code>`,
+          `   🎯 دخول <code>${escHtml(r.entry)}</code> | SL <code>${escHtml(r.sl)}</code> | TP <code>${escHtml(r.tp)}</code>`,
           `   💬 <i>${r.reasoning.slice(0, 100)}${r.reasoning.length > 100 ? "…" : ""}</i>`,
         ].join("\n");
       }).join("\n");
@@ -1146,6 +1206,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
       ].join("\n");
 
+      await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | 15m — الشارت الحي الذي قرأته نماذج AI`);
       await bot.sendMessage(ownerChatId, msg, {
         parse_mode: "HTML",
         reply_markup: {
@@ -1843,7 +1904,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       const loadingMsg = await bot.sendMessage(chatId,
         type === "quick"
           ? `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n⏳ جاري الحساب...`
-          : `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n⏳ جاري جلب البيانات...\n🔄 10 استراتيجيات + 4 فلاتر\n🤖 5 نماذج AI تحلل...\n<i>لحظات (30-60 ثانية)</i>`,
+          : `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n⏳ جاري جلب البيانات...\n🔄 15 استراتيجية + 4 فلاتر\n📸 التقاط الشارت الحي\n🤖 5 نماذج AI تقرأ الشارت وتحلل...\n<i>لحظات (30-90 ثانية)</i>`,
         { parse_mode:"HTML" }
       );
       const loadMsgId = loadingMsg.message_id;
@@ -1856,15 +1917,16 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
           });
         } else {
           await bot.editMessageText(
-            `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n✅ تم جلب البيانات\n📰 جلب الأخبار الاقتصادية...\n🤖 5 نماذج AI تحلل الآن...\n<i>لحظات (30-60 ثانية)</i>`,
+            `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n✅ تم جلب البيانات\n📰 جلب الأخبار + 📸 التقاط الشارت...\n🤖 5 نماذج AI تقرأ الشارت وتحلل الآن...\n<i>لحظات (30-90 ثانية)</i>`,
             { chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML" }
           );
-          const news = await fetchEconomicNews(pair);
-          const [aiResults, htfBias] = await Promise.all([runAI(pair, tf, marketData, news), computeHtfBias(pair, tf)]);
+          const [news, chart] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, marketData)]);
+          const [aiResults, htfBias] = await Promise.all([runAI(pair, tf, marketData, news, chart), computeHtfBias(pair, tf)]);
           await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, aiResults, news), "telegram-manual");
           await bot.editMessageText(buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias, await journalStatsLine()), {
             chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML", reply_markup:afterResultKeyboard(),
           });
+          await sendChartPhoto(bot, chatId, chart, `📸 ${p.label} | ${tf} — الشارت الحي الذي قرأته نماذج AI`);
         }
       } catch (err: any) {
         try {

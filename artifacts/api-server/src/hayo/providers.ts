@@ -567,3 +567,82 @@ export async function callFastAI(
   // 2. Fallback to the full power AI chain
   return callPowerAI(systemPrompt, userMessage, maxTokens);
 }
+
+// ─── Vision: text + one chart image ─────────────────────────────────────
+/** Slots whose native model accepts images (DeepSeek R1 is text-only). */
+export const VISION_PROVIDERS: ReadonlySet<AIProvider> = new Set<AIProvider>(["claude", "gpt4", "gemini", "geminiPro"]);
+
+/**
+ * Like callProvider, but also shows the model a PNG image. Uses the provider's
+ * native vision API when its key is configured; otherwise (no key, no vision
+ * support, or the vision call fails) falls back to the text-only callProvider.
+ * `sawImage` tells the caller whether the model actually received the image.
+ */
+export async function callProviderVision(
+  provider: AIProvider,
+  systemPrompt: string,
+  userMessage: string,
+  imagePng: Buffer | null,
+): Promise<{ content: string; provider: AIProvider; duration: number; sawImage: boolean }> {
+  const start = Date.now();
+  if (imagePng && VISION_PROVIDERS.has(provider) && isNativeAvailable(provider)) {
+    const b64 = imagePng.toString("base64");
+    try {
+      let content = "";
+      if (provider === "claude") {
+        const anthropic = createAnthropicClient();
+        const result = await anthropic.messages.create({
+          model: PROVIDER_CONFIGS.claude.model,
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: [{ role: "user", content: [
+            { type: "image", source: { type: "base64", media_type: "image/png", data: b64 } },
+            { type: "text", text: userMessage },
+          ] }],
+        });
+        content = result.content[0]?.type === "text" ? result.content[0].text : "";
+      } else if (provider === "gpt4") {
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: PROVIDER_CONFIGS.gpt4.model,
+            max_tokens: 4096,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: [
+                { type: "text", text: userMessage },
+                { type: "image_url", image_url: { url: `data:image/png;base64,${b64}`, detail: "high" } },
+              ] },
+            ],
+          }),
+          signal: AbortSignal.timeout(90000),
+        });
+        const data = await res.json() as any;
+        if (!res.ok || data.error) throw new Error(`OpenAI vision: ${data.error?.message || res.status}`);
+        content = data.choices?.[0]?.message?.content || "";
+      } else {
+        const geminiKey = process.env.GOOGLE_API_KEY3 || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+        const model = PROVIDER_CONFIGS[provider].model;
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/png", data: b64 } }, { text: userMessage }] }],
+            generationConfig: { maxOutputTokens: 8192, temperature: 0.3 },
+          }),
+          signal: AbortSignal.timeout(90000),
+        });
+        const data = await res.json() as any;
+        if (!res.ok || data.error) throw new Error(`Gemini vision: ${data.error?.message || res.status}`);
+        content = data.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "";
+      }
+      if (content) return { content, provider, duration: Date.now() - start, sawImage: true };
+    } catch (e: any) {
+      console.warn(`[callProviderVision] ${provider} vision failed → text-only:`, e.message?.slice(0, 120));
+    }
+  }
+  const r = await callProvider(provider, systemPrompt, userMessage);
+  return { ...r, sawImage: false };
+}
