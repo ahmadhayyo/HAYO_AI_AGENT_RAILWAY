@@ -786,6 +786,8 @@ function firstNumber(v: unknown): number {
 }
 
 const MIN_RR = 1.5;          // minimum reward:risk for levels we publish
+// Minimum AI models that must actually answer before an AI decision is trusted.
+const MIN_AI_ANSWERS = Math.max(1, Number(process.env.HAYO_MIN_AI_ANSWERS ?? 2));
 // Spread cost (% of a 1.5×ATR stop) at which a trade is blocked. Env-tunable;
 // HAYO_COST_BLOCK_PCT=0 disables the gate (the cost line is still shown).
 const COST_BLOCK_PCT = Number(process.env.HAYO_COST_BLOCK_PCT ?? 25);
@@ -849,6 +851,10 @@ export function computeRecommendation(
   if (!binary && COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
   if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
+  // Quorum: "the answer most models agree on" needs at least 2 models answering.
+  if (aiResults.length > 0 && ai.answered < MIN_AI_ANSWERS) {
+    blockers.push(`استجاب ${ai.answered} من ${aiResults.length} نماذج AI فقط — القرار التوافقي يحتاج ${MIN_AI_ANSWERS} نماذج على الأقل (تحقق من مفاتيح/رصيد النماذج)`);
+  }
   if ((d as any).poorData) blockers.push(`بيانات السوق غير صالحة (${(d as any).qualityNote} — ${(d as any).dataSource}) — لا توصية على بيانات غير حية`);
   if (blockers.length) dir = "HOLD";
 
