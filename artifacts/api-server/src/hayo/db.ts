@@ -438,11 +438,15 @@ export async function getJournalList(limit = 50, userId?: number | null): Promis
 
 /**
  * kind: "forex" (default — everything except binary-options rows),
- * "binary" (source 'tg-bin' only) or "all".
+ * "binary" (auto binary signals, 'tg-bin'), "weights" (weighted convergence,
+ * 'tg-wgt') or "all".
  */
-export async function getJournalStats(userId?: number | null, kind: "forex" | "binary" | "all" = "forex"): Promise<any> {
+export async function getJournalStats(userId?: number | null, kind: "forex" | "binary" | "weights" | "all" = "forex"): Promise<any> {
   if (!db) return null;
-  const kindSql = kind === "binary" ? sql`"source" = 'tg-bin'` : kind === "forex" ? sql`"source" IS DISTINCT FROM 'tg-bin'` : sql`TRUE`;
+  const kindSql = kind === "binary" ? sql`"source" = 'tg-bin'`
+    : kind === "weights" ? sql`"source" = 'tg-wgt'`
+    : kind === "forex" ? sql`"source" NOT IN ('tg-bin', 'tg-wgt')`
+    : sql`TRUE`;
   const whereClause = userId != null ? sql`WHERE "userId" = ${userId} AND ${kindSql}` : sql`WHERE ${kindSql}`;
   const res: any = await db.execute(sql`
     SELECT
