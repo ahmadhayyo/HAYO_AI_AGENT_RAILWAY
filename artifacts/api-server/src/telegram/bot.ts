@@ -1278,6 +1278,7 @@ const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, st
 };
 /** Presets decided by the learned weighting model (hayo/weights-model.ts). */
 const CONVERGENCE_MODEL: Partial<Record<ConvergencePreset, string>> = { fast: "fast", scalp: "scalp" };
+const WEIGHTED_ASSETS = new Set(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD"]);
 let convergenceTimer: NodeJS.Timeout | null = null;
 const convergenceCooldown = new Map<string, number>();
 const CONVERGENCE_COOLDOWN_MS = 60 * 60 * 1000;
@@ -1584,6 +1585,11 @@ async function weightedConvergence(
 ): Promise<void> {
   const p = PAIRS[pair];
   const model = WEIGHT_MODELS[modelId];
+  // Trained on FX + gold only — crypto, oil and indices behave differently.
+  if (!WEIGHTED_ASSETS.has(pair)) {
+    summary.lines.push(`➖ ${p.label}: ⚖️ نموذج الأوزان مدرَّب على العملات والذهب فقط — تم التخطي`);
+    return;
+  }
   const v = weightedVerdict(modelId, results.map(r => r.data.candles));
   if (!v) { summary.lines.push(`⚠️ ${p.label}: شموع غير كافية لنموذج الأوزان`); return; }
   const pTxt = `${(v.p * 100).toFixed(1)}%`;
