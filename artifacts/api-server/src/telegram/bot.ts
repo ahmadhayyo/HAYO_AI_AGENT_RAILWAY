@@ -339,10 +339,10 @@ function tradePrice(d: any): number { return typeof d.livePrice === "number" && 
 
 /** "💰 price" line: live quote with its exact time, plus the last closed candle. */
 function priceLine(d: any): string {
-  const t = (ms: number) => new Date(ms).toISOString().slice(11, 19);
+  const t = (ms: number) => localAndUtc(ms);
   const closeAt = d.datetime ? String(d.datetime).slice(11, 16) : "";
   return typeof d.livePrice === "number"
-    ? `💰 <b>${d.fmt(d.livePrice)}</b> حي (${escHtml(d.liveSource || "")}) ⏱ <i>${t(d.liveAt)} UTC</i>\n🕯 إغلاق آخر شمعة مكتملة <code>${d.fmt(d.price)}</code> <i>(شمعة ${closeAt})</i>`
+    ? `💰 <b>${d.fmt(d.livePrice)}</b> حي (${escHtml(d.liveSource || "")}) ⏱ <i>${t(d.liveAt)}</i>\n🕯 إغلاق آخر شمعة مكتملة <code>${d.fmt(d.price)}</code> <i>(شمعة ${closeAt})</i>`
     : `💰 <b>${d.fmt(d.price)}</b> <i>إغلاق شمعة ${closeAt} UTC — لا سعر حي متاح</i>`;
 }
 
@@ -954,19 +954,28 @@ function buildRecommendation(
   return out;
 }
 
+/** Clock time in the owner's zone (HAYO_TZ, default Asia/Damascus) + UTC. */
+const OWNER_TZ = process.env.HAYO_TZ || "Asia/Damascus";
+function localAndUtc(ms: number): string {
+  let local = "";
+  try { local = new Intl.DateTimeFormat("en-GB", { timeZone: OWNER_TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(ms)); } catch { /* bad tz */ }
+  const utc = new Date(ms).toISOString().slice(11, 19);
+  return local ? `${local} بتوقيتك (${utc} UTC)` : `${utc} UTC`;
+}
+
 /** Binary-options execution block: direction, entry price/time, expiry, win condition. */
 function binaryLines(d: any, rec: Recommendation, tfMin: number): string[] {
   const dir = rec.dir, entry = rec.entry, n = rec.expiry ?? 5;
   const at = typeof d.liveAt === "number" ? d.liveAt : Date.now();
-  const hhmmss = (ms: number) => new Date(ms).toISOString().slice(11, 19);
   const mins = n * tfMin;
   const from = rec.expiryFrom === "AI" ? "حدّدها AI (وسيط النماذج الموافِقة)" : rec.expiryFrom === "ADX" ? "من قوة الاتجاه ADX" : rec.expiryFrom === "model" ? "أفق نموذج الأوزان الذي اختُبر عليه" : "مدة ثابتة من الإعدادات";
   const breakEven = Math.round(100 / (1 + BINARY_PAYOUT));
   return [
     `<b>━━ 🎰 خيار ثنائي ━━</b>`,
     dir === "BUY" ? `🟢 <b>CALL — صعود</b>` : `🔴 <b>PUT — هبوط</b>`,
-    `💵 سعر الدخول <code>${d.fmt(entry)}</code> ⏱ <i>${hhmmss(at)} UTC</i>`,
-    `⌛ المدة: <b>${n} شموع</b> = ${mins} دقيقة → تنتهي ≈ <i>${hhmmss(at + mins * 60_000)} UTC</i> <i>(${from})</i>`,
+    `💵 سعر الدخول <code>${d.fmt(entry)}</code> ⏱ <i>${localAndUtc(at)}</i>`,
+    `⌛ المدة: <b>${n} شموع</b> = ${mins} دقيقة → تنتهي ≈ <i>${localAndUtc(at + mins * 60_000)}</i>`,
+    `<i>(${from})</i>`,
     `✅ تربح إذا كان السعر عند الانتهاء ${dir === "BUY" ? "أعلى" : "أدنى"} من <code>${d.fmt(entry)}</code>`,
     `📊 <i>نقطة التعادل: فوز ≥ ${breakEven}% من الصفقات (بعائد ${Math.round(BINARY_PAYOUT * 100)}%)</i>`,
   ];
@@ -995,7 +1004,7 @@ async function ownerUserId(): Promise<number | null> {
 
 const journalDedup = new Map<string, number>();
 async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string): Promise<void> {
-  const isBinary = source === "tg-bin";
+  const isBinary = source === "tg-bin" || source === "tg-wgt";
   if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return;
   const key = `${pair}|${interval}|${rec.dir}|${source}`;
   const dedupMs = isBinary ? 60 * 1000 : 30 * 60 * 1000;
@@ -1013,16 +1022,18 @@ async function journalRecommendation(pair: string, interval: string, rec: Recomm
 }
 
 /** One-line live track record of the bot's own recommendations. */
-async function journalStatsLine(binary = false): Promise<string> {
+async function journalStatsLine(kind: boolean | "binary" | "weights" | "forex" = "forex"): Promise<string> {
+  const k = kind === true ? "binary" : kind === false ? "forex" : kind;
   try {
     const { getJournalStats } = await import("../hayo/db.js");
-    const st = await getJournalStats(await ownerUserId(), binary ? "binary" : "forex");
+    const st = await getJournalStats(await ownerUserId(), k);
     if (!st) return "";
-    if (binary) {
+    if (k !== "forex") {
+      const title = k === "weights" ? "⚖️ سجل نظام الأوزان (حي)" : "🎰 سجل الإشارات الثنائية التلقائية";
       const n = Number(st.wins ?? 0) + Number(st.losses ?? 0);
-      if (n === 0) return `🎰 <i>سجل الخيارات الثنائية: لا صفقات منتهية بعد (${st.open ?? 0} قيد الانتظار)</i>`;
+      if (n === 0) return `<i>${title}: لا صفقات منتهية بعد (${st.open ?? 0} قيد الانتظار)</i>`;
       const be = Math.round(100 / (1 + BINARY_PAYOUT));
-      return `🎰 <b>سجل الخيارات الثنائية:</b> ${n} صفقة | فوز <code>${st.winRate}%</code> (التعادل ${be}%) | صافي <code>${Number(st.totalR) >= 0 ? "+" : ""}${Number(st.totalR).toFixed(2)}</code> رهان${n < 30 ? " <i>(عينة صغيرة)</i>" : ""}`;
+      return `<b>${title}:</b> ${n} صفقة | فوز <code>${st.winRate}%</code> (التعادل ${be}%) | صافي <code>${Number(st.totalR) >= 0 ? "+" : ""}${Number(st.totalR).toFixed(2)}</code> رهان${n < 30 ? " <i>(عينة صغيرة)</i>" : ""}`;
     }
     const closed = Number(st.wins ?? 0) + Number(st.losses ?? 0);
     if (closed === 0) return `📒 <i>سجل الإشارات الحي: لا صفقات مغلقة بعد (${st.open ?? 0} مفتوحة)</i>`;
@@ -1629,8 +1640,8 @@ async function weightedConvergence(
     dir: v.dir, conf: v.edgePct, entry, sl: NaN, tp: NaN, rr: NaN, levelsFrom: "",
     reasons: [], blockers: [], costPct: null, expiry: v.horizon, expiryFrom: "model",
   };
-  await journalRecommendation(pair, tfs[0].cfg.interval, rec, "tg-bin");
-  const journalLine = await journalStatsLine(true);
+  await journalRecommendation(pair, tfs[0].cfg.interval, rec, "tg-wgt");
+  const journalLine = await journalStatsLine("weights");
 
   const pct = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
   const drivers = v.top.map(t => `• <code>${t.tf}</code> ${t.reading} <i>(${t.label})</i> <code>${pct(t.contribution)}</code>`).join("\n");
