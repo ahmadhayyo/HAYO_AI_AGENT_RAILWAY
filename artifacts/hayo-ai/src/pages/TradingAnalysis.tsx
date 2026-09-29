@@ -1112,7 +1112,14 @@ function AnalysisChart({ data }: { data: TradingData }) {
     return () => { chart?.remove(); chart = null; };
   }, [data]);
   if (!data.candles?.length) return <div className="p-6 text-center text-sm text-muted-foreground">لا توجد شموع لعرضها</div>;
-  return <div ref={ref} className="w-full h-[380px] lg:h-full min-h-[380px]" />;
+  // Fixed-height box with the chart absolutely positioned inside: with autoSize
+  // the canvas must never feed back into its container's height, otherwise
+  // each resize grows the box a few pixels and the chart stretches forever.
+  return (
+    <div className="relative w-full h-[420px]">
+      <div ref={ref} className="absolute inset-0" />
+    </div>
+  );
 }
 
 /** Price at the analysis moment vs. the live price NOW (same feed), with drift in pips. */
