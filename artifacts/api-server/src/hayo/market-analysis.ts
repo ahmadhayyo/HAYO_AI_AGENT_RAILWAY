@@ -1,9 +1,10 @@
 /**
- * Shared market-analysis core: technical indicators + 15 trading strategies
+ * Shared market-analysis core: technical indicators + 16 trading strategies
  * + confirmation filters. Used by BOTH the web analysis (router.ts) and the
  * Telegram bot (telegram/bot.ts) so signals are identical everywhere.
  * Extracted verbatim from router.ts (single source of truth — no duplication).
  */
+import { calcVolumeProfile } from "./volume-profile";
 
 // ─── Technical Indicator Helpers ─────────────────────────────────────
 // Standard definitions, matching TradingView / Wilder so the numbers users see
@@ -236,6 +237,7 @@ function calcStrategies(
   adx?: { adx: number; pdi: number; mdi: number },
   pivots?: { pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number; basis?: "prevDay" | "window" },
   opens?: number[],
+  volumes?: number[],
 ): StrategySignal[] {
   const price = closes[closes.length - 1];
   const prevPrice = closes[closes.length - 2] || price;
@@ -677,6 +679,38 @@ function calcStrategies(
       desc: `معدّل التغيّر خلال ${look} شمعة: ${roc >= 0 ? "+" : ""}${roc.toFixed(3)}% — ${
         rocAtr > 2.8 ? "زخم صاعد" : rocAtr < -2.8 ? "زخم هابط" : "زخم ضعيف/محايد"
       }` });
+  }
+
+  // 16 — POC / Volume Profile (Point of Control + 70% Value Area, last 100 bars)
+  //   • Pullback to the POC from above with a bullish close in an up-leaning
+  //     market → BUY (the POC acts as support); mirror for SELL.
+  //   • Fresh acceptance outside the Value Area (close breaks VAH/VAL after
+  //     closing inside it) → trade the breakout.
+  {
+    let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+    let str = 0;
+    let desc = "بيانات غير كافية لملف الحجم";
+    const vp = calcVolumeProfile(highs, lows, closes, volumes, 100, 30);
+    if (vp && atr > 0) {
+      const kind = vp.source === "volume" ? "حجم" : "زمن-سعر (TPO)";
+      desc = `POC ${fmtP(vp.poc)} | منطقة القيمة ${fmtP(vp.val)}–${fmtP(vp.vah)} (${kind})`;
+      const k = Math.min(10, n);
+      let avg = 0; for (let i = n - k + 1; i <= n; i++) avg += closes[i]; avg /= k;
+      const lowN = lows[n], highN = highs[n], openN = opens?.[n] ?? prevPrice;
+      const nearPoc = Math.abs(price - vp.poc) <= 0.35 * atr;
+      if (prevPrice <= vp.vah && price > vp.vah) {
+        sig = "BUY"; str = 65; desc += " — إغلاق فوق أعلى منطقة القيمة (قبول سعري صاعد)";
+      } else if (prevPrice >= vp.val && price < vp.val) {
+        sig = "SELL"; str = 65; desc += " — إغلاق تحت أدنى منطقة القيمة (قبول سعري هابط)";
+      } else if (nearPoc && avg > vp.poc && lowN <= vp.poc + 0.1 * atr && price > openN && price >= vp.poc) {
+        sig = "BUY"; str = 70; desc += " — ارتداد صاعد من POC كدعم";
+      } else if (nearPoc && avg < vp.poc && highN >= vp.poc - 0.1 * atr && price < openN && price <= vp.poc) {
+        sig = "SELL"; str = 70; desc += " — ارتداد هابط من POC كمقاومة";
+      } else {
+        desc += price > vp.vah ? " — السعر فوق منطقة القيمة" : price < vp.val ? " — السعر تحت منطقة القيمة" : " — السعر داخل منطقة القيمة";
+      }
+    }
+    signals.push({ id: "poc", name: "نقطة التحكم POC (ملف الحجم)", emoji: "🎚️", signal: sig, strength: str, desc });
   }
 
   return signals;

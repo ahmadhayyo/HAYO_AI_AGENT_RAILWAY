@@ -16,7 +16,7 @@
  * (path pyfinancialdata/data/currencies/oanda).
  *
  * Usage:
- *   node --experimental-strip-types --no-warnings scripts/backtest-signals.ts \
+ *   pnpm backtest \
  *     <DATA_DIR> [year=2019] [tfMinutes=60] [instruments=EUR_USD,GBP_USD,...]
  *
  * Break-even win rate with these exits is 1.5 / (1.5 + 2.5) = 37.5% before

@@ -12,14 +12,20 @@
  * All inputs are OLDEST-FIRST arrays of CLOSED bars.
  */
 import MODELS from "./weights-model.json" with { type: "json" };
+import { calcVolumeProfile } from "./volume-profile";
 
-export interface OhlcBar { open: number; high: number; low: number; close: number }
+export interface OhlcBar { open: number; high: number; low: number; close: number; volume?: number }
 
-export const FEATURE_NAMES = ["trend", "slope", "hist", "dhist", "di", "adxUp", "brk", "fresh", "ext", "rsi", "roc"] as const;
-export const FEATURE_LABELS_AR: Record<(typeof FEATURE_NAMES)[number], string> = {
+/** Every feature the engine can compute (per timeframe). A model uses a subset (its `features`). */
+export const ALL_FEATURES = ["trend", "slope", "hist", "dhist", "di", "adxUp", "brk", "fresh", "ext", "rsi", "roc", "poc", "va"] as const;
+export type FeatureName = (typeof ALL_FEATURES)[number];
+/** Feature set of models trained before POC was added. */
+export const FEATURE_NAMES: readonly FeatureName[] = ALL_FEATURES.slice(0, 11);
+export const FEATURE_LABELS_AR: Record<FeatureName, string> = {
   trend: "اتجاه EMA20/50", slope: "ميل EMA20", hist: "هستوغرام MACD", dhist: "تسارع MACD",
   di: "+DI/−DI", adxUp: "صعود ADX", brk: "موقع السعر في نطاق 20", fresh: "حداثة تقاطع EMA9/21",
   ext: "الامتداد عن EMA21", rsi: "RSI", roc: "زخم 10 شموع",
+  poc: "المسافة عن POC", va: "الموقع من منطقة القيمة",
 };
 
 // ── indicator series (identical definitions to the research harness) ──
@@ -82,6 +88,7 @@ export function tfFeatureSeries(bars: OhlcBar[]): number[][] {
   const dx = adx(h, l, c);
   const r = rsi(c);
   const H20 = rollMax(h, 20), L20 = rollMin(l, 20);
+  const v = bars.map(x => x.volume ?? 0);
   const out: number[][] = [];
   let since = 999, prevSide = 0;
   for (let i = 0; i < bars.length; i++) {
@@ -102,13 +109,14 @@ export function tfFeatureSeries(bars: OhlcBar[]): number[][] {
       clip((c[i] - e21[i]) / a, 4) / 4,
       (r[i] - 50) / 50,
       clip((c[i] - c[i - 10]) / a, 4) / 4,
+      ...pocFeatures(h, l, c, v, i, a),
     ]);
   }
   return out;
 }
 
 /** Plain-language reading of a raw feature value (sign = bullish/bearish side). */
-function readFeature(f: (typeof FEATURE_NAMES)[number], v: number): string {
+function readFeature(f: FeatureName, v: number): string {
   const up = v > 0;
   switch (f) {
     case "trend": return up ? "EMA20 فوق EMA50" : "EMA20 تحت EMA50";
@@ -122,11 +130,24 @@ function readFeature(f: (typeof FEATURE_NAMES)[number], v: number): string {
     case "ext": return up ? `السعر فوق EMA21 بـ ${(v * 4).toFixed(1)} ATR (امتداد)` : `السعر تحت EMA21 بـ ${(-v * 4).toFixed(1)} ATR (تصحيح)`;
     case "rsi": return `RSI ${(50 + v * 50).toFixed(0)}`;
     case "roc": return up ? "صعد خلال آخر 10 شموع" : "هبط خلال آخر 10 شموع";
+    case "poc": return up ? `فوق POC بـ ${(v * 4).toFixed(1)} ATR` : `تحت POC بـ ${(-v * 4).toFixed(1)} ATR`;
+    case "va": return v > 0.5 ? "فوق منطقة القيمة" : v < -0.5 ? "تحت منطقة القيمة" : up ? "داخل منطقة القيمة (النصف العلوي)" : "داخل منطقة القيمة (النصف السفلي)";
   }
+}
+
+/** POC distance (ATR) and position vs. the 70% value area, over the last 100 bars. */
+function pocFeatures(h: number[], l: number[], c: number[], v: number[], i: number, a: number): [number, number] {
+  const vp = calcVolumeProfile(h, l, c, v, 100, 30, i);
+  if (!vp) return [0, 0];
+  const half = (vp.vah - vp.val) / 2 || a;
+  return [clip((c[i] - vp.poc) / a, 4) / 4, clip((c[i] - (vp.vah + vp.val) / 2) / half, 2) / 2];
 }
 
 export interface WeightModel {
   id: string; tfs: string[]; horizon: number; trainedOn: string; validatedOn: string;
+  /** Feature names per timeframe [low, mid, high] (or one list for all);
+   *  default: the 11 pre-POC features on every timeframe. */
+  features?: FeatureName[] | FeatureName[][];
   w: number[]; b: number; mu: number[]; sd: number[];
   /** Out-of-sample (2019) hit rates by threshold, for display. */
   oos: Record<string, { n: number; winRate: number }>;
@@ -151,20 +172,24 @@ export interface WeightedVerdict {
 export function weightedVerdict(modelId: string, barsByTf: OhlcBar[][]): WeightedVerdict | null {
   const m = WEIGHT_MODELS[modelId];
   if (!m || barsByTf.length !== 3) return null;
+  const raw = m.features ?? FEATURE_NAMES;
+  const perTf: (readonly FeatureName[])[] = Array.isArray(raw[0]) ? (raw as FeatureName[][]) : [0, 1, 2].map(() => raw as readonly FeatureName[]);
   const x: number[] = [];
-  for (const bars of barsByTf) {
-    const rows = tfFeatureSeries(bars);
+  const names: { tf: string; f: FeatureName }[] = [];
+  for (let t = 0; t < 3; t++) {
+    const rows = tfFeatureSeries(barsByTf[t]);
     const last = rows[rows.length - 1];
-    if (!last || last.length !== FEATURE_NAMES.length) return null;
-    x.push(...last);
+    if (!last || last.length !== ALL_FEATURES.length) return null;
+    for (const f of perTf[t]) { x.push(last[ALL_FEATURES.indexOf(f)]); names.push({ tf: m.tfs[t], f }); }
   }
+  if (x.length !== m.w.length) return null;
   let z = m.b;
   const contrib: WeightedVerdict["top"] = [];
   x.forEach((v, j) => {
     const cz = m.w[j] * (v - m.mu[j]) / m.sd[j];
     z += cz;
-    const f = FEATURE_NAMES[j % FEATURE_NAMES.length];
-    contrib.push({ tf: m.tfs[Math.floor(j / FEATURE_NAMES.length)], feature: f, label: FEATURE_LABELS_AR[f], reading: readFeature(f, v), contribution: cz });
+    const { tf, f } = names[j];
+    contrib.push({ tf, feature: f, label: FEATURE_LABELS_AR[f], reading: readFeature(f, v), contribution: cz });
   });
   const p = 1 / (1 + Math.exp(-z));
   const grade: WeightedVerdict["grade"] = p >= 0.58 || p <= 0.42 ? "A" : p >= 0.56 || p <= 0.44 ? "B" : "-";
