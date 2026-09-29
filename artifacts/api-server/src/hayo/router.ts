@@ -10,14 +10,14 @@ import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, 
 import { fetchFromOanda, fetchFromYahoo, fetchRealtimePrice, dropFormingCandle } from "./market-data";
 import {
   calcSMA, calcEMA, calcRSI, calcMACD, calcBB, calcATR, calcStochastic,
-  calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct,
+  calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
   type StrategySignal, type FilterResult,
 } from "./market-analysis";
 
 // Spread cost (as % of a 1.5×ATR stop) above which a trade is not worth taking:
 // the entry alone already gives up this much of the risk. Measured on 2018-19
 // OANDA data: 1-min ≈ 70-110%, 5-min ≈ 30-45%, 15-min ≈ 15-25%, 1h ≈ 7-12%.
-const COST_BLOCK_PCT = 25;
+const COST_BLOCK_PCT = Number(process.env.HAYO_COST_BLOCK_PCT ?? 25); // 0 disables the block
 const COST_WARN_PCT = 12;
 
 // ─── Market data provider chain: OANDA → Yahoo → TwelveData ──────────────
@@ -130,7 +130,10 @@ async function evaluateSignalJournal(): Promise<void> {
     USOIL: "CL", US30: "DJIA",
   };
   const now = Date.now();
-  const EXPIRE_MS = 5 * 24 * 60 * 60 * 1000;
+  // A signal stays open for 5 days or 60 bars of its timeframe, whichever is
+  // longer (a daily signal needs weeks, not 5 days, to reach its target).
+  const TF_MS: Record<string, number> = { "1min": 6e4, "5min": 3e5, "15min": 9e5, "30min": 18e5, "1h": 36e5, "4h": 144e5, "1day": 864e5 };
+  const expireMs = (tf: string) => Math.max(5 * 864e5, 60 * (TF_MS[tf] ?? 36e5));
   // Group by pair+timeframe to reuse one candle fetch per group.
   const groups = new Map<string, any[]>();
   for (const s of open) {
@@ -145,7 +148,7 @@ async function evaluateSignalJournal(): Promise<void> {
     try {
       const td = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${timeframe}&outputsize=200&apikey=__API_KEY__`);
       if (td?.values && Array.isArray(td.values)) {
-        candles = td.values.map((c: any) => ({ high: parseFloat(c.high), low: parseFloat(c.low), time: Date.parse(c.datetime) })).filter((c: any) => !Number.isNaN(c.time));
+        candles = td.values.map((c: any) => ({ high: parseFloat(c.high), low: parseFloat(c.low), time: toUtcMs(String(c.datetime)) })).filter((c: any) => !Number.isNaN(c.time));
       }
     } catch { /* skip group this cycle */ }
     for (const s of sigs) {
@@ -162,7 +165,7 @@ async function evaluateSignalJournal(): Promise<void> {
         if (hitSL) { await closeSignalJournal(s.id, "loss", sl, -1).catch(() => {}); done = true; break; }
         if (hitTP) { const r = Math.abs((tp as number) - entry) / rDen; await closeSignalJournal(s.id, "win", tp, Number(r.toFixed(2))).catch(() => {}); done = true; break; }
       }
-      if (!done && now - created > EXPIRE_MS) {
+      if (!done && now - created > expireMs(timeframe)) {
         await closeSignalJournal(s.id, "expired", null, null).catch(() => {});
       }
     }
@@ -1093,7 +1096,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
     getCandles: tradingProcedure
       .input(z.object({
         pair: z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
-        interval: z.enum(["1min", "5min", "15min", "30min", "1h"]).default("1h"),
+        interval: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1day"]).default("1h"),
         outputsize: z.number().min(5).max(200).default(120),
       }))
       .mutation(async ({ input }) => {
@@ -3364,7 +3367,7 @@ const root = document.getElementById('root');`;
     quickScan: protectedProcedure
       .input(z.object({
         pairs: z.array(z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"])).default(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
-        timeframe: z.enum(["1min", "5min", "15min", "30min", "1h"]).default("15min"),
+        timeframe: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1day"]).default("15min"),
       }))
       .mutation(async ({ input }) => {
         const symbolMap: Record<string, string> = {
@@ -3409,7 +3412,7 @@ const root = document.getElementById('root');`;
             const atr  = calcATR(highs, lows, closes);
 
             const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, undefined, undefined, undefined, undefined);
-            const filters    = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes);
+            const filters    = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes, { highs, lows, market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
             const buySigs  = strategies.filter(s => s.signal === "BUY").length;
             const sellSigs = strategies.filter(s => s.signal === "SELL").length;
@@ -3828,7 +3831,7 @@ ${scanSummary}
               lastATR = atr;
 
               const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adxVal, pivots, opens);
-              const filters = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes);
+              const filters = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes, { highs, lows, market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
               const buys = strategies.filter(s => s.signal === "BUY").length;
               const sells = strategies.filter(s => s.signal === "SELL").length;
@@ -3886,7 +3889,7 @@ ${scanSummary}
 
           // Skip setups where the spread alone eats too much of the 1.5×ATR stop.
           const costPct = spreadCostPct(pair, lastATR);
-          if (costPct !== null && costPct >= COST_BLOCK_PCT) continue;
+          if (COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) continue;
 
           // Calculate SL/TP based on ATR
           const slDistance = lastATR * 1.5;
@@ -4081,7 +4084,7 @@ ${scanSummary}
     analyzeMarket: protectedProcedure
       .input(z.object({
         pair: z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
-        timeframe: z.enum(["1min", "5min", "15min", "30min", "1h"]),
+        timeframe: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1day"]),
       }))
       .mutation(async ({ input, ctx }) => {
         const creditCheck = await checkCredits(ctx.user.id, "war_room");
@@ -4116,7 +4119,7 @@ ${scanSummary}
 
         // Higher-timeframe map for MTF bias (does NOT replace the selected TF —
         // adds top-down context on top of it; all timeframes remain available).
-        const htfMap: Record<string, string> = { "1min": "15min", "5min": "1h", "15min": "4h", "30min": "4h", "1h": "1day" };
+        const htfMap: Record<string, string> = { "1min": "15min", "5min": "1h", "15min": "4h", "30min": "4h", "1h": "1day", "4h": "1day", "1day": "1week" };
         const htfInterval = htfMap[input.timeframe] || "4h";
 
         // Fetch OHLCV + Economic News + Higher-TF in parallel
@@ -4281,7 +4284,7 @@ ${scanSummary}
 
         // Calculate strategies and filters
         const strategySignals = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adx, pivots, opens);
-        const filterResults   = calcFilters(currentPrice, sma20, sma50, sma200, rsi, atr, closes, { market24x7: input.pair === "BTCUSD" || input.pair === "ETHUSD" });
+        const filterResults   = calcFilters(currentPrice, sma20, sma50, sma200, rsi, atr, closes, { highs, lows, market24x7: input.pair === "BTCUSD" || input.pair === "ETHUSD" });
 
         // Strategy consensus
         const buySigs  = strategySignals.filter(s => s.signal === "BUY").length;
@@ -4328,7 +4331,7 @@ ${scanSummary}
 
           // 5) Trading-cost gate: on short timeframes the spread eats most of the stop.
           const costPct = spreadCostPct(input.pair, atr);
-          if (costPct !== null && costPct >= COST_BLOCK_PCT) {
+          if (COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) {
             direction = "HOLD";
             confidence = Math.min(confidence, 20);
             reasons.unshift(`⛔ تكلفة السبريد ≈ ${costPct.toFixed(0)}% من وقف الخسارة على هذا الإطار — الصفقة خاسرة إحصائياً قبل أن تبدأ؛ استخدم إطاراً أعلى (1h أو أكثر)`);

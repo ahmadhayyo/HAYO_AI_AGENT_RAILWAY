@@ -140,13 +140,15 @@ const TIMEFRAMES = [
   { id: "15min", label: "15M", icon: "🕒", tv: "15" },
   { id: "30min", label: "30M", icon: "🕧", tv: "30" },
   { id: "1h",    label: "1H",  icon: "⏰", tv: "60" },
+  { id: "4h",    label: "4H",  icon: "🕓", tv: "240" },
+  { id: "1day",  label: "1D",  icon: "📅", tv: "D" },
 ];
 
 const TF_ICON: Record<string, string> = {
-  "1min": "⚡", "5min": "🕐", "15min": "🕒", "30min": "🕧", "1h": "⏰",
+  "1min": "⚡", "5min": "🕐", "15min": "🕒", "30min": "🕧", "1h": "⏰", "4h": "🕓", "1day": "📅",
 };
 const TF_LABEL: Record<string, string> = {
-  "1min": "1M", "5min": "5M", "15min": "15M", "30min": "30M", "1h": "1H",
+  "1min": "1M", "5min": "5M", "15min": "15M", "30min": "30M", "1h": "1H", "4h": "4H", "1day": "1D",
 };
 
 // 3 AI Providers: Claude Opus 4, Gemini Pro, DeepSeek

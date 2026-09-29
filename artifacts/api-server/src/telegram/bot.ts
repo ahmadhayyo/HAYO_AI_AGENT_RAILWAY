@@ -55,6 +55,8 @@ const TIMEFRAMES: Record<string, TfConfig> = {
   "15m": { interval: "15min", outputsize: 250, label: "15 دقيقة" },
   "30m": { interval: "30min", outputsize: 250, label: "30 دقيقة" },
   "1h":  { interval: "1h",    outputsize: 250, label: "ساعة"     },
+  "4h":  { interval: "4h",    outputsize: 250, label: "4 ساعات"  },
+  "1d":  { interval: "1day",  outputsize: 250, label: "يومي"     },
 };
 
 // ─── Auto-Signal Config ───────────────────────────────────────────────
@@ -145,6 +147,10 @@ function timeframesKeyboard(): TelegramBot.InlineKeyboardMarkup {
         { text: "30 دقيقة", callback_data: "tf:30m" },
         { text: "ساعة كاملة", callback_data: "tf:1h" },
       ],
+      [
+        { text: "4 ساعات", callback_data: "tf:4h" },
+        { text: "يومي", callback_data: "tf:1d" },
+      ],
       [{ text: "◀️ تغيير الزوج", callback_data: "back:pairs" }],
     ],
   };
@@ -230,6 +236,8 @@ function autoMenuKeyboard(): TelegramBot.InlineKeyboardMarkup {
       [
         { text: `${c.timeframes.includes("30m")?"✅ ":""}30م`,  callback_data: "auto:tf:30m" },
         { text: `${c.timeframes.includes("1h") ?"✅ ":""}1س`,   callback_data: "auto:tf:1h" },
+        { text: `${c.timeframes.includes("4h") ?"✅ ":""}4س`,   callback_data: "auto:tf:4h" },
+        { text: `${c.timeframes.includes("1d") ?"✅ ":""}يومي`, callback_data: "auto:tf:1d" },
       ],
       [{ text: "━━ فترة الفحص التلقائي ━━", callback_data: "auto:noop" }],
       [
@@ -339,7 +347,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   const PIVOTS = calcPivotPoints(highs, lows, closes, rawCandles.map((c: any) => c.datetime));
   const ADX    = calcADX(highs, lows, closes);
   const strategies = calcStrategies(closes, highs, lows, SMA20, SMA50, SMA200, RSI, MACD, BB, ATR, STOCH, WILLR, ADX, PIVOTS, opens);
-  const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes, { market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
+  const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes, { highs, lows, market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
   const marketResult = {
     price, fmt, RSI, SMA20, SMA50, SMA200, MACD, BB, ATR,
@@ -363,6 +371,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
 const HTF_MAP: Record<string, { interval: string; label: string }> = {
   "1m": { interval: "15min", label: "15د" }, "5m": { interval: "1h", label: "1س" },
   "15m": { interval: "4h", label: "4س" }, "30m": { interval: "4h", label: "4س" }, "1h": { interval: "1day", label: "يومي" },
+  "4h": { interval: "1day", label: "يومي" }, "1d": { interval: "1week", label: "أسبوعي" },
 };
 async function computeHtfBias(pair: string, tf: string): Promise<string> {
   const h = HTF_MAP[tf];
@@ -437,7 +446,7 @@ async function fetchEconomicNews(pair: string): Promise<NewsEvent[]> {
 }
 
 // ─── AI Runner (5 models — matches platform) ──────────────────────────
-async function runAI(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>, news: NewsEvent[] = [], chart: Buffer | null = null) {
+export async function runAI(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>, news: NewsEvent[] = [], chart: Buffer | null = null, htfBias = "") {
   const buySigs  = d.strategies.filter(s=>s.signal==="BUY").length;
   const sellSigs = d.strategies.filter(s=>s.signal==="SELL").length;
   const avgStr   = Math.round(
@@ -461,6 +470,13 @@ async function runAI(pair: string, tf: string, d: Awaited<ReturnType<typeof fetc
 • SMA20: ${d.fmt(d.SMA20)} ${d.price>d.SMA20?"✅ فوق":"❌ تحت"} | SMA50: ${d.fmt(d.SMA50)} ${d.price>d.SMA50?"✅ فوق":"❌ تحت"}${d.SMA200?` | SMA200: ${d.fmt(d.SMA200)} ${d.price>d.SMA200?"✅ فوق":"❌ تحت"}`:" | SMA200: بيانات غير كافية"}
 • BB: أعلى ${d.fmt(d.BB.upper)} | وسط ${d.fmt(d.BB.middle)} | أسفل ${d.fmt(d.BB.lower)}
 • ATR(14): ${d.fmt(d.ATR)}
+• Stochastic(14,3): %K=${d.STOCH.k.toFixed(1)} %D=${d.STOCH.d.toFixed(1)} | Williams %R: ${d.WILLR.toFixed(1)}
+• ADX(14): ${d.ADX.adx.toFixed(1)} (+DI ${d.ADX.pdi.toFixed(1)} / -DI ${d.ADX.mdi.toFixed(1)}) ${d.ADX.adx > 25 ? "اتجاه واضح" : "سوق جانبي/ضعيف"}
+• Pivot ${(d.PIVOTS as any).basis === "prevDay" ? "(اليوم السابق)" : "(تقريبي — لا يوم سابق كامل في النافذة)"}: P=${d.fmt(d.PIVOTS.pivot)} | R1=${d.fmt(d.PIVOTS.r1)} R2=${d.fmt(d.PIVOTS.r2)} | S1=${d.fmt(d.PIVOTS.s1)} S2=${d.fmt(d.PIVOTS.s2)}
+${htfBias ? `• ${htfBias.replace(/<[^>]+>/g, "")}\n` : ""}• تكلفة السبريد التقريبية: ${(() => { const c = spreadCostPct(pair, d.ATR); return c === null ? "غير معروفة" : `${c.toFixed(0)}% من وقف 1.5×ATR`; })()}
+
+🕯️ آخر 5 شموع مغلقة (O/H/L/C):
+${d.candles.slice(-5).map((c: any, i: number) => `  ${i + 1}. ${d.fmt(c.open)} / ${d.fmt(c.high)} / ${d.fmt(c.low)} / ${d.fmt(c.close)}`).join("\n")}
 
 🎯 إشارات الاستراتيجيات (${buySigs} شراء / ${sellSigs} بيع / ${d.strategies.length-buySigs-sellSigs} محايد):
 ${d.strategies.map(s=>`• ${s.emoji} ${s.name}: ${s.signal==="BUY"?"🟢 BUY":s.signal==="SELL"?"🔴 SELL":"🟡 NEUTRAL"} (قوة: ${s.strength}%) — ${s.desc}`).join("\n")}
@@ -591,19 +607,21 @@ async function sendChartPhoto(bot: TelegramBot, chatId: number, png: Buffer | nu
   } catch (err: any) { console.warn("[TelegramBot] sendPhoto failed:", err.message); }
 }
 
-// ─── AI consensus ─────────────────────────────────────────────────────
-// Every model that answered has a vote, INCLUDING "HOLD". A direction is only
-// the consensus when a strict majority of the answering models chose it —
-// previously HOLD votes were dropped, so 1 SELL + 3 HOLD was shown as
-// "consensus: SELL".
+// ─── AI consensus = the FINAL decision ───────────────────────────────
+// Every model that answered casts one vote (BUY / SELL / HOLD — "wait" is a
+// vote too). The answer with the MOST votes wins (plurality); a tie at the top
+// means no clear agreement → "SPLIT" (treated as wait). Each model has already
+// seen ALL the indicator/strategy/filter data (and the chart, if it has vision),
+// so this is where everything converges.
 export function aiConsensus(aiResults: any[]): { label: "BUY" | "SELL" | "HOLD" | "SPLIT"; votes: number; answered: number; avgConf: number; buys: number; sells: number; holds: number } {
   const answered = aiResults.filter((r: any) => r.signal === "BUY" || r.signal === "SELL" || r.signal === "HOLD");
   const buys = answered.filter((r: any) => r.signal === "BUY").length;
   const sells = answered.filter((r: any) => r.signal === "SELL").length;
   const holds = answered.length - buys - sells;
   const n = answered.length;
-  const label: "BUY" | "SELL" | "HOLD" | "SPLIT" =
-    n === 0 ? "HOLD" : buys * 2 > n ? "BUY" : sells * 2 > n ? "SELL" : holds * 2 > n ? "HOLD" : "SPLIT";
+  const top = Math.max(buys, sells, holds);
+  const leaders = ([["BUY", buys], ["SELL", sells], ["HOLD", holds]] as const).filter(([, v]) => v === top);
+  const label: "BUY" | "SELL" | "HOLD" | "SPLIT" = n === 0 ? "HOLD" : leaders.length > 1 ? "SPLIT" : leaders[0][0];
   const voters = label === "SPLIT" ? answered : answered.filter((r: any) => r.signal === label);
   const avgConf = voters.length ? Math.round(voters.reduce((a: number, r: any) => a + r.confidence, 0) / voters.length) : 0;
   return { label, votes: label === "SPLIT" ? 0 : voters.length, answered: n, avgConf, buys, sells, holds };
@@ -616,7 +634,9 @@ function firstNumber(v: unknown): number {
 }
 
 const MIN_RR = 1.5;          // minimum reward:risk for levels we publish
-const MIN_CONFIDENCE = 50;   // below this the verdict is "wait", not a trade
+// Spread cost (% of a 1.5×ATR stop) at which a trade is blocked. Env-tunable;
+// HAYO_COST_BLOCK_PCT=0 disables the gate (the cost line is still shown).
+const COST_BLOCK_PCT = Number(process.env.HAYO_COST_BLOCK_PCT ?? 25);
 
 interface Recommendation {
   dir: "BUY" | "SELL" | "HOLD";
@@ -639,41 +659,40 @@ export function computeRecommendation(
 ): Recommendation {
   const buys = d.strategies.filter((s: Sig) => s.signal === "BUY");
   const sells = d.strategies.filter((s: Sig) => s.signal === "SELL");
-  let vote = 0;
-  for (const s of d.strategies as Sig[]) { if (s.signal === "BUY") vote += s.strength / 100; else if (s.signal === "SELL") vote -= s.strength / 100; }
   const trendF = d.filters.find((f: any) => f.id === "trend_filter");
   const trendUp = trendF ? trendF.allowsBuy : null;
-  if (trendUp === true) vote += 1.2; else if (trendUp === false) vote -= 1.2;
-
   const ai = aiConsensus(aiResults);
-  vote += (ai.buys - ai.sells) * 1.5;           // HOLD votes add nothing …
-  const maxVote = d.strategies.length + 1.2 + ai.answered * 1.5; // … but still dilute
-  const norm = Math.max(-1, Math.min(1, vote / (Math.max(1, maxVote) * 0.5)));
-  let dir: "BUY" | "SELL" | "HOLD" = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
-  const conf = Math.round(Math.abs(norm) * 100);
 
-  const reasons: string[] = [`${buys.length} إشارة شراء مقابل ${sells.length} بيع`];
+  let dir: "BUY" | "SELL" | "HOLD";
+  let conf: number;
+  const reasons: string[] = [`الاستراتيجيات ${buys.length}🟢 / ${sells.length}🔴`];
   if (trendUp !== null) reasons.push(`الاتجاه الرئيسي ${trendUp ? "صاعد 📈" : "هابط 📉"}`);
-  if (ai.answered) reasons.push(`AI: ${ai.buys}🟢 ${ai.sells}🔴 ${ai.holds}🟡 من ${ai.answered}`);
-  else reasons.push("نماذج AI غير متاحة");
 
-  // ── Safety gates: any one of them turns the verdict into "wait" ──
-  const blockers: string[] = [];
-  if (dir !== "HOLD" && ai.answered > 0) {
-    const agree = dir === "BUY" ? ai.buys : ai.sells;
-    if (agree * 2 <= ai.answered) blockers.push(`أغلبية نماذج AI لا تؤيد ${dir === "BUY" ? "الشراء" : "البيع"} (${agree}/${ai.answered})`);
+  if (ai.answered > 0) {
+    // FINAL DECISION = the answer most AI models agree on.
+    dir = ai.label === "SPLIT" ? "HOLD" : ai.label;
+    conf = ai.avgConf;
+    reasons.push(`أصوات AI: ${ai.buys} شراء · ${ai.sells} بيع · ${ai.holds} انتظار من ${ai.answered}`);
+    reasons.push(ai.label === "SPLIT"
+      ? "تعادل في الأصوات — لا توافق كافٍ"
+      : `القرار الأكثر توافقاً: ${ai.label === "BUY" ? "شراء" : ai.label === "SELL" ? "بيع" : "انتظار"} (${ai.votes}/${ai.answered})`);
+  } else {
+    // No model answered → fall back to the weighted technical vote.
+    let vote = 0;
+    for (const s of d.strategies as Sig[]) { if (s.signal === "BUY") vote += s.strength / 100; else if (s.signal === "SELL") vote -= s.strength / 100; }
+    if (trendUp === true) vote += 1.2; else if (trendUp === false) vote -= 1.2;
+    const norm = Math.max(-1, Math.min(1, vote / ((d.strategies.length + 1.2) * 0.5)));
+    dir = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
+    conf = Math.round(Math.abs(norm) * 100);
+    reasons.push("لا نماذج AI متاحة — قرار فني من الاستراتيجيات");
   }
-  if (dir !== "HOLD" && conf < MIN_CONFIDENCE) blockers.push(`الثقة ${conf}% أقل من ${MIN_CONFIDENCE}%`);
+
+  // ── Safety gates (external facts, not opinions): turn the verdict into "wait" ──
+  const blockers: string[] = [];
   const costPct = spreadCostPct(pair, d.ATR);
-  if (costPct !== null && costPct >= 25) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
+  if (COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
   if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
-  // Visual cross-check: if most models that SAW the chart say it contradicts the indicators → wait.
-  const readers = aiResults.filter((r: any) => r.sawChart && r.chartAgrees !== null);
-  const contradict = readers.filter((r: any) => r.chartAgrees === false).length;
-  if (readers.length >= 2 && contradict * 2 > readers.length) {
-    blockers.push(`قراءة الشارت البصرية تناقض المؤشرات (${contradict}/${readers.length} نماذج)`);
-  }
   if (blockers.length) dir = "HOLD";
 
   // ── Levels: AI levels only if they are sane, otherwise ATR-based ──
@@ -713,7 +732,7 @@ function buildRecommendation(
   const dirLabel = rec.dir === "BUY" ? "🟢 <b>شراء</b>" : rec.dir === "SELL" ? "🔴 <b>بيع</b>" : "🟡 <b>انتظار</b>";
   const out = [
     ``,
-    `<b>━━ ✅ التوصية النهائية ━━</b>`,
+    `<b>━━ ✅ القرار النهائي — الأكثر توافقاً بين نماذج AI ━━</b>`,
     rec.dir === "HOLD" ? dirLabel : `${dirLabel} | ثقة <code>${rec.conf}%</code>`,
     `📝 <i>${rec.reasons.join("، ")}.</i>`,
   ];
@@ -886,8 +905,8 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         console.log(`[AutoScan] ${key}: consensus ${cons.pct}% ≥ ${minConsensus}% — running AI + news...`);
 
         // Fetch news first, then run AI with it
-        const [news, chart] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, d)]);
-        const aiResults = await runAI(pair, tf, d, news, chart);
+        const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, d), computeHtfBias(pair, tf)]);
+        const aiResults = await runAI(pair, tf, d, news, chart, htfBias);
         const valid = aiResults.filter((r:any) => r.signal !== "ERROR" && r.signal === cons.direction);
         const avgConf = valid.length
           ? Math.round(valid.reduce((a:number, r:any) => a + r.confidence, 0) / valid.length)
@@ -902,7 +921,6 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         console.log(`[AutoScan] 🚨 Signal: ${pair} ${tf} ${cons.direction} — consensus ${cons.pct}%, AI conf ${avgConf}%`);
         lastSignalTimeLocal.set(key, Date.now());
 
-        const htfBias = await computeHtfBias(pair, tf);
         const rec = computeRecommendation(pair, d, aiResults, news);
         if (rec.dir === "HOLD") {
           console.log(`[AutoScan] ${key}: final recommendation HOLD (${rec.blockers.join("; ") || "weak"}) — skip`);
@@ -944,11 +962,19 @@ function restartAutoScanner(bot: TelegramBot, ownerChatId: number, lastSignalTim
 }
 
 // ─── Convergence Config ──────────────────────────────────────────────
+export type ConvergencePreset = "fast" | "mid" | "long";
 interface ConvergenceConfig {
   enabled: boolean;
   intervalMinutes: number;
+  preset: ConvergencePreset;   // which 3 timeframes must agree
 }
-let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 5 };
+let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 5, preset: "fast" };
+/** The three timeframes that must agree, lowest → highest. Analysis/AI/chart use the highest. */
+const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, string]; label: string }> = {
+  fast: { keys: ["1m", "5m", "15m"], label: "سريع: 1م + 5م + 15م" },
+  mid:  { keys: ["15m", "1h", "4h"], label: "متوسط: 15م + 1س + 4س" },
+  long: { keys: ["1h", "4h", "1d"],  label: "طويل: 1س + 4س + يومي" },
+};
 let convergenceTimer: NodeJS.Timeout | null = null;
 const convergenceCooldown = new Map<string, number>();
 const CONVERGENCE_COOLDOWN_MS = 60 * 60 * 1000;
@@ -977,6 +1003,7 @@ let _ownerRef: number = 0;
 export function setConvergenceConfig(patch: Partial<ConvergenceConfig>) {
   if (patch.enabled !== undefined) convergenceConfig.enabled = patch.enabled;
   if (patch.intervalMinutes !== undefined) convergenceConfig.intervalMinutes = patch.intervalMinutes;
+  if (patch.preset !== undefined && CONVERGENCE_PRESETS[patch.preset]) convergenceConfig.preset = patch.preset;
   if (_botRef && _ownerRef) restartConvergenceScanner(_botRef, _ownerRef);
 }
 export function getConvergenceSignals() { return [...convergenceSignals]; }
@@ -1042,11 +1069,8 @@ export async function sendTestConvergenceSignal() {
 
 let _triggerConvergenceScanRef: (() => Promise<void>) | null = null;
 
-const CONVERGENCE_TFS: { key: string; cfg: TfConfig }[] = [
-  { key: "1m",  cfg: TIMEFRAMES["1m"]  },
-  { key: "5m",  cfg: TIMEFRAMES["5m"]  },
-  { key: "15m", cfg: TIMEFRAMES["15m"] },
-];
+const convergenceTfs = (): { key: string; cfg: TfConfig }[] =>
+  CONVERGENCE_PRESETS[convergenceConfig.preset].keys.map(key => ({ key, cfg: TIMEFRAMES[key] }));
 
 // A full scan (all pairs × 3 TFs, throttled for API limits) can outlast the
 // interval; without this guard setInterval stacked concurrent scans.
@@ -1072,7 +1096,9 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
     try {
       const results: { tf: string; direction: "BUY"|"SELL"|"NEUTRAL"; pct: number; data: any }[] = [];
 
-      for (const { key, cfg } of CONVERGENCE_TFS) {
+      const tfs = convergenceTfs();
+      const topTf = tfs[tfs.length - 1];
+      for (const { key, cfg } of tfs) {
         await new Promise(r => setTimeout(r, 8500));
         const d = await fetchMarket(pair, cfg);
         const cons = calcConsensus(d.strategies);
@@ -1102,8 +1128,8 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
 
       console.log(`[Convergence] 🎯 ${pair} MATCH! ${convergenceDir} across all 3 TFs — running AI...`);
 
-      const [news, chart] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, "15m", results[2].data)]);
-      const aiResults = await runAI(pair, "1m,5m,15m", results[2].data, news, chart);
+      const [news, chart] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, topTf.key, results[2].data)]);
+      const aiResults = await runAI(pair, tfs.map(t => t.key).join(","), results[2].data, news, chart);
       const validAI = aiResults.filter((r: any) => r.signal !== "ERROR" && r.signal === convergenceDir);
       const avgConf = validAI.length
         ? Math.round(validAI.reduce((a: number, r: any) => a + r.confidence, 0) / validAI.length)
@@ -1123,7 +1149,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
       }
 
       convergenceCooldown.set(coolKey, Date.now());
-      await journalRecommendation(pair, "15min", rec, "telegram-convergence");
+      await journalRecommendation(pair, topTf.cfg.interval, rec, "telegram-convergence");
       const journalLine = await journalStatsLine();
 
       const p = PAIRS[pair];
@@ -1176,12 +1202,12 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         tfDetails,
         `📊 متوسط التوافق: <b>${avgPct}%</b>`,
         ``,
-        `<b>━━ 📈 المؤشرات (15م) ━━</b>`,
+        `<b>━━ 📈 المؤشرات (${topTf.key}) ━━</b>`,
         `RSI <code>${d15.RSI.toFixed(1)}</code> ${d15.RSI < 30 ? "🔴 ذروة بيع" : d15.RSI > 70 ? "🟢 ذروة شراء" : "⚪"} | MACD ${d15.MACD.macd > d15.MACD.signal ? "✅ صاعد" : "❌ هابط"}`,
         `SMA20 ${d15.price > d15.SMA20 ? "✅" : "❌"} | SMA50 ${d15.price > d15.SMA50 ? "✅" : "❌"}${d15.SMA200 ? " | SMA200 " + (d15.price > d15.SMA200 ? "✅" : "❌") : ""}`,
         `BB ${d15.price < d15.BB.lower ? "↓ أسفل" : d15.price > d15.BB.upper ? "↑ أعلى" : "↔ داخل"} | ATR <code>${d15.fmt(d15.ATR)}</code>`,
         ``,
-        `<b>━━ 🎯 الاستراتيجيات (15م) ━━</b>`,
+        `<b>━━ 🎯 الاستراتيجيات (${topTf.key}) ━━</b>`,
         ...d15.strategies.map((s: Sig) => `${s.emoji} ${s.name}: ${s.signal === "BUY" ? "🟢" : s.signal === "SELL" ? "🔴" : "🟡"} ${s.signal !== "NEUTRAL" ? `<code>${s.strength}%</code>` : ""}`),
         ``,
         `<b>━━ 🔍 الفلاتر ━━</b>`,
@@ -1206,7 +1232,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
       ].join("\n");
 
-      await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | 15m — الشارت الحي الذي قرأته نماذج AI`);
+      await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي الذي قرأته نماذج AI`);
       await bot.sendMessage(ownerChatId, msg, {
         parse_mode: "HTML",
         reply_markup: {
@@ -1822,7 +1848,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         `الحالة: ${c.enabled ? "✅ <b>مفعّل</b>" : "❌ <b>معطّل</b>"}`,
         `الفحص: كل <code>${c.intervalMinutes}</code> دقائق`,
         `الأزواج: جميع الأزواج (${Object.keys(PAIRS).length})`,
-        `الفريمات: <code>1م + 5م + 15م</code>`,
+        `الفريمات: <code>${CONVERGENCE_PRESETS[c.preset].label}</code>`,
         ``,
         `<i>يفحص تطابق الاتجاه في 3 فريمات + تأكيد AI</i>`,
         `<i>عند التطابق تصل إشارة تلقائية</i>`,
@@ -1843,6 +1869,10 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
             { text: `${c.intervalMinutes===10?"✅ ":""}10د`, callback_data: "conv:int:10" },
             { text: `${c.intervalMinutes===15?"✅ ":""}15د`, callback_data: "conv:int:15" },
           ],
+          [{ text: "━━ الفريمات المتطابقة ━━", callback_data: "conv:noop" }],
+          ...(Object.keys(CONVERGENCE_PRESETS) as ConvergencePreset[]).map(k => [
+            { text: `${c.preset === k ? "✅ " : ""}${CONVERGENCE_PRESETS[k].label}`, callback_data: `conv:preset:${k}` },
+          ]),
           [{ text: "▶️ فحص فوري الآن", callback_data: "conv:now" }],
           [{ text: "◀️ رجوع", callback_data: "back:pairs" }],
         ],
@@ -1865,6 +1895,14 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         `🎯 التطابق: ${convergenceConfig.enabled ? "✅ <b>مفعّل</b> — يتم فحص جميع الأزواج كل ${convergenceConfig.intervalMinutes} دقائق" : "❌ <b>معطّل</b>"}`,
         { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }, { text: "🏠 القائمة", callback_data: "back:pairs" }]] } }
       );
+      return;
+    }
+
+    if (data.startsWith("conv:preset:")) {
+      const k = data.split(":")[2] as ConvergencePreset;
+      if (CONVERGENCE_PRESETS[k]) setConvergenceConfig({ preset: k });
+      await bot.editMessageText(`✅ فريمات التطابق: <b>${CONVERGENCE_PRESETS[convergenceConfig.preset].label}</b>`,
+        { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }]] } });
       return;
     }
 
@@ -1920,8 +1958,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
             `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n✅ تم جلب البيانات\n📰 جلب الأخبار + 📸 التقاط الشارت...\n🤖 5 نماذج AI تقرأ الشارت وتحلل الآن...\n<i>لحظات (30-90 ثانية)</i>`,
             { chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML" }
           );
-          const [news, chart] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, marketData)]);
-          const [aiResults, htfBias] = await Promise.all([runAI(pair, tf, marketData, news, chart), computeHtfBias(pair, tf)]);
+          const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, marketData), computeHtfBias(pair, tf)]);
+          const aiResults = await runAI(pair, tf, marketData, news, chart, htfBias);
           await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, aiResults, news), "telegram-manual");
           await bot.editMessageText(buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias, await journalStatsLine()), {
             chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML", reply_markup:afterResultKeyboard(),
