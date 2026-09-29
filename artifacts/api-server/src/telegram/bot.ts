@@ -681,10 +681,10 @@ function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fe
     `ATR <code>${d.fmt(d.ATR)}</code>`,
     ``,
     `<b>━━ 🎯 الاستراتيجيات (${buys}🟢 ${sells}🔴 ${neutrals}🟡) ━━</b>`,
-    ...d.strategies.map(s=>`${s.emoji} <b>${s.name}</b>: ${sigIcon(s.signal)}${s.signal!=="NEUTRAL"?` <code>${s.strength}%</code>`:""}\n   <i>${s.desc}</i>`),
+    ...d.strategies.map(s=>`${s.emoji} <b>${s.name}</b>: ${sigIcon(s.signal)}${s.signal!=="NEUTRAL"?` <code>${s.strength}%</code>`:""}\n   <i>${escHtml(s.desc)}</i>`),
     ``,
     `<b>━━ 🔍 الفلاتر ━━</b>`,
-    ...d.filters.map(f=>`${f.passed?"✅":"⚠️"} ${f.emoji} <b>${f.name}</b>: <i>${f.desc}</i>`),
+    ...d.filters.map(f=>`${f.passed?"✅":"⚠️"} ${f.emoji} <b>${f.name}</b>: <i>${escHtml(f.desc)}</i>`),
     ``,
     `┌──────────────────────────┐`,
     `│  التوافق: ${cons.padEnd(12)}│`,
@@ -728,11 +728,37 @@ async function deliverLong(
     const extra: any = { parse_mode: "HTML" };
     if (i === parts.length - 1 && opts.replyMarkup) extra.reply_markup = opts.replyMarkup;
     if (i === 0 && opts.editMessageId) {
-      await bot.editMessageText(parts[0], { chat_id: chatId, message_id: opts.editMessageId, ...extra });
+      await withPlainFallback(parts[0], extra, (t, x) => bot.editMessageText(t, { chat_id: chatId, message_id: opts.editMessageId, ...x }));
     } else {
-      await bot.sendMessage(chatId, parts[i], extra);
+      await sendHtmlSafe(bot, chatId, parts[i], extra);
     }
   }
+}
+
+/** Telegram rejected our HTML markup ("can't parse entities")? */
+function isParseError(e: any): boolean {
+  return /can't parse entities|unsupported start tag|can't find end tag|unexpected end tag/i.test(String(e?.message ?? e));
+}
+/** HTML → plain text: drop tags, decode the entities escHtml produces. */
+function stripHtml(t: string): string {
+  return t.replace(/<\/?(?:b|i|u|s|code|pre|a|blockquote|tg-spoiler)(?:\s[^<>]*)?>/gi, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&amp;/g, "&");
+}
+/**
+ * Run an HTML send; if Telegram refuses the markup, resend the same content as
+ * plain text so a signal is NEVER lost (previously only the chart photo arrived).
+ */
+async function withPlainFallback<T>(text: string, extra: any, send: (t: string, x: any) => Promise<T>): Promise<T> {
+  try {
+    return await send(text, extra);
+  } catch (e: any) {
+    if (!isParseError(e)) throw e;
+    console.warn("[Telegram] HTML rejected, resending as plain text:", String(e?.message ?? e).slice(0, 160));
+    const { parse_mode: _pm, ...rest } = extra ?? {};
+    return await send(stripHtml(text), rest);
+  }
+}
+function sendHtmlSafe(bot: TelegramBot, chatId: number, text: string, extra: any = {}) {
+  return withPlainFallback(text, { parse_mode: "HTML", ...extra }, (t, x) => bot.sendMessage(chatId, t, x));
 }
 
 /** One line describing where the candles came from and whether they are usable. */
@@ -1014,8 +1040,7 @@ function storeDetails(text: string, chart: Buffer | null, caption: string): stri
 /** Send the short signal with a button that reveals the full analysis. */
 async function sendCompactSignal(bot: TelegramBot, chatId: number, o: CompactSignal, fullText: string, chart: Buffer | null, caption: string): Promise<void> {
   const id = storeDetails(fullText, chart, caption);
-  await bot.sendMessage(chatId, compactSignalText(o), {
-    parse_mode: "HTML",
+  await sendHtmlSafe(bot, chatId, compactSignalText(o), {
     reply_markup: { inline_keyboard: [[
       { text: "📋 التحليل الكامل", callback_data: `full:${id}` },
       { text: "🔄 إعادة تحليل", callback_data: `pair:${o.pair}` },
@@ -1147,7 +1172,7 @@ function buildAIMsg(
     ...d.strategies.map(s=>`${s.emoji} ${s.name}: ${sigIcon(s.signal)}${s.signal!=="NEUTRAL"?` <code>${s.strength}%</code>`:""}`),
     ``,
     `<b>━━ 🔍 الفلاتر ━━</b>`,
-    ...d.filters.map(f=>`${f.passed?"✅":"⚠️"} ${f.emoji} ${f.name}: <i>${f.desc.split("—")[0].trim()}</i>`),
+    ...d.filters.map(f=>`${f.passed?"✅":"⚠️"} ${f.emoji} ${f.name}: <i>${escHtml(f.desc.split("—")[0].trim())}</i>`),
     ...(htfBias ? [``, `<b>━━ 🧭 الإطار الأعلى (MTF) ━━</b>`, `🧭 ${htfBias}`] : []),
     // News — live countdown + gate
     ...(highImpactNews.length>0 ? [
@@ -1701,7 +1726,7 @@ async function weightedSignal(
   if (v.dir !== "HOLD") sigDir = v.dir;
   else if (trap && trapP >= TRAP_MIN_P) { mode = "trap"; sigDir = trap.dir; }
   else {
-    const trapNote = trap ? ` — 🪤 فخ ${trap.dir === "BUY" ? "شراء" : "بيع"} لكن موافقة النموذج ${(trapP * 100).toFixed(1)}% < ${TRAP_MIN_P * 100}%` : "";
+    const trapNote = trap ? ` — 🪤 فخ ${trap.dir === "BUY" ? "شراء" : "بيع"} لكن موافقة النموذج ${(trapP * 100).toFixed(1)}% أقل من ${TRAP_MIN_P * 100}%` : "";
     summary.lines.push(`➖ ${label}: ⚖️ احتمال الصعود ${pTxt} — لا أفضلية كافية${trapNote}${opts.icons ? ` (${opts.icons})` : ""}`);
     return none;
   }
