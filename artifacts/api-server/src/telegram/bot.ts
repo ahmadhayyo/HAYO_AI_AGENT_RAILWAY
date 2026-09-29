@@ -987,7 +987,7 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
               summary.lines.push(`🤖 ${label}: فني ${cons.direction === "BUY" ? "شراء" : "بيع"} لكن قرار AI ${rec.dir === "BUY" ? "شراء" : rec.dir === "SELL" ? "بيع" : "انتظار"} (ثقة ${ai.avgConf}%)${rec.blockers.length ? " — " + rec.blockers[0] : ""}`);
               continue;
             }
-            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "telegram-auto");
+            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "tg-auto");
             msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias, await journalStatsLine());
           } else {
             rec = computeRecommendation(pair, d, [], news);
@@ -995,7 +995,7 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
               summary.lines.push(`⛔ ${label}: ${rec.blockers[0] || "القرار الفني النهائي انتظار"}`);
               continue;
             }
-            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "telegram-auto-tech");
+            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "tg-auto-tech");
             msg = buildQuickMsg(pair, tf, d, news, await journalStatsLine(), `🔔 <b>إشارة تلقائية — تحليل فني (بدون AI)</b>`);
           }
 
@@ -1043,6 +1043,45 @@ interface ConvergenceConfig {
   useAI: boolean;              // AI plurality must confirm the match
 }
 let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 5, preset: "fast", pairs: Object.keys(PAIRS), useAI: true };
+// ─── Settings persistence (DB) ────────────────────────────────────────
+// Auto-signal and convergence settings are saved on every change and restored
+// on startup, so a redeploy/restart keeps what the owner configured.
+// Saves run strictly one after another and read the CURRENT config when they
+// execute, so rapid button presses can't land out of order on the DB pool and
+// leave an older snapshot as the final value.
+let persistChain: Promise<void> = Promise.resolve();
+function persistSetting(key: string, current: () => unknown): void {
+  persistChain = persistChain
+    .then(async () => { const m = await import("../hayo/db.js"); await m.saveBotSetting(key, current()); })
+    .catch(() => {});
+}
+function persistAutoConfig(): void { persistSetting("autoConfig", () => autoConfig); }
+function persistConvergenceConfig(): void { persistSetting("convergenceConfig", () => convergenceConfig); }
+async function loadPersistedBotSettings(): Promise<void> {
+  try {
+    const { loadBotSetting } = await import("../hayo/db.js");
+    const a = await loadBotSetting<Partial<AutoConfig>>("autoConfig");
+    if (a && typeof a === "object") {
+      autoConfig = {
+        ...defaultAutoConfig, ...a,
+        pairs: Array.isArray(a.pairs) ? a.pairs.filter(p => PAIRS[p]) : defaultAutoConfig.pairs,
+        timeframes: Array.isArray(a.timeframes) ? a.timeframes.filter(t => TIMEFRAMES[t]) : defaultAutoConfig.timeframes,
+      };
+    }
+    const c = await loadBotSetting<Partial<ConvergenceConfig>>("convergenceConfig");
+    if (c && typeof c === "object") {
+      convergenceConfig = {
+        ...convergenceConfig, ...c,
+        preset: c.preset && CONVERGENCE_PRESETS[c.preset] ? c.preset : convergenceConfig.preset,
+        pairs: Array.isArray(c.pairs) ? c.pairs.filter(p => PAIRS[p]) : convergenceConfig.pairs,
+      };
+    }
+    console.log(`[Settings] restored — auto: ${autoConfig.enabled ? "on" : "off"} (${autoConfig.pairs.length} pairs × ${autoConfig.timeframes.length} TFs, ${autoConfig.useAI ? "AI" : "tech"}), convergence: ${convergenceConfig.enabled ? "on" : "off"} (${convergenceConfig.preset}, ${convergenceConfig.pairs.length} pairs, ${convergenceConfig.useAI ? "AI" : "tech"})`);
+  } catch (err: any) {
+    console.error("[Settings] restore failed — using defaults:", err.message);
+  }
+}
+
 /** The three timeframes that must agree, lowest → highest. Analysis/AI/chart use the highest. */
 const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, string]; label: string }> = {
   fast: { keys: ["1m", "5m", "15m"], label: "سريع: 1م + 5م + 15م" },
@@ -1080,6 +1119,7 @@ export function setConvergenceConfig(patch: Partial<ConvergenceConfig>) {
   if (patch.preset !== undefined && CONVERGENCE_PRESETS[patch.preset]) convergenceConfig.preset = patch.preset;
   if (patch.useAI !== undefined) convergenceConfig.useAI = patch.useAI;
   if (patch.pairs !== undefined) convergenceConfig.pairs = patch.pairs.filter(p => PAIRS[p]);
+  persistConvergenceConfig();
   if (_botRef && _ownerRef) restartConvergenceScanner(_botRef, _ownerRef);
 }
 export function getConvergenceSignals() { return [...convergenceSignals]; }
@@ -1229,7 +1269,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
       summary.lines.push(`🚨 ${plabel}: تطابق ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} (${icons}) — أُرسلت إشارة`);
 
       convergenceCooldown.set(coolKey, Date.now());
-      await journalRecommendation(pair, topTf.cfg.interval, rec, useAI ? "telegram-convergence" : "telegram-convergence-tech");
+      await journalRecommendation(pair, topTf.cfg.interval, rec, useAI ? "tg-conv" : "tg-conv-tech");
       const journalLine = await journalStatsLine();
 
       const p = PAIRS[pair];
@@ -1447,6 +1487,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
   }
 
   async function sendAutoMenu(chatId: number, editing?: number) {
+    persistAutoConfig(); // called after every settings change
     const text = [
       `⚙️ <b>إعدادات الإشارات التلقائية</b>`,
       ``,
@@ -2008,6 +2049,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
     if (data === "conv:toggle") {
       convergenceConfig.enabled = !convergenceConfig.enabled;
+      persistConvergenceConfig();
       restartConvergenceScanner(bot, ownerChatId);
       await bot.editMessageText(
         `🎯 التطابق: ${convergenceConfig.enabled ? "✅ <b>مفعّل</b> — يتم فحص جميع الأزواج كل ${convergenceConfig.intervalMinutes} دقائق" : "❌ <b>معطّل</b>"}`,
@@ -2033,6 +2075,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
     if (data.startsWith("conv:int:")) {
       convergenceConfig.intervalMinutes = parseInt(data.split(":")[2]);
+      persistConvergenceConfig();
       if (convergenceConfig.enabled) restartConvergenceScanner(bot, ownerChatId);
       await bot.editMessageText(
         `🎯 فترة الفحص: <code>${convergenceConfig.intervalMinutes}</code> دقائق`,
@@ -2079,7 +2122,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         const marketData = await fetchMarket(pair, TIMEFRAMES[tf]);
         if (type === "quick") {
           const news = await fetchEconomicNews(pair);
-          await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, [], news), "telegram-manual-tech");
+          await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, [], news), "tg-manual-tech");
           await deliverLong(bot, chatId, buildQuickMsg(pair, tf, marketData, news, await journalStatsLine()), {
             editMessageId: loadMsgId, replyMarkup: afterResultKeyboard(),
           });
@@ -2090,7 +2133,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
           );
           const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, marketData), computeHtfBias(pair, tf)]);
           const aiResults = await runAI(pair, tf, marketData, news, chart, htfBias);
-          await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, aiResults, news), "telegram-manual");
+          await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, aiResults, news), "tg-manual");
           await deliverLong(bot, chatId, buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias, await journalStatsLine()), {
             editMessageId: loadMsgId, replyMarkup: afterResultKeyboard(),
           });
@@ -2560,14 +2603,18 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
   if (botRole === "trading" || (botRole === "bridge" && !tradingConfigured)) {
     _botRef = bot;
     _ownerRef = ownerChatId;
-    if (convergenceConfig.enabled) {
-      console.log(`[Convergence] Auto-starting convergence scanner on ${botRole} bot (interval: ${convergenceConfig.intervalMinutes}min)`);
-      restartConvergenceScanner(bot, ownerChatId);
-    }
-    if (autoConfig.enabled) {
-      console.log(`[AutoSignal] Auto-starting signal scanner on ${botRole} bot`);
-      restartAutoScanner(bot, ownerChatId, lastSignalTimeLocal);
-    }
+    // Restore the owner's saved settings first, then start the scanners with them.
+    void (async () => {
+      await loadPersistedBotSettings();
+      if (convergenceConfig.enabled) {
+        console.log(`[Convergence] Auto-starting convergence scanner on ${botRole} bot (interval: ${convergenceConfig.intervalMinutes}min)`);
+        restartConvergenceScanner(bot, ownerChatId);
+      }
+      if (autoConfig.enabled) {
+        console.log(`[AutoSignal] Auto-starting signal scanner on ${botRole} bot`);
+        restartAutoScanner(bot, ownerChatId, lastSignalTimeLocal);
+      }
+    })();
   }
 
   return bot;
