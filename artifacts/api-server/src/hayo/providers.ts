@@ -6,7 +6,7 @@
  * geminiPro: Gemini 2.5 Pro   — Google    (no key ❌)
  * deepseek:  DeepSeek R1       — DeepSeek  (working ✅)
  *
- * Active keys: OPENAI_API_KEY (gpt-4o-2024-08-06) + OPENAI_API_KEY_ (DeepSeek)
+ * Active keys: OPENAI_API_KEY (gpt-4o-2024-08-06, backup: OPENAI_API_KEY_BACKUP) + OPENAI_API_KEY_ (DeepSeek)
  */
 import { createAnthropicClient } from "./llm";
 
@@ -111,13 +111,74 @@ export const PROVIDER_CONFIGS: Record<AIProvider, ProviderConfig> = {
   },
 };
 
+/**
+ * OpenAI keys in priority order: OPENAI_API_KEY, then OPENAI_API_KEY_BACKUP.
+ * A key that answers 401/403 (invalid) or 429 (out of credit / rate-limited)
+ * is benched for 10 minutes and the next key is tried, so GPT-4o keeps
+ * working when one key runs dry.
+ */
+function openaiKeys(): string[] {
+  return [...new Set([process.env.OPENAI_API_KEY, process.env.OPENAI_API_KEY_BACKUP].map(k => (k || "").trim()).filter(Boolean))];
+}
+const openaiBenchedUntil = new Map<string, number>();
+const keyLabel = (i: number) => (i === 0 ? "OPENAI_API_KEY" : "OPENAI_API_KEY_BACKUP");
+
+async function openaiFetch(body: string, timeoutMs: number): Promise<Response> {
+  const keys = openaiKeys();
+  if (!keys.length) throw new Error("OpenAI: no API key configured");
+  const now = Date.now();
+  const order = [...keys.filter(k => (openaiBenchedUntil.get(k) ?? 0) <= now), ...keys.filter(k => (openaiBenchedUntil.get(k) ?? 0) > now)];
+  let last: Response | null = null;
+  for (const key of order) {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.status !== 401 && res.status !== 403 && res.status !== 429) {
+      openaiBenchedUntil.delete(key);
+      return res;
+    }
+    openaiBenchedUntil.set(key, Date.now() + 10 * 60_000);
+    console.warn(`[OpenAI] ${keyLabel(keys.indexOf(key))} → HTTP ${res.status}; trying the next key`);
+    last = res;
+  }
+  return last!;
+}
+
+/** Boot-time check of every OpenAI key (1-token call) — logs status, never the key. */
+export async function checkOpenAIKeys(): Promise<void> {
+  const keys = openaiKeys();
+  if (!keys.length) { console.log("[OpenAI] no key configured"); return; }
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${keys[i]}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o-mini", max_tokens: 1, messages: [{ role: "user", content: "ok" }] }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const j: any = await res.json().catch(() => ({}));
+      const status = res.ok ? "✅ يعمل وفيه رصيد"
+        : res.status === 401 ? "❌ مفتاح غير صالح (401)"
+        : j?.error?.code === "insufficient_quota" ? "❌ لا يوجد رصيد (insufficient_quota)"
+        : `⚠️ HTTP ${res.status}: ${String(j?.error?.message ?? "").slice(0, 80)}`;
+      console.log(`[OpenAI] ${keyLabel(i)}: ${status}`);
+      if (!res.ok) openaiBenchedUntil.set(keys[i], Date.now() + 10 * 60_000);
+    } catch (e: any) {
+      console.log(`[OpenAI] ${keyLabel(i)}: ⚠️ تعذّر الفحص — ${e.message?.slice(0, 60)}`);
+    }
+  }
+}
+
 /** True only when the provider's OWN (native) key is configured. */
 function isNativeAvailable(provider: AIProvider): boolean {
   if (provider === "claude") {
     return !!(process.env.ANTHROPIC_API_KEY || process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY);
   }
   if (provider === "gpt4") {
-    return !!(process.env.OPENAI_API_KEY);
+    return openaiKeys().length > 0;
   }
   if (provider === "deepseek") {
     return !!(dsKey());
@@ -189,22 +250,14 @@ export async function callProvider(
 
       case "gpt4": {
         // GPT-4o via OpenAI ✅
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
+        const res = await openaiFetch(JSON.stringify({
             model: PROVIDER_CONFIGS.gpt4.model, // gpt-4o-2024-08-06
             max_tokens: 4096,
             messages: [
               { role: "system", content: systemPrompt },
               { role: "user", content: userMessage },
             ],
-          }),
-          signal: AbortSignal.timeout(60000),
-        });
+          }), 60000);
         const data = await res.json() as any;
         if (!res.ok || data.error) throw new Error(`OpenAI error: ${data.error?.message || res.status}`);
         content = data.choices?.[0]?.message?.content || "";
@@ -319,23 +372,18 @@ export async function callPowerAI(
   let enrichedPrompt = systemPrompt;
   try { const { withModelInstruction } = await import("./system-prompts.js"); enrichedPrompt = withModelInstruction("gpt-4o", systemPrompt); } catch {}
 
-  const openaiKey = process.env.OPENAI_API_KEY;
+  const openaiKey = openaiKeys().length > 0;
   const hasAnthropicKey = process.env.ANTHROPIC_API_KEY || (process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY && process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL);
   const geminiKey = process.env.GOOGLE_API_KEY3 || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
   // 3. GPT-4o (fallback ✅)
   if (openaiKey) {
     try {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${openaiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const res = await openaiFetch(JSON.stringify({
           model: "gpt-4o-2024-08-06",
           max_tokens: Math.min(maxTokens, 4096),
           messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }],
-        }),
-        signal: AbortSignal.timeout(90000),
-      });
+        }), 90000);
       const data = await res.json() as any;
       if (res.ok && !data.error) {
         const content = data.choices?.[0]?.message?.content || "";
@@ -481,19 +529,14 @@ export async function callOfficeAI(
   }
 
   // 2. GPT-4o — working ✅
-  const openaiKey = process.env.OPENAI_API_KEY;
+  const openaiKey = openaiKeys().length > 0;
   if (openaiKey) {
     try {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${openaiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const res = await openaiFetch(JSON.stringify({
           model: "gpt-4o-2024-08-06",
           max_tokens: Math.min(maxTokens, 4096),
           messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessage }],
-        }),
-        signal: AbortSignal.timeout(60000),
-      });
+        }), 60000);
       const data = await res.json() as any;
       if (res.ok && !data.error) return data.choices?.[0]?.message?.content || "";
     } catch (e: any) {
@@ -602,10 +645,7 @@ export async function callProviderVision(
         });
         content = result.content[0]?.type === "text" ? result.content[0].text : "";
       } else if (provider === "gpt4") {
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const res = await openaiFetch(JSON.stringify({
             model: PROVIDER_CONFIGS.gpt4.model,
             max_tokens: 4096,
             messages: [
@@ -615,9 +655,7 @@ export async function callProviderVision(
                 { type: "image_url", image_url: { url: `data:image/png;base64,${b64}`, detail: "high" } },
               ] },
             ],
-          }),
-          signal: AbortSignal.timeout(90000),
-        });
+          }), 90000);
         const data = await res.json() as any;
         if (!res.ok || data.error) throw new Error(`OpenAI vision: ${data.error?.message || res.status}`);
         content = data.choices?.[0]?.message?.content || "";

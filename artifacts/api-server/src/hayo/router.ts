@@ -131,6 +131,7 @@ setTimeout(async () => {
     console.error("[Schema] ensureSubscriptionSchema failed:", err);
   }
   ensureSignalJournalSchema().catch(err => console.error("[Schema] ensureSignalJournalSchema failed:", err));
+  import("./providers").then(m => m.checkOpenAIKeys()).catch(() => {});
   seedDefaultPlans().catch(err => console.error("[Seed] Failed to seed plans:", err));
   seedOwnerAccount().catch(err => console.error("[Seed] Failed to seed owner:", err));
 }, 5000);
