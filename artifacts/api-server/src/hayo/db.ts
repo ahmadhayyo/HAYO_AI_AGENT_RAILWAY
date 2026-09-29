@@ -263,6 +263,42 @@ export async function ensureSubscriptionSchema(): Promise<void> {
     `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "endDate" timestamp`,
     `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "createdAt" timestamp NOT NULL DEFAULT now()`,
     `ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "updatedAt" timestamp NOT NULL DEFAULT now()`,
+    // ── broker accounts / trades (drizzle-kit push fails at boot in production,
+    //    so these were never created and broker.listAccounts returned 500) ──
+    `DO $$ BEGIN CREATE TYPE "broker_platform" AS ENUM ('quotex','iqoption','pocketoption','olymptrade','oanda','mt4','mt5'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`,
+    `DO $$ BEGIN CREATE TYPE "trade_result" AS ENUM ('pending','win','loss','draw','cancelled'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`,
+    `CREATE TABLE IF NOT EXISTS "broker_accounts" (
+      "id" serial PRIMARY KEY,
+      "user_id" integer NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+      "platform" "broker_platform" NOT NULL,
+      "account_email" text, "account_name" text,
+      "account_password_enc" text, "api_token_enc" text, "api_secret_enc" text,
+      "external_account_id" text, "server_host" text,
+      "environment" text DEFAULT 'practice',
+      "connection_status" text DEFAULT 'disconnected', "connection_message" text,
+      "last_connected_at" timestamp,
+      "auto_trade_enabled" boolean NOT NULL DEFAULT false,
+      "risk_percent" numeric(5,2) DEFAULT 1.00,
+      "is_active" boolean NOT NULL DEFAULT true,
+      "balance" numeric(15,2), "currency" text DEFAULT 'USD',
+      "created_at" timestamp NOT NULL DEFAULT now(),
+      "updated_at" timestamp NOT NULL DEFAULT now()
+    )`,
+    `CREATE INDEX IF NOT EXISTS "broker_accounts_user_id_idx" ON "broker_accounts" ("user_id")`,
+    `CREATE TABLE IF NOT EXISTS "broker_trades" (
+      "id" serial PRIMARY KEY,
+      "broker_account_id" integer NOT NULL REFERENCES "broker_accounts"("id") ON DELETE CASCADE,
+      "asset" text NOT NULL, "direction" text NOT NULL,
+      "amount" numeric(15,2) NOT NULL, "duration_seconds" integer NOT NULL,
+      "entry_price" numeric(20,8), "exit_price" numeric(20,8),
+      "result" "trade_result" NOT NULL DEFAULT 'pending',
+      "profit_loss" numeric(15,2),
+      "opened_at" timestamp NOT NULL DEFAULT now(), "closed_at" timestamp,
+      "external_trade_id" text, "signal_source" text,
+      "created_at" timestamp NOT NULL DEFAULT now()
+    )`,
+    `CREATE INDEX IF NOT EXISTS "broker_trades_account_id_idx" ON "broker_trades" ("broker_account_id")`,
+    `CREATE INDEX IF NOT EXISTS "broker_trades_opened_at_idx" ON "broker_trades" ("opened_at")`,
   ];
   let ok = 0;
   for (const stmt of ddl) {
