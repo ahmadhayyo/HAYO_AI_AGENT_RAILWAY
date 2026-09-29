@@ -317,7 +317,7 @@ function priceLine(d: any): string {
   const t = (ms: number) => new Date(ms).toISOString().slice(11, 19);
   const closeAt = d.datetime ? String(d.datetime).slice(11, 16) : "";
   return typeof d.livePrice === "number"
-    ? `💰 <b>${d.fmt(d.livePrice)}</b> حي (${escHtml(d.liveSource || "")}) ⏱ <i>${t(d.liveAt)} UTC</i>\n🕯 آخر شمعة مغلقة <code>${d.fmt(d.price)}</code> <i>(${closeAt})</i>`
+    ? `💰 <b>${d.fmt(d.livePrice)}</b> حي (${escHtml(d.liveSource || "")}) ⏱ <i>${t(d.liveAt)} UTC</i>\n🕯 إغلاق آخر شمعة مكتملة <code>${d.fmt(d.price)}</code> <i>(شمعة ${closeAt})</i>`
     : `💰 <b>${d.fmt(d.price)}</b> <i>إغلاق شمعة ${closeAt} UTC — لا سعر حي متاح</i>`;
 }
 
