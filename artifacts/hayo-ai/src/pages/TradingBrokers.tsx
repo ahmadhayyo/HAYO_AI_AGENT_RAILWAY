@@ -92,7 +92,7 @@ function AddAccountModal({ onClose, onSuccess }: { onClose: () => void; onSucces
   const isApi = cfg.kind === "api";
   const isMT = cfg.kind === "mt";
 
-  const addMutation = trpc.hayo.broker.addAccount.useMutation({
+  const addMutation = trpc.broker.addAccount.useMutation({
     onSuccess: (acc: any) => {
       const tr = acc?.testResult;
       if (tr?.success) toast.success(`✅ ${tr.message}`);
@@ -322,7 +322,7 @@ function AddTradeModal({ accountId, onClose, onSuccess }: { accountId: number; o
   const [profitLoss, setProfitLoss] = useState("");
   const [signalSource, setSignalSource] = useState("يدوي");
 
-  const addTrade = trpc.hayo.broker.addTrade.useMutation({
+  const addTrade = trpc.broker.addTrade.useMutation({
     onSuccess: () => { toast.success("تم إضافة الصفقة"); onSuccess(); onClose(); },
     onError: (err) => toast.error(err.message),
   });
@@ -475,19 +475,19 @@ export default function TradingBrokers() {
   const [showAddTrade, setShowAddTrade] = useState<number | null>(null);
   const [expandedAccount, setExpandedAccount] = useState<number | null>(null);
 
-  const accounts = trpc.hayo.broker.listAccounts.useQuery(undefined, { enabled: !!user });
-  const stats = trpc.hayo.broker.getStats.useQuery(undefined, { enabled: !!user });
-  const trades = trpc.hayo.broker.listTrades.useQuery({ limit: 100 }, { enabled: !!user });
+  const accounts = trpc.broker.listAccounts.useQuery(undefined, { enabled: !!user });
+  const stats = trpc.broker.getStats.useQuery(undefined, { enabled: !!user });
+  const trades = trpc.broker.listTrades.useQuery({ limit: 100 }, { enabled: !!user });
 
-  const deleteMutation = trpc.hayo.broker.deleteAccount.useMutation({
+  const deleteMutation = trpc.broker.deleteAccount.useMutation({
     onSuccess: () => { toast.success("تم حذف الحساب"); accounts.refetch(); stats.refetch(); trades.refetch(); },
     onError: (err) => toast.error(err.message),
   });
-  const testConnMut = trpc.hayo.broker.testConnection.useMutation({
+  const testConnMut = trpc.broker.testConnection.useMutation({
     onSuccess: (r) => { r.success ? toast.success(r.message) : r.status === "unverified" ? toast.info(r.message) : toast.error(r.message); accounts.refetch(); },
     onError: (err) => toast.error(err.message),
   });
-  const setAutoMut = trpc.hayo.broker.setAutoTrade.useMutation({
+  const setAutoMut = trpc.broker.setAutoTrade.useMutation({
     onSuccess: () => { accounts.refetch(); toast.success("تم التحديث"); },
     onError: (err) => toast.error(err.message),
   });
