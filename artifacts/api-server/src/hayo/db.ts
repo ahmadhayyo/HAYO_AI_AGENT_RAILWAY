@@ -284,6 +284,26 @@ export async function ensureSubscriptionSchema(): Promise<void> {
       "created_at" timestamp NOT NULL DEFAULT now(),
       "updated_at" timestamp NOT NULL DEFAULT now()
     )`,
+    // An older broker_accounts (created before this schema) is not changed by
+    // CREATE TABLE IF NOT EXISTS — add any column it lacks.
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "account_email" text`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "account_name" text`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "account_password_enc" text`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "api_token_enc" text`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "api_secret_enc" text`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "external_account_id" text`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "server_host" text`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "environment" text DEFAULT 'practice'`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "connection_status" text DEFAULT 'disconnected'`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "connection_message" text`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "last_connected_at" timestamp`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "auto_trade_enabled" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "risk_percent" numeric(5,2) DEFAULT 1.00`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "balance" numeric(15,2)`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "currency" text DEFAULT 'USD'`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "created_at" timestamp NOT NULL DEFAULT now()`,
+    `ALTER TABLE "broker_accounts" ADD COLUMN IF NOT EXISTS "updated_at" timestamp NOT NULL DEFAULT now()`,
     `CREATE INDEX IF NOT EXISTS "broker_accounts_user_id_idx" ON "broker_accounts" ("user_id")`,
     `CREATE TABLE IF NOT EXISTS "broker_trades" (
       "id" serial PRIMARY KEY,
