@@ -74,6 +74,10 @@ interface TradingData {
   pair: string;
   timeframe: string;
   currentPrice: number;
+  priceSource?: string;
+  dataSource?: string;
+  dataQuality?: { flatShare: number; staleMin: number; usable: boolean; note: string } | null;
+  lastCandleTime?: string;
   indicators: {
     rsi: number;
     sma20: number;
@@ -1033,6 +1037,11 @@ function IndicatorsPanel({ data }: { data: TradingData }) {
 
   const items = [
     { label: "السعر الحالي", value: currentPrice.toFixed(decimals), highlight: true },
+    ...(data.dataSource ? [{
+      label: "مصدر البيانات",
+      value: `${data.dataSource}${data.lastCandleTime ? ` · ${String(data.lastCandleTime).slice(11, 16)} UTC` : ""}${data.dataQuality ? (data.dataQuality.usable ? " ✅" : ` ⛔ ${data.dataQuality.note}`) : ""}`,
+      color: data.dataQuality && !data.dataQuality.usable ? "text-red-400" : "text-muted-foreground",
+    }] : []),
     { label: "RSI (14)", value: `${indicators.rsi.toFixed(1)} — ${rsiLabel}`, color: rsiColor },
     { label: "SMA 20",   value: indicators.sma20.toFixed(decimals), color: currentPrice > indicators.sma20 ? "text-emerald-400" : "text-red-400" },
     { label: "SMA 50",   value: indicators.sma50.toFixed(decimals), color: currentPrice > indicators.sma50 ? "text-emerald-400" : "text-red-400" },

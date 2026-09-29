@@ -1,6 +1,7 @@
 /**
  * Shared market-data provider fallbacks used by BOTH the web analysis
- * (router.ts) and the Telegram bot (telegram/bot.ts): OANDA → Yahoo.
+ * (router.ts) and the Telegram bot (telegram/bot.ts): OANDA → Binance →
+ * Dukascopy → Yahoo, rejecting stale or flat feeds (see firstUsable).
  *
  * Each returns the TwelveData shape ({ status:"ok", values:[...] } with values
  * NEWEST-first) so callers can treat all providers identically. TwelveData
@@ -177,7 +178,15 @@ export async function fetchRealtimePrice(symbol: string): Promise<{ price: numbe
       }
     }
   } catch { /* next */ }
-  // 2) Yahoo regularMarketPrice — keyless, close to what TradingView shows for FX
+  // 1.5) Dukascopy — close of the newest 1-minute bar, only if it is fresh
+  try {
+    const d = await fetchFromDukascopy(symbol, "1min", 5);
+    if (d && staleMinutes(symbol, d.values, "1min") === 0) {
+      const p = parseFloat(d.values[0].close);
+      if (isFinite(p) && p > 0) return { price: p, source: "dukascopy-live" };
+    }
+  } catch { /* next */ }
+  // 2) Yahoo regularMarketPrice — keyless; rejected when its quote time is frozen
   try {
     const tk = YAHOO_TICKER[symbol];
     if (tk) {
@@ -186,17 +195,152 @@ export async function fetchRealtimePrice(symbol: string): Promise<{ price: numbe
       });
       if (res.ok) {
         const j = await res.json() as any;
-        const p = j?.chart?.result?.[0]?.meta?.regularMarketPrice;
-        if (typeof p === "number" && p > 0) return { price: p, source: "yahoo-live" };
+        const meta = j?.chart?.result?.[0]?.meta;
+        const p = meta?.regularMarketPrice, qt = Number(meta?.regularMarketTime) * 1000;
+        const frozen = isFinite(qt) && qt > 0 && !MARKET_24x7.has(symbol) && isFxMarketOpen() && Date.now() - qt > 10 * 60_000;
+        if (typeof p === "number" && p > 0 && !frozen) return { price: p, source: "yahoo-live" };
       }
     }
   } catch { /* next */ }
   return null;
 }
 
-/** OANDA → Yahoo, returning the first that yields data (or null if both fail). */
-export async function fetchOhlcFallback(symbol: string, interval: string, outputsize: number): Promise<OhlcResult | null> {
-  try { const o = await fetchFromOanda(symbol, interval, outputsize); if (o) return o; } catch { /* next */ }
-  try { const y = await fetchFromYahoo(symbol, interval, outputsize); if (y) return y; } catch { /* next */ }
-  return null;
+// ─── Binance (crypto) ─────────────────────────────────────────────────
+// Keyless, real exchange candles — far better than Yahoo for BTC/ETH intraday.
+const BINANCE_INTERVAL: Record<string, string> = { "1min": "1m", "5min": "5m", "15min": "15m", "30min": "30m", "1h": "1h", "4h": "4h", "1day": "1d", "1week": "1w" };
+export async function fetchFromBinance(symbol: string, interval: string, outputsize: number): Promise<OhlcResult | null> {
+  const s = BINANCE_SYMBOL[symbol], iv = BINANCE_INTERVAL[interval];
+  if (!s || !iv) return null;
+  const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${s}&interval=${iv}&limit=${Math.min(outputsize, 1000)}`, { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) return null;
+  const rows = await res.json() as any[];
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const values = rows.map(k => ({
+    datetime: new Date(k[0]).toISOString(), open: String(k[1]), high: String(k[2]), low: String(k[3]), close: String(k[4]), volume: String(k[5]),
+  })).reverse(); // newest-first
+  return { status: "ok", values, meta: { source: "binance" } };
+}
+
+// ─── Candle-data quality ──────────────────────────────────────────────
+/**
+ * Share of "flat" candles (high == low, i.e. a single tick or a stale quote)
+ * among the most recent bars. Yahoo's intraday FX feed often returns long runs
+ * of flat 1-minute candles; indicators (ATR, Bollinger, patterns) computed on
+ * them are meaningless, so callers warn and refuse to issue signals.
+ */
+export function flatCandleShare(values: any[], lookback = 100): number {
+  const recent = values.slice(0, lookback);
+  if (!recent.length) return 0;
+  const flat = recent.filter(v => parseFloat(v.high) - parseFloat(v.low) <= 0).length;
+  return flat / recent.length;
+}
+export const POOR_DATA_FLAT_SHARE = 0.25;
+
+// ─── Dukascopy (FX / metals) ──────────────────────────────────────────
+// Keyless Swiss-bank ECN feed (the one behind Dukascopy's public chart widget).
+// Real tick-built candles — far better than Yahoo's intraday FX, which often
+// freezes (flat / hours-old candles). JSONP: _cb([[tsMs, o, h, l, c, vol], ...]).
+const DUKA_INSTRUMENT: Record<string, string> = {
+  "EUR/USD": "EUR/USD", "USD/JPY": "USD/JPY", "GBP/USD": "GBP/USD", "GBP/JPY": "GBP/JPY",
+  "USD/CHF": "USD/CHF", "AUD/USD": "AUD/USD", "NZD/USD": "NZD/USD", "USD/CAD": "USD/CAD",
+  "EUR/GBP": "EUR/GBP", "EUR/JPY": "EUR/JPY", "EUR/CHF": "EUR/CHF", "AUD/CAD": "AUD/CAD",
+  "XAU/USD": "XAU/USD", "XAG/USD": "XAG/USD",
+};
+const DUKA_INTERVAL: Record<string, string> = { "1min": "1MIN", "5min": "5MIN", "15min": "15MIN", "30min": "30MIN", "1h": "1HOUR", "4h": "4HOUR", "1day": "1DAY", "1week": "1WEEK" };
+export async function fetchFromDukascopy(symbol: string, interval: string, outputsize: number, now = Date.now()): Promise<OhlcResult | null> {
+  const inst = DUKA_INSTRUMENT[symbol], iv = DUKA_INTERVAL[interval];
+  if (!inst || !iv) return null;
+  const params = new URLSearchParams({
+    path: "chart/json3", instrument: inst, offer_side: "B", interval: iv, splits: "true", stocks: "true",
+    limit: String(Math.min(outputsize, 1000)), time_direction: "P", timestamp: String(now), jsonp: "_cb",
+  });
+  const res = await fetch(`https://freeserv.dukascopy.com/2.0/index.php?${params}`, {
+    headers: { Referer: "https://freeserv.dukascopy.com/2.0/", "User-Agent": "Mozilla/5.0" },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) return null;
+  const txt = await res.text();
+  const m = txt.match(/\((\[[\s\S]*\])\)\s*;?\s*$/);
+  if (!m) return null;
+  let rows: any[];
+  try { rows = JSON.parse(m[1]); } catch { return null; }
+  if (!Array.isArray(rows)) return null;
+  const ok = rows.filter(r => Array.isArray(r) && r.length >= 5 && r.slice(0, 5).every((x: any) => typeof x === "number" && isFinite(x)) && r[1] > 0 && r[2] >= r[3]);
+  if (ok.length === 0) return null;
+  ok.sort((a, b) => b[0] - a[0]); // newest-first
+  const values = ok.slice(0, outputsize).map(r => ({
+    datetime: new Date(r[0]).toISOString(), open: String(r[1]), high: String(r[2]), low: String(r[3]), close: String(r[4]), volume: String(r[5] ?? 0),
+  }));
+  return { status: "ok", values, meta: { source: "dukascopy" } };
+}
+
+// ─── Freshness ────────────────────────────────────────────────────────
+/** FX/metals trade Sun 21:00 → Fri 21:00 UTC (DST-agnostic: ±1h slack). */
+export function isFxMarketOpen(now = Date.now()): boolean {
+  const d = new Date(now), day = d.getUTCDay(), h = d.getUTCHours();
+  if (day === 6) return false;
+  if (day === 5 && h >= 22) return false;
+  if (day === 0 && h < 21) return false;
+  return true;
+}
+const MARKET_24x7 = new Set(["BTC/USD", "ETH/USD"]);
+/**
+ * Minutes the newest candle lags "now" beyond what its interval explains, or 0
+ * when fresh / the market is closed. A frozen feed (Yahoo FX does this) keeps
+ * serving hours-old candles, so the "current price" and every indicator
+ * describe the past while the live chart has moved on.
+ */
+export function staleMinutes(symbol: string, values: any[], interval: string, now = Date.now()): number {
+  const ms = INTERVAL_MS[interval];
+  if (!ms || !values?.length) return 0;
+  if (!MARKET_24x7.has(symbol) && !isFxMarketOpen(now)) return 0;
+  if (ms >= INTERVAL_MS["1day"]) return 0; // daily/weekly bars are fine to lag a session
+  const t = candleMs(String(values[0]?.datetime ?? ""));
+  if (!isFinite(t)) return 0;
+  const lag = now - (t + ms);                 // time since the newest bar CLOSED
+  const allowed = Math.max(2 * ms, 10 * 60_000);
+  return lag > allowed ? Math.round(lag / 60_000) : 0;
+}
+
+export interface DataQuality { flatShare: number; staleMin: number; usable: boolean; note: string }
+export function assessData(symbol: string, values: any[], interval: string, now = Date.now()): DataQuality {
+  const flatShare = flatCandleShare(values);
+  const staleMin = staleMinutes(symbol, values, interval, now);
+  const usable = flatShare < POOR_DATA_FLAT_SHARE && staleMin === 0;
+  const note = staleMin > 0 ? `بيانات متأخرة ${staleMin} دقيقة عن السوق الحي`
+    : flatShare >= POOR_DATA_FLAT_SHARE ? `${Math.round(flatShare * 100)}% من الشموع مسطّحة`
+    : "سليمة";
+  return { flatShare, staleMin, usable, note };
+}
+
+type Fetcher = () => Promise<OhlcResult | null>;
+/**
+ * Try providers in order; return the first whose candles are fresh and
+ * non-degenerate. If none is, return the least-bad one tagged so callers can
+ * warn and block signals (never silently analyse a frozen feed).
+ */
+export async function firstUsable(symbol: string, interval: string, fetchers: Fetcher[], now = Date.now()): Promise<(OhlcResult & { quality: DataQuality }) | null> {
+  let fallback: (OhlcResult & { quality: DataQuality }) | null = null;
+  for (const f of fetchers) {
+    let r: OhlcResult | null = null;
+    try { r = await f(); } catch { r = null; }
+    if (!r || !Array.isArray(r.values) || r.values.length === 0) continue;
+    const quality = assessData(symbol, r.values, interval, now);
+    const tagged = { ...r, quality };
+    if (quality.usable) return tagged;
+    console.warn(`[MarketData] ${symbol} ${interval} via ${r.meta.source} rejected: ${quality.note}`);
+    if (!fallback || quality.staleMin < fallback.quality.staleMin
+        || (quality.staleMin === fallback.quality.staleMin && quality.flatShare < fallback.quality.flatShare)) fallback = tagged;
+  }
+  return fallback;
+}
+
+/** OANDA → Binance (crypto) → Dukascopy (FX/metals) → Yahoo; first fresh, non-flat one wins. */
+export async function fetchOhlcFallback(symbol: string, interval: string, outputsize: number): Promise<(OhlcResult & { quality: DataQuality }) | null> {
+  return firstUsable(symbol, interval, [
+    () => fetchFromOanda(symbol, interval, outputsize),
+    () => fetchFromBinance(symbol, interval, outputsize),
+    () => fetchFromDukascopy(symbol, interval, outputsize),
+    () => fetchFromYahoo(symbol, interval, outputsize),
+  ]);
 }
