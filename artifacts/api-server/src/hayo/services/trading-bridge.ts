@@ -2,16 +2,15 @@
  * Trading Bridge Service — يربط بين قسم الأسواق المالية ومنصات التداول
  *
  * المسؤوليات:
- *  1. اختبار الاتصال الفعلي بالمنصة (OANDA حالياً + Quotex/IQ/PocketOption عبر التحقق التلقائي)
- *  2. تنفيذ الصفقات تلقائياً بناءً على الإشارات القادمة من قسم التحليل
+ *  1. اختبار الاتصال الفعلي بالمنصة (OANDA فقط عبر REST API الرسمي)
+ *  2. تنفيذ الصفقات تلقائياً على OANDA بناءً على الإشارات القادمة من قسم التحليل
  *  3. تخزين نتيجة كل صفقة في جدول broker_trades
- *  4. إرسال إشعار لـ Telegram (بوت المستخدم + بوت السيرفر إن توفر)
  *
- * ملاحظات:
- *  - منصات الخيارات الثنائية (Quotex/IQ/PocketOption/OlympTrade) لا تنشر API رسمياً عاماً.
- *    لذا يتم التحقق من الحساب عبر محاولة تسجيل دخول HTTPS بسيطة (اختبار مبدئي للاتصال)،
- *    ثم تُسجَّل الصفقات في قاعدة البيانات وتُرسَل لبوت Telegram لتنفيذها يدوياً أو بواسطة
- *    إضافة المتصفح إذا كانت مثبتة لدى المستخدم.
+ * ملاحظات (بصدق):
+ *  - منصات الخيارات الثنائية (Quotex/IQ/PocketOption/OlympTrade) لا تنشر API رسمياً،
+ *    وMT4/MT5 يحتاج جسراً (MetaApi) غير مبني بعد. لذلك لا يمكن التحقق من بيانات
+ *    الدخول ولا التنفيذ الآلي عليها: تُعلَّم "غير متحقق" وتُرسل إشاراتها إلى
+ *    Telegram للتنفيذ اليدوي فقط. لا نطلب ولا نخزّن كلمات مرور هذه المنصات.
  *  - منصة OANDA تعمل كاملاً عبر REST API الرسمي (placeOrder حقيقي).
  */
 
@@ -52,6 +51,8 @@ export interface SignalInput {
 
 export interface TradeExecutionResult {
   success: boolean;
+  /** true when the platform has no automated execution — signal was only notified */
+  manualOnly?: boolean;
   platform: SupportedPlatform;
   tradeId?: string;
   externalId?: string;
@@ -73,65 +74,43 @@ export function decryptCred(value: string | undefined | null): string | null {
 }
 
 // ─── Connection Test ─────────────────────────────────────────────────
+export type ConnectionStatus = "connected" | "error" | "unverified";
+
 /**
- * يختبر الاتصال بمنصة التداول. يعيد success=true عند نجاح المصادقة.
- * منصات الخيارات الثنائية يتم اختبارها عبر طلب login فعلي للأنبوب الرسمي.
+ * يختبر الاتصال بمنصة التداول. success=true فقط عند نجاح مصادقة حقيقية (OANDA).
+ * المنصات بلا API رسمي تُعاد بحالة "unverified" — لا ندّعي تحققاً لم يحدث.
  */
-export async function testBrokerConnection(creds: BrokerCredentials): Promise<{ success: boolean; message: string; details?: any }> {
-  const password = decryptCred(creds.accountPasswordEnc);
+export async function testBrokerConnection(creds: BrokerCredentials): Promise<{ success: boolean; status: ConnectionStatus; message: string; details?: any }> {
   const apiToken = decryptCred(creds.apiTokenEnc);
 
   // OANDA — REST API check
   if (creds.platform === "oanda") {
     if (!apiToken || !creds.externalAccountId) {
-      return { success: false, message: "OANDA يتطلب API Token + Account ID" };
+      return { success: false, status: "error", message: "OANDA يتطلب API Token + Account ID" };
     }
     const env = (creds.environment === "live" ? "live" : "practice") as "live" | "practice";
     const r = await testOanda({ apiToken, accountId: creds.externalAccountId, environment: env });
-    if (!r.success) return { success: false, message: r.error || "فشل المصادقة على OANDA" };
-    return { success: true, message: "✅ تم الاتصال بـ OANDA بنجاح", details: r.info };
+    if (!r.success) return { success: false, status: "error", message: r.error || "فشل المصادقة على OANDA" };
+    return { success: true, status: "connected", message: "✅ تم الاتصال بـ OANDA بنجاح", details: r.info };
   }
 
-  // MT4 / MT5 — لا يوجد REST عام، يتم تأكيد البيانات شكلياً ثم بناء جسر MetaApi لاحقاً
+  // MT4 / MT5 — no bridge yet: nothing can be verified.
   if (creds.platform === "mt4" || creds.platform === "mt5") {
-    if (!creds.externalAccountId || !password || !creds.serverHost) {
-      return { success: false, message: "MT4/MT5 يتطلب: رقم الحساب + كلمة المرور + اسم السيرفر" };
-    }
-    // Stage-1: تحقق من شكل البيانات + ping السيرفر إن أمكن
-    return { success: true, message: "✅ تم حفظ بيانات MT — جسر MetaApi جاهز للتفعيل" };
+    return {
+      success: false, status: "unverified",
+      message: "⚠️ غير متحقق: جسر MT4/MT5 غير متوفر بعد — الإشارات تُرسل إلى Telegram للتنفيذ اليدوي فقط",
+    };
   }
 
-  // منصات الخيارات الثنائية — اختبار بمحاولة الوصول لصفحة تسجيل الدخول
-  const platformDomains: Record<string, string> = {
-    quotex: "https://qxbroker.com",
-    iqoption: "https://iqoption.com",
-    pocketoption: "https://pocketoption.com",
-    olymptrade: "https://olymptrade.com",
-  };
-  const domain = platformDomains[creds.platform];
-  if (!domain) return { success: false, message: "منصة غير مدعومة بعد" };
-
-  if (!creds.accountEmail || !password) {
-    return { success: false, message: "يجب إدخال البريد الإلكتروني وكلمة المرور" };
+  // Binary-options platforms — no official public API.
+  if (["quotex", "iqoption", "pocketoption", "olymptrade"].includes(creds.platform)) {
+    return {
+      success: false, status: "unverified",
+      message: `⚠️ غير متحقق: ${creds.platform} لا توفّر API رسمياً — لا يمكن التحقق من الحساب أو التنفيذ الآلي؛ الإشارات تُرسل إلى Telegram للتنفيذ اليدوي فقط`,
+    };
   }
 
-  // ping endpoint بسيط للتأكد من توفر المنصة (صفحة Login تعطي 200)
-  try {
-    const r = await fetch(domain, {
-      method: "GET",
-      headers: { "User-Agent": "HAYO-Bridge/1.0" },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (r.ok) {
-      return {
-        success: true,
-        message: `✅ تم التحقق من بيانات ${creds.platform} — البوابة جاهزة لإرسال الصفقات`,
-      };
-    }
-    return { success: false, message: `فشل الوصول إلى ${creds.platform} (HTTP ${r.status})` };
-  } catch (e: any) {
-    return { success: false, message: `فشل الاتصال بـ ${creds.platform}: ${e.message}` };
-  }
+  return { success: false, status: "error", message: "منصة غير مدعومة بعد" };
 }
 
 // ─── Execute Signal on Broker ────────────────────────────────────────
@@ -180,55 +159,13 @@ export async function executeSignalOnBroker(
     };
   }
 
-  // الخيارات الثنائية — تُسجَّل كـ pending ويرسل تنبيه Telegram
+  // No automated execution exists for this platform: nothing was traded.
   return {
-    success: true,
+    success: false,
+    manualOnly: true,
     platform: creds.platform,
-    message: `إشارة ${signal.direction} على ${signal.pair} مرسلة لمنصة ${creds.platform} عبر بوت Telegram`,
+    message: `لم تُنفَّذ صفقة: ${creds.platform} لا تدعم التنفيذ الآلي — أُرسلت الإشارة ${signal.direction} على ${signal.pair} إلى Telegram للتنفيذ اليدوي`,
   };
-}
-
-// ─── Telegram Broadcast ──────────────────────────────────────────────
-/**
- * يرسل رسالة عبر بوت المستخدم الشخصي (إن وُجد) + بوت السيرفر العام (إن توفر).
- */
-export async function broadcastToTelegram(opts: {
-  userBotToken?: string | null;
-  userChatIds?: number[];
-  globalBotToken?: string | null;
-  globalChatId?: string | null;
-  text: string;
-}): Promise<{ sentToUserBot: boolean; sentToGlobalBot: boolean }> {
-  let sentToUserBot = false;
-  let sentToGlobalBot = false;
-
-  // بوت المستخدم — يرسل لكل chatId مسجل لديه
-  if (opts.userBotToken && opts.userChatIds && opts.userChatIds.length > 0) {
-    for (const chatId of opts.userChatIds) {
-      try {
-        await fetch(`https://api.telegram.org/bot${opts.userBotToken}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, text: opts.text, parse_mode: "Markdown" }),
-        });
-        sentToUserBot = true;
-      } catch {/* ignore */}
-    }
-  }
-
-  // بوت السيرفر العام
-  if (opts.globalBotToken && opts.globalChatId) {
-    try {
-      const r = await fetch(`https://api.telegram.org/bot${opts.globalBotToken}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: opts.globalChatId, text: opts.text, parse_mode: "Markdown" }),
-      });
-      sentToGlobalBot = r.ok;
-    } catch {/* ignore */}
-  }
-
-  return { sentToUserBot, sentToGlobalBot };
 }
 
 // ─── Format helper ────────────────────────────────────────────────────
@@ -236,7 +173,9 @@ export function formatSignalMessage(signal: SignalInput, platform: string, resul
   const dirEmoji = signal.direction === "BUY" || signal.direction === "CALL" ? "🟢" : "🔴";
   const dirText = signal.direction === "BUY" || signal.direction === "CALL" ? "شراء (CALL)" : "بيع (PUT)";
   const status = result
-    ? result.success
+    ? result.manualOnly
+      ? "📝 *للتنفيذ اليدوي* — هذه المنصة لا تدعم التنفيذ الآلي"
+      : result.success
       ? "✅ *تم التنفيذ بنجاح*"
       : `❌ *فشل التنفيذ:* ${result.error || result.message}`
     : "⏳ *قيد الإرسال*";

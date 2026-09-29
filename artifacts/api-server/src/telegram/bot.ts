@@ -6,12 +6,13 @@
  */
 
 import TelegramBot from "node-telegram-bot-api";
-import { callProvider, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
+import { callProvider, callProviderVision, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
+import { renderChartSnapshot } from "../hayo/services/chart-snapshot";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
-import { fetchOhlcFallback } from "../hayo/market-data";
+import { fetchOhlcFallback, dropFormingCandle } from "../hayo/market-data";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
-  calcPivotPoints, calcADX, calcStrategies, calcFilters,
+  calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
   type StrategySignal, type FilterResult,
 } from "../hayo/market-analysis";
 
@@ -49,11 +50,13 @@ const PAIRS: Record<string, PairInfo> = {
 // TwelveData interval config per bot timeframe key
 interface TfConfig { interval: string; outputsize: number; label: string }
 const TIMEFRAMES: Record<string, TfConfig> = {
-  "1m":  { interval: "1min",  outputsize: 60,  label: "1 دقيقة"  },
-  "5m":  { interval: "5min",  outputsize: 60,  label: "5 دقائق"  },
-  "15m": { interval: "15min", outputsize: 60,  label: "15 دقيقة" },
-  "30m": { interval: "30min", outputsize: 60,  label: "30 دقيقة" },
-  "1h":  { interval: "1h",    outputsize: 60,  label: "ساعة"     },
+  "1m":  { interval: "1min",  outputsize: 250, label: "1 دقيقة"  },
+  "5m":  { interval: "5min",  outputsize: 250, label: "5 دقائق"  },
+  "15m": { interval: "15min", outputsize: 250, label: "15 دقيقة" },
+  "30m": { interval: "30min", outputsize: 250, label: "30 دقيقة" },
+  "1h":  { interval: "1h",    outputsize: 250, label: "ساعة"     },
+  "4h":  { interval: "4h",    outputsize: 250, label: "4 ساعات"  },
+  "1d":  { interval: "1day",  outputsize: 250, label: "يومي"     },
 };
 
 // ─── Auto-Signal Config ───────────────────────────────────────────────
@@ -64,6 +67,7 @@ interface AutoConfig {
   pairs: string[];            // pairs to scan
   timeframes: string[];       // timeframes to scan
   intervalMinutes: number;    // scan every X minutes
+  useAI: boolean;             // true: AI plurality decides; false: technical-only signals
 }
 
 const defaultAutoConfig: AutoConfig = {
@@ -73,6 +77,7 @@ const defaultAutoConfig: AutoConfig = {
   pairs: Object.keys(PAIRS),
   timeframes: ["15m", "1h"],
   intervalMinutes: 30,
+  useAI: true,
 };
 
 let autoConfig: AutoConfig = { ...defaultAutoConfig };
@@ -144,6 +149,10 @@ function timeframesKeyboard(): TelegramBot.InlineKeyboardMarkup {
         { text: "30 دقيقة", callback_data: "tf:30m" },
         { text: "ساعة كاملة", callback_data: "tf:1h" },
       ],
+      [
+        { text: "4 ساعات", callback_data: "tf:4h" },
+        { text: "يومي", callback_data: "tf:1d" },
+      ],
       [{ text: "◀️ تغيير الزوج", callback_data: "back:pairs" }],
     ],
   };
@@ -199,8 +208,14 @@ function autoMenuKeyboard(): TelegramBot.InlineKeyboardMarkup {
 
   return {
     inline_keyboard: [
-      [{ text: `${c.enabled ? "🔴 إيقاف الإشارات" : "🟢 تفعيل الإشارات"}`, callback_data: "auto:toggle" }],
-      [{ text: `━━ الحد الأدنى للتوافق: ${c.minConsensus}% ━━`, callback_data: "auto:noop" }],
+      [{ text: `${c.enabled ? "🔴 إيقاف الإشارات التلقائية" : "🟢 تفعيل الإشارات التلقائية"}`, callback_data: "auto:toggle" }],
+      [{ text: "▶️ فحص فوري الآن (SCAN)", callback_data: "auto:now" }],
+      [{ text: "━━ نوع التحليل ━━", callback_data: "auto:noop" }],
+      [
+        { text: `${c.useAI ? "✅ " : ""}🤖 مع AI`, callback_data: "auto:ai:on" },
+        { text: `${!c.useAI ? "✅ " : ""}⚡ بدون AI (فني)`, callback_data: "auto:ai:off" },
+      ],
+      [{ text: `━━ الحد الأدنى للتوافق الفني: ${c.minConsensus}% ━━`, callback_data: "auto:noop" }],
       [
         { text: `${c.minConsensus===65?"✅ ":""}65%`, callback_data: "auto:cons:65" },
         { text: `${c.minConsensus===75?"✅ ":""}75%`, callback_data: "auto:cons:75" },
@@ -220,7 +235,8 @@ function autoMenuKeyboard(): TelegramBot.InlineKeyboardMarkup {
       [pb("EURJPY"), pb("EURCHF"), pb("AUDCAD")],
       [pb("XAUUSD"), pb("XAGUSD"), pb("BTCUSD")],
       [pb("ETHUSD"), pb("USOIL"), pb("US30")],
-      [{ text: "━━ الإطارات الزمنية ━━", callback_data: "auto:noop" }],
+      [{ text: `━━ الإطارات الزمنية (${c.timeframes.length}/${Object.keys(TIMEFRAMES).length}) ━━`, callback_data: "auto:noop" }],
+      [{ text: `${c.timeframes.length === Object.keys(TIMEFRAMES).length ? "✅ " : ""}تحديد/إلغاء كل الفريمات`, callback_data: "auto:tf:ALL" }],
       [
         { text: `${c.timeframes.includes("1m") ?"✅ ":""}1م`,   callback_data: "auto:tf:1m" },
         { text: `${c.timeframes.includes("5m") ?"✅ ":""}5م`,   callback_data: "auto:tf:5m" },
@@ -229,6 +245,8 @@ function autoMenuKeyboard(): TelegramBot.InlineKeyboardMarkup {
       [
         { text: `${c.timeframes.includes("30m")?"✅ ":""}30م`,  callback_data: "auto:tf:30m" },
         { text: `${c.timeframes.includes("1h") ?"✅ ":""}1س`,   callback_data: "auto:tf:1h" },
+        { text: `${c.timeframes.includes("4h") ?"✅ ":""}4س`,   callback_data: "auto:tf:4h" },
+        { text: `${c.timeframes.includes("1d") ?"✅ ":""}يومي`, callback_data: "auto:tf:1d" },
       ],
       [{ text: "━━ فترة الفحص التلقائي ━━", callback_data: "auto:noop" }],
       [
@@ -279,7 +297,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   let json: any = null;
   // Try TwelveData first (when a key exists), with key rotation on rate limits.
   for (let attempt = 0; apiKey && attempt < 6; attempt++) {
-    const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(p.tdSymbol)}&interval=${tfCfg.interval}&outputsize=${tfCfg.outputsize}&apikey=${apiKey}`;
+    const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(p.tdSymbol)}&interval=${tfCfg.interval}&outputsize=${tfCfg.outputsize}&timezone=UTC&apikey=${apiKey}`;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
       if (res.status === 429) {
@@ -312,7 +330,8 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
     throw new Error((json && json.message) || "لا توجد بيانات سوق (TwelveData/OANDA/Yahoo)");
   }
 
-  const rawCandles = [...json.values].reverse();
+  // Closed candles only — same rule as the web engine, so both agree.
+  const rawCandles = [...dropFormingCandle(json.values, tfCfg.interval)].reverse();
   if (rawCandles.length < 20) throw new Error("بيانات غير كافية من TwelveData");
 
   const closes = rawCandles.map((c: any) => parseFloat(c.close));
@@ -334,16 +353,22 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   // Extra indicators for the full 15-strategy set (same as the web engine).
   const STOCH  = calcStochastic(closes, highs, lows);
   const WILLR  = calcWilliamsR(closes, highs, lows);
-  const PIVOTS = calcPivotPoints(highs, lows, closes);
+  const PIVOTS = calcPivotPoints(highs, lows, closes, rawCandles.map((c: any) => c.datetime));
   const ADX    = calcADX(highs, lows, closes);
   const strategies = calcStrategies(closes, highs, lows, SMA20, SMA50, SMA200, RSI, MACD, BB, ATR, STOCH, WILLR, ADX, PIVOTS, opens);
-  const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes);
+  const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes, { highs, lows, market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
   const marketResult = {
     price, fmt, RSI, SMA20, SMA50, SMA200, MACD, BB, ATR,
     STOCH, WILLR, PIVOTS, ADX,
     strategies, filters,
     datetime: rawCandles[rawCandles.length - 1].datetime,
+    // Raw closed candles (epoch seconds) — used to draw the chart snapshot the
+    // vision models read, so image and indicators come from identical data.
+    candles: rawCandles.map((c: any, i: number) => ({
+      time: Math.floor(toUtcMs(String(c.datetime)) / 1000),
+      open: opens[i], high: highs[i], low: lows[i], close: closes[i],
+    })),
   };
 
   marketCache.set(cacheKey, { data: marketResult, ts: Date.now() });
@@ -355,6 +380,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
 const HTF_MAP: Record<string, { interval: string; label: string }> = {
   "1m": { interval: "15min", label: "15د" }, "5m": { interval: "1h", label: "1س" },
   "15m": { interval: "4h", label: "4س" }, "30m": { interval: "4h", label: "4س" }, "1h": { interval: "1day", label: "يومي" },
+  "4h": { interval: "1day", label: "يومي" }, "1d": { interval: "1week", label: "أسبوعي" },
 };
 async function computeHtfBias(pair: string, tf: string): Promise<string> {
   const h = HTF_MAP[tf];
@@ -369,22 +395,29 @@ async function computeHtfBias(pair: string, tf: string): Promise<string> {
 }
 
 // ─── Consensus Calculator ─────────────────────────────────────────────
-function calcConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; pct: number } {
+// Technical agreement: share of the strategies that TOOK a side (BUY or SELL)
+// that agree, and at least MIN_AGREEING of them. Previously the share was over
+// all 15 strategies, neutral ones included — "75%" needed 12/15 on one side,
+// which almost never happens, so auto-signals and convergence never fired.
+const MIN_AGREEING = 4;
+function calcConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; pct: number; buys: number; sells: number } {
   const buys  = strategies.filter(s=>s.signal==="BUY").length;
   const sells = strategies.filter(s=>s.signal==="SELL").length;
-  const total = strategies.length;
-  if (buys > sells)  return { direction:"BUY",  pct: Math.round(buys/total*100) };
-  if (sells > buys)  return { direction:"SELL", pct: Math.round(sells/total*100) };
-  return { direction:"NEUTRAL", pct: 0 };
+  const dom = Math.max(buys, sells), directional = buys + sells;
+  const pct = directional ? Math.round(dom / directional * 100) : 0;
+  if (buys === sells || dom < MIN_AGREEING) return { direction:"NEUTRAL", pct, buys, sells };
+  return { direction: buys > sells ? "BUY" : "SELL", pct, buys, sells };
 }
 
 // ─── Economic News Fetcher (cached 30 min) ───────────────────────────
 interface NewsEvent { currency: string; title: string; impact: string; time: string; forecast: string; previous: string; actual: string; minutesUntil: number | null }
 
 const PAIR_CURRENCIES: Record<string, string[]> = {
-  EURUSD: ["EUR","USD"], USDJPY: ["USD","JPY"], GBPUSD: ["GBP","USD"],
-  GBPJPY: ["GBP","JPY"], XAUUSD: ["USD","XAU"],
-  BTCUSD: ["BTC","USD"], USDCHF: ["USD","CHF"], AUDUSD: ["AUD","USD"], XAGUSD: ["XAG","USD"],
+  EURUSD: ["EUR", "USD"], USDJPY: ["USD", "JPY"], GBPUSD: ["GBP", "USD"], GBPJPY: ["GBP", "JPY"],
+  USDCHF: ["USD", "CHF"], AUDUSD: ["AUD", "USD"], NZDUSD: ["NZD", "USD"], USDCAD: ["USD", "CAD"],
+  EURGBP: ["EUR", "GBP"], EURJPY: ["EUR", "JPY"], EURCHF: ["EUR", "CHF"], AUDCAD: ["AUD", "CAD"],
+  // Metals, crypto, oil and the Dow are USD-priced: USD releases move them.
+  XAUUSD: ["USD"], XAGUSD: ["USD"], BTCUSD: ["USD"], ETHUSD: ["USD"], USOIL: ["USD", "CAD"], US30: ["USD"],
 };
 
 // Raw news cache (single fetch, filter per-pair)
@@ -427,7 +460,7 @@ async function fetchEconomicNews(pair: string): Promise<NewsEvent[]> {
 }
 
 // ─── AI Runner (5 models — matches platform) ──────────────────────────
-async function runAI(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>, news: NewsEvent[] = []) {
+export async function runAI(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>, news: NewsEvent[] = [], chart: Buffer | null = null, htfBias = "") {
   const buySigs  = d.strategies.filter(s=>s.signal==="BUY").length;
   const sellSigs = d.strategies.filter(s=>s.signal==="SELL").length;
   const avgStr   = Math.round(
@@ -451,6 +484,13 @@ async function runAI(pair: string, tf: string, d: Awaited<ReturnType<typeof fetc
 • SMA20: ${d.fmt(d.SMA20)} ${d.price>d.SMA20?"✅ فوق":"❌ تحت"} | SMA50: ${d.fmt(d.SMA50)} ${d.price>d.SMA50?"✅ فوق":"❌ تحت"}${d.SMA200?` | SMA200: ${d.fmt(d.SMA200)} ${d.price>d.SMA200?"✅ فوق":"❌ تحت"}`:" | SMA200: بيانات غير كافية"}
 • BB: أعلى ${d.fmt(d.BB.upper)} | وسط ${d.fmt(d.BB.middle)} | أسفل ${d.fmt(d.BB.lower)}
 • ATR(14): ${d.fmt(d.ATR)}
+• Stochastic(14,3): %K=${d.STOCH.k.toFixed(1)} %D=${d.STOCH.d.toFixed(1)} | Williams %R: ${d.WILLR.toFixed(1)}
+• ADX(14): ${d.ADX.adx.toFixed(1)} (+DI ${d.ADX.pdi.toFixed(1)} / -DI ${d.ADX.mdi.toFixed(1)}) ${d.ADX.adx > 25 ? "اتجاه واضح" : "سوق جانبي/ضعيف"}
+• Pivot ${(d.PIVOTS as any).basis === "prevDay" ? "(اليوم السابق)" : "(تقريبي — لا يوم سابق كامل في النافذة)"}: P=${d.fmt(d.PIVOTS.pivot)} | R1=${d.fmt(d.PIVOTS.r1)} R2=${d.fmt(d.PIVOTS.r2)} | S1=${d.fmt(d.PIVOTS.s1)} S2=${d.fmt(d.PIVOTS.s2)}
+${htfBias ? `• ${htfBias.replace(/<[^>]+>/g, "")}\n` : ""}• تكلفة السبريد التقريبية: ${(() => { const c = spreadCostPct(pair, d.ATR); return c === null ? "غير معروفة" : `${c.toFixed(0)}% من وقف 1.5×ATR`; })()}
+
+🕯️ آخر 5 شموع مغلقة (O/H/L/C):
+${d.candles.slice(-5).map((c: any, i: number) => `  ${i + 1}. ${d.fmt(c.open)} / ${d.fmt(c.high)} / ${d.fmt(c.low)} / ${d.fmt(c.close)}`).join("\n")}
 
 🎯 إشارات الاستراتيجيات (${buySigs} شراء / ${sellSigs} بيع / ${d.strategies.length-buySigs-sellSigs} محايد):
 ${d.strategies.map(s=>`• ${s.emoji} ${s.name}: ${s.signal==="BUY"?"🟢 BUY":s.signal==="SELL"?"🔴 SELL":"🟡 NEUTRAL"} (قوة: ${s.strength}%) — ${s.desc}`).join("\n")}
@@ -459,7 +499,7 @@ ${d.strategies.map(s=>`• ${s.emoji} ${s.name}: ${s.signal==="BUY"?"🟢 BUY":s
 🔍 الفلاتر (${d.filters.filter(f=>f.passed).length}/${d.filters.length} اجتازت):
 ${d.filters.map(f=>`• ${f.emoji} ${f.name}: ${f.passed?"✅":"⚠️"} — ${f.desc}`).join("\n")}${newsContext}`;
 
-  const sys = `أنت محلل أسواق مالية خبير متخصص في الفوركس والذهب. ستحصل على تحليل شامل يتضمن مؤشرات تقنية + إشارات من 7 استراتيجيات + نتائج 4 فلاتر تأكيد${news.length>0?" + أخبار اقتصادية":""}.
+  const sys = `أنت محلل أسواق مالية خبير متخصص في الفوركس والذهب والعملات الرقمية. ستحصل على تحليل شامل يتضمن مؤشرات تقنية + إشارات من ${d.strategies.length} استراتيجية + نتائج ${d.filters.length} فلاتر تأكيد${news.length>0?" + أخبار اقتصادية":""}.
 
 مهمتك: دمج جميع هذه المعطيات وإعطاء توصية نهائية متكاملة مع الالتزام بالقواعد التالية:
 1. توافق الاستراتيجيات (هل الأغلبية تشير لنفس الاتجاه؟)
@@ -467,11 +507,28 @@ ${d.filters.map(f=>`• ${f.emoji} ${f.name}: ${f.passed?"✅":"⚠️"} — ${f
 3. قوة الإشارة الإجمالية
 4. 🏛️ قاعدة حتمية: إذا كان السعر عند دعم متكرر → لا تُعطِ SELL. إذا كان عند مقاومة متكررة → لا تُعطِ BUY.
 ${news.some(e=>e.impact==="High")?"5. 📰 هناك أخبار عالية التأثير قريبة → ارفع مستوى المخاطرة وقلّل الثقة.":""}
+6. 📐 المستويات: رقم واحد لكل حقل (لا نطاقات ولا نص). في الشراء: الوقف < الدخول < الهدف، وفي البيع العكس. الوقف لا يقل عن 1×ATR (ATR = ${d.fmt(d.ATR)}) والعائد:المخاطرة 1.5 على الأقل؛ إن تعذّر ذلك فأجب HOLD.
+7. إذا كانت الإشارات متعارضة فالجواب الصحيح HOLD — لا تختر اتجاهاً لمجرد وجود أغلبية ضئيلة.
 
 يجب أن ترد فقط بتنسيق JSON صحيح:
 {"signal":"BUY"|"SELL"|"HOLD","confidence":0-100,"reasoning":"تحليل 3-4 جمل يذكر الاستراتيجيات والفلاتر والأخبار","entryZone":"مستوى الدخول","stopLoss":"وقف الخسارة","takeProfit":"جني الأرباح","risk":"LOW"|"MEDIUM"|"HIGH"}
 
 لا تُرجع أي نص خارج JSON. هذا تحليل تعليمي فقط.`;
+
+  // Chart-reading instructions (only for models that actually receive the image).
+  const visionSys = sys.replace(
+    `يجب أن ترد فقط بتنسيق JSON صحيح:`,
+    `📸 مرفق لقطة حيّة للشارت (نفس الشموع المغلقة التي حُسبت منها المؤشرات): شموع + SMA20 (برتقالي) + SMA50 (أزرق) + SMA200 (بنفسجي) + بولينجر (رمادي منقّط) + خطوط Pivot/R1/S1 إن وُجدت، وتحتها RSI(14) ثم MACD.
+اعمل بالترتيب:
+أ) اقرأ الشارت بصرياً بشكل مستقل قبل الأرقام: الاتجاه وبنية القمم والقيعان، أين السعر من المتوسطات والبولينجر، مستويات دعم/مقاومة ظاهرة، نماذج سعرية أو شموع انعكاسية، حالة RSI وMACD.
+ب) قارن قراءتك البصرية بمخرجات المؤشرات والاستراتيجيات والفلاتر أدناه: أين تتفق وأين تتناقض؟
+ج) أصدر القرار. إذا ناقض الشارتُ المؤشرات بوضوح فالقرار HOLD.
+
+يجب أن ترد فقط بتنسيق JSON صحيح:`,
+  ).replace(
+    `"risk":"LOW"|"MEDIUM"|"HIGH"}`,
+    `"risk":"LOW"|"MEDIUM"|"HIGH","chartReading":"ما تراه في الشارت في جملتين","chartAgrees":true|false}`,
+  );
 
   // ── 5 providers — same as platform ─────────────────────────────────
   const providers: AIProvider[] = ["claude","gpt4","gemini","geminiPro","deepseek"];
@@ -480,18 +537,25 @@ ${news.some(e=>e.impact==="High")?"5. 📰 هناك أخبار عالية الت
       const name = PROVIDER_CONFIGS[p].name;
       const icon = PROVIDER_CONFIGS[p].icon;
       if (!isProviderAvailable(p)) {
-        return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"المزود غير متاح", entry:"—", sl:"—", tp:"—", risk:"—" };
+        return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"المزود غير متاح", entry:"—", sl:"—", tp:"—", risk:"—", sawChart:false, chartReading:"", chartAgrees:null };
       }
       try {
-        const res = await callProvider(p, sys, ctx);
+        // Vision models get the chart + chart-reading instructions. If the image
+        // could not be delivered, callProviderVision falls back to text-only and
+        // sawImage=false — its "chartReading" is then discarded below.
+        const res = await callProviderVision(p, chart ? visionSys : sys, ctx, chart);
         const clean = res.content.replace(/```json\n?|```\n?/g,"").trim();
         const j = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}")+1));
+        const sig = ["BUY","SELL","HOLD"].includes(j.signal) ? j.signal : "HOLD";
         return { provider:p, name, icon,
-          signal:j.signal, confidence:Math.min(100,Math.max(0,Number(j.confidence)||50)),
-          reasoning:j.reasoning||"—", entry:j.entryZone||"—", sl:j.stopLoss||"—", tp:j.takeProfit||"—", risk:j.risk||"MEDIUM" };
+          signal:sig, confidence:Math.min(100,Math.max(0,Number(j.confidence)||50)),
+          reasoning:j.reasoning||"—", entry:j.entryZone||"—", sl:j.stopLoss||"—", tp:j.takeProfit||"—", risk:j.risk||"MEDIUM",
+          sawChart: res.sawImage,
+          chartReading: res.sawImage ? String(j.chartReading || "") : "",
+          chartAgrees: res.sawImage && typeof j.chartAgrees === "boolean" ? j.chartAgrees : null };
       } catch (err: any) {
         console.error(`[TelegramBot] ${name} error:`, err.message);
-        return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"", entry:"—", sl:"—", tp:"—", risk:"—" };
+        return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"", entry:"—", sl:"—", tp:"—", risk:"—", sawChart:false, chartReading:"", chartAgrees:null };
       }
     })
   );
@@ -503,13 +567,14 @@ function sigIcon(s:"BUY"|"SELL"|"NEUTRAL") {
   return s==="BUY"?"🟢 شراء":s==="SELL"?"🔴 بيع":"🟡 محايد";
 }
 
-function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>) {
+function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>, news: NewsEvent[] = [], journalLine = "", header = "") {
   const p = PAIRS[pair];
   const buys  = d.strategies.filter(s=>s.signal==="BUY").length;
   const sells = d.strategies.filter(s=>s.signal==="SELL").length;
   const neutrals = d.strategies.length - buys - sells;
   const cons  = buys>sells?"🟢 شراء":sells>buys?"🔴 بيع":"🟡 محايد";
   return [
+    ...(header ? [header] : []),
     `${p.flag} <b>${p.label}</b> | <code>${tf}</code>`,
     `💰 <b>${d.fmt(d.price)}</b>  <i>${d.datetime.slice(11,16)} UTC</i>`,
     ``,
@@ -529,64 +594,266 @@ function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fe
     `┌──────────────────────────┐`,
     `│  التوافق: ${cons.padEnd(12)}│`,
     `└──────────────────────────┘`,
+    ...buildRecommendation(pair, d, [], news),
+    ...(journalLine ? [journalLine] : []),
     ``,
     `<i>⚠️ للأغراض التعليمية فقط</i>`,
   ].join("\n");
 }
 
-// Deterministic FINAL recommendation — integrates strategies + trend filter +
-// AI consensus into one clear verdict with an explanation and concrete levels
-// (from the strongest matching AI result, or ATR-based when AI is off). This is
-// the "التوصية" the owner reads at the end of every signal.
-function buildRecommendation(
+// ─── Long-message delivery ────────────────────────────────────────────
+// Telegram rejects messages over 4096 chars; a full AI analysis (15 strategies,
+// 5 models with chart readings, final decision) can exceed that. Split on line
+// boundaries (every line carries its own balanced HTML tags) and send in order;
+// the first part may replace a "loading…" message, the keyboard goes on the last.
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function splitForTelegram(text: string, limit = 3900): string[] {
+  const out: string[] = [];
+  let cur = "";
+  for (const raw of text.split("\n")) {
+    const line = raw.length > limit ? raw.slice(0, limit) : raw;
+    if (cur && cur.length + 1 + line.length > limit) { out.push(cur); cur = line; }
+    else cur = cur ? `${cur}\n${line}` : line;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+async function deliverLong(
+  bot: TelegramBot, chatId: number, text: string,
+  opts: { replyMarkup?: TelegramBot.InlineKeyboardMarkup; editMessageId?: number } = {},
+): Promise<void> {
+  const parts = splitForTelegram(text);
+  for (let i = 0; i < parts.length; i++) {
+    const extra: any = { parse_mode: "HTML" };
+    if (i === parts.length - 1 && opts.replyMarkup) extra.reply_markup = opts.replyMarkup;
+    if (i === 0 && opts.editMessageId) {
+      await bot.editMessageText(parts[0], { chat_id: chatId, message_id: opts.editMessageId, ...extra });
+    } else {
+      await bot.sendMessage(chatId, parts[i], extra);
+    }
+  }
+}
+
+/** AI text is untrusted: escape it before embedding in Telegram HTML. */
+function escHtml(t: string): string {
+  return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Snapshot of the live chart (same closed candles as the indicators); null if unavailable. */
+async function renderPairChart(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>): Promise<Buffer | null> {
+  const p = PAIRS[pair];
+  const levels: { price: number; label: string; color: string }[] = [];
+  const pv: any = d.PIVOTS;
+  if (pv && pv.basis === "prevDay") {
+    levels.push({ price: pv.r1, label: "R1", color: "#ef5350" }, { price: pv.pivot, label: "Pivot", color: "#fbc02d" }, { price: pv.s1, label: "S1", color: "#26a69a" });
+  }
+  return renderChartSnapshot({ title: `${p.label} · ${tf}`, candles: d.candles, decimals: p.decimals, levels });
+}
+
+async function sendChartPhoto(bot: TelegramBot, chatId: number, png: Buffer | null, caption: string): Promise<void> {
+  if (!png) return;
+  try {
+    await bot.sendPhoto(chatId, png, { caption }, { filename: "chart.png", contentType: "image/png" });
+  } catch (err: any) { console.warn("[TelegramBot] sendPhoto failed:", err.message); }
+}
+
+// ─── AI consensus = the FINAL decision ───────────────────────────────
+// Every model that answered casts one vote (BUY / SELL / HOLD — "wait" is a
+// vote too). The answer with the MOST votes wins (plurality); a tie at the top
+// means no clear agreement → "SPLIT" (treated as wait). Each model has already
+// seen ALL the indicator/strategy/filter data (and the chart, if it has vision),
+// so this is where everything converges.
+export function aiConsensus(aiResults: any[]): { label: "BUY" | "SELL" | "HOLD" | "SPLIT"; votes: number; answered: number; avgConf: number; buys: number; sells: number; holds: number } {
+  const answered = aiResults.filter((r: any) => r.signal === "BUY" || r.signal === "SELL" || r.signal === "HOLD");
+  const buys = answered.filter((r: any) => r.signal === "BUY").length;
+  const sells = answered.filter((r: any) => r.signal === "SELL").length;
+  const holds = answered.length - buys - sells;
+  const n = answered.length;
+  const top = Math.max(buys, sells, holds);
+  const leaders = ([["BUY", buys], ["SELL", sells], ["HOLD", holds]] as const).filter(([, v]) => v === top);
+  const label: "BUY" | "SELL" | "HOLD" | "SPLIT" = n === 0 ? "HOLD" : leaders.length > 1 ? "SPLIT" : leaders[0][0];
+  const voters = label === "SPLIT" ? answered : answered.filter((r: any) => r.signal === label);
+  const avgConf = voters.length ? Math.round(voters.reduce((a: number, r: any) => a + r.confidence, 0) / voters.length) : 0;
+  return { label, votes: label === "SPLIT" ? 0 : voters.length, answered: n, avgConf, buys, sells, holds };
+}
+
+/** First number in an AI level string ("83910 - 83920" → 83910); NaN if none. */
+function firstNumber(v: unknown): number {
+  const m = String(v ?? "").replace(/,/g, "").match(/-?\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : NaN;
+}
+
+const MIN_RR = 1.5;          // minimum reward:risk for levels we publish
+// Spread cost (% of a 1.5×ATR stop) at which a trade is blocked. Env-tunable;
+// HAYO_COST_BLOCK_PCT=0 disables the gate (the cost line is still shown).
+const COST_BLOCK_PCT = Number(process.env.HAYO_COST_BLOCK_PCT ?? 25);
+
+interface Recommendation {
+  dir: "BUY" | "SELL" | "HOLD";
+  conf: number;
+  entry: number; sl: number; tp: number; rr: number;
+  levelsFrom: "AI" | "ATR" | "";
+  reasons: string[];
+  blockers: string[];
+  costPct: number | null;
+}
+
+// Deterministic FINAL recommendation — strategies + trend filter + AI majority,
+// then hard safety gates (AI majority, minimum confidence, spread cost, news),
+// then validated levels (correct side, R:R ≥ 1.5, else ATR-based).
+export function computeRecommendation(
+  pair: string,
   d: Awaited<ReturnType<typeof fetchMarket>>,
   aiResults: any[],
-): string[] {
+  news: NewsEvent[] = [],
+): Recommendation {
   const buys = d.strategies.filter((s: Sig) => s.signal === "BUY");
   const sells = d.strategies.filter((s: Sig) => s.signal === "SELL");
-  let vote = 0;
-  for (const s of d.strategies as Sig[]) { if (s.signal === "BUY") vote += s.strength / 100; else if (s.signal === "SELL") vote -= s.strength / 100; }
-  const trendF = d.filters.find((f: any) => /اتجاه|trend/i.test(f.name));
-  const trendUp = trendF ? /صاعد|📈|فوق/.test(trendF.desc) : null;
-  if (trendUp === true) vote += 1.2; else if (trendUp === false) vote -= 1.2;
+  const trendF = d.filters.find((f: any) => f.id === "trend_filter");
+  const trendUp = trendF ? trendF.allowsBuy : null;
+  const ai = aiConsensus(aiResults);
 
-  const validAI = aiResults.filter((r: any) => r.signal !== "ERROR" && r.signal !== "HOLD");
-  const anyAI = aiResults.some((r: any) => r.signal !== "ERROR");
-  const aiBuys = validAI.filter((r: any) => r.signal === "BUY").length;
-  const aiSells = validAI.filter((r: any) => r.signal === "SELL").length;
-  vote += (aiBuys - aiSells) * 1.5;
+  let dir: "BUY" | "SELL" | "HOLD";
+  let conf: number;
+  const reasons: string[] = [`الاستراتيجيات ${buys.length}🟢 / ${sells.length}🔴`];
+  if (trendUp !== null) reasons.push(`الاتجاه الرئيسي ${trendUp ? "صاعد 📈" : "هابط 📉"}`);
 
-  const maxVote = d.strategies.length + 1.2 + validAI.length * 1.5;
-  const norm = Math.max(-1, Math.min(1, vote / (Math.max(1, maxVote) * 0.5)));
-  const dir: "BUY" | "SELL" | "HOLD" = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
-  let conf = Math.round(Math.abs(norm) * 100);
-
-  let entry = "", sl = "", tp = "";
-  const best = validAI.filter((r: any) => r.signal === dir && r.entry).sort((a: any, b: any) => b.confidence - a.confidence)[0];
-  if (best) { entry = String(best.entry); sl = String(best.sl); tp = String(best.tp); if (best.confidence) conf = Math.round((conf + best.confidence) / 2); }
-  else if (dir !== "HOLD") {
-    const atr = d.ATR || d.price * 0.001;
-    entry = d.fmt(d.price);
-    sl = d.fmt(dir === "BUY" ? d.price - 1.5 * atr : d.price + 1.5 * atr);
-    tp = d.fmt(dir === "BUY" ? d.price + 2 * atr : d.price - 2 * atr);
+  if (ai.answered > 0) {
+    // FINAL DECISION = the answer most AI models agree on.
+    dir = ai.label === "SPLIT" ? "HOLD" : ai.label;
+    conf = ai.avgConf;
+    reasons.push(`أصوات AI: ${ai.buys} شراء · ${ai.sells} بيع · ${ai.holds} انتظار من ${ai.answered}`);
+    reasons.push(ai.label === "SPLIT"
+      ? "تعادل في الأصوات — لا توافق كافٍ"
+      : `القرار الأكثر توافقاً: ${ai.label === "BUY" ? "شراء" : ai.label === "SELL" ? "بيع" : "انتظار"} (${ai.votes}/${ai.answered})`);
+  } else {
+    // No model answered → fall back to the weighted technical vote.
+    let vote = 0;
+    for (const s of d.strategies as Sig[]) { if (s.signal === "BUY") vote += s.strength / 100; else if (s.signal === "SELL") vote -= s.strength / 100; }
+    if (trendUp === true) vote += 1.2; else if (trendUp === false) vote -= 1.2;
+    const norm = Math.max(-1, Math.min(1, vote / ((d.strategies.length + 1.2) * 0.5)));
+    dir = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
+    conf = Math.round(Math.abs(norm) * 100);
+    reasons.push("لا نماذج AI متاحة — قرار فني من الاستراتيجيات");
   }
 
-  const reasons: string[] = [`${buys.length} إشارة شراء مقابل ${sells.length} بيع`];
-  if (trendUp !== null) reasons.push(`الاتجاه الرئيسي ${trendUp ? "صاعد 📈" : "هابط 📉"}`);
-  if (anyAI && validAI.length) reasons.push(`توافق AI ${aiBuys}🟢/${aiSells}🔴`);
-  else if (!anyAI) reasons.push("نماذج AI غير مفعّلة (فعّل المفاتيح لتحليل أعمق)");
+  // ── Safety gates (external facts, not opinions): turn the verdict into "wait" ──
+  const blockers: string[] = [];
+  const costPct = spreadCostPct(pair, d.ATR);
+  if (COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
+  const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
+  if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
+  if (blockers.length) dir = "HOLD";
 
-  const dirLabel = dir === "BUY" ? "🟢 <b>شراء</b>" : dir === "SELL" ? "🔴 <b>بيع</b>" : "🟡 <b>انتظار</b>";
+  // ── Levels: AI levels only if they are sane, otherwise ATR-based ──
+  let entry = NaN, sl = NaN, tp = NaN, rr = NaN, levelsFrom: "AI" | "ATR" | "" = "";
+  if (dir !== "HOLD") {
+    const atr = d.ATR || d.price * 0.001;
+    const isBuy = dir === "BUY";
+    const candidates = aiResults
+      .filter((r: any) => r.signal === dir)
+      .sort((a: any, b: any) => b.confidence - a.confidence);
+    for (const r of candidates) {
+      const e = firstNumber(r.entry), s0 = firstNumber(r.sl), t0 = firstNumber(r.tp);
+      const e1 = isFinite(e) ? e : d.price;
+      if (!isFinite(s0) || !isFinite(t0)) continue;
+      const risk = isBuy ? e1 - s0 : s0 - e1, reward = isBuy ? t0 - e1 : e1 - t0;
+      if (risk >= 0.5 * atr && reward / risk >= MIN_RR && Math.abs(e1 - d.price) <= atr) {
+        entry = e1; sl = s0; tp = t0; rr = reward / risk; levelsFrom = "AI"; break;
+      }
+    }
+    if (!levelsFrom) {
+      entry = d.price;
+      sl = isBuy ? d.price - 1.5 * atr : d.price + 1.5 * atr;
+      tp = isBuy ? d.price + 2.5 * atr : d.price - 2.5 * atr;
+      rr = 2.5 / 1.5; levelsFrom = "ATR";
+    }
+  }
+  return { dir, conf, entry, sl, tp, rr, levelsFrom, reasons, blockers, costPct };
+}
+
+function buildRecommendation(
+  pair: string,
+  d: Awaited<ReturnType<typeof fetchMarket>>,
+  aiResults: any[],
+  news: NewsEvent[] = [],
+): string[] {
+  const rec = computeRecommendation(pair, d, aiResults, news);
+  const dirLabel = rec.dir === "BUY" ? "🟢 <b>شراء</b>" : rec.dir === "SELL" ? "🔴 <b>بيع</b>" : "🟡 <b>انتظار</b>";
   const out = [
     ``,
-    `<b>━━ ✅ التوصية النهائية ━━</b>`,
-    `${dirLabel} | ثقة <code>${conf}%</code>`,
-    `📝 <i>${reasons.join("، ")}.</i>`,
+    aiResults.some((r: any) => ["BUY", "SELL", "HOLD"].includes(r.signal))
+      ? `<b>━━ ✅ القرار النهائي — الأكثر توافقاً بين نماذج AI ━━</b>`
+      : `<b>━━ ✅ القرار النهائي — تحليل فني (بدون AI) ━━</b>`,
+    rec.dir === "HOLD" ? dirLabel : `${dirLabel} | ثقة <code>${rec.conf}%</code>`,
+    `📝 <i>${rec.reasons.join("، ")}.</i>`,
   ];
-  if (dir !== "HOLD" && entry) out.push(`🎯 دخول <code>${entry}</code> | 🛑 وقف <code>${sl}</code> | 🎯 هدف <code>${tp}</code>`);
-  else out.push(`⏸️ <i>لا صفقة واضحة الآن — انتظر تحسّن التوافق.</i>`);
+  for (const b of rec.blockers) out.push(`⛔ ${b}`);
+  if (rec.costPct !== null) out.push(`💸 تكلفة السبريد ≈ <code>${rec.costPct.toFixed(0)}%</code> من وقف الخسارة${rec.costPct >= 12 ? " ⚠️" : ""}`);
+  if (rec.dir !== "HOLD") {
+    out.push(`🎯 دخول <code>${d.fmt(rec.entry)}</code> | 🛑 وقف <code>${d.fmt(rec.sl)}</code> | 🎯 هدف <code>${d.fmt(rec.tp)}</code>`);
+    out.push(`⚖️ العائد:المخاطرة <code>1:${rec.rr.toFixed(2)}</code> — ${rec.levelsFrom === "AI" ? "مستويات AI بعد التحقق" : "مستويات محسوبة من ATR (مستويات AI لم تجتز الفحص)"}`);
+  } else if (!rec.blockers.length) {
+    out.push(`⏸️ <i>لا صفقة واضحة الآن — انتظر تحسّن التوافق.</i>`);
+  }
   out.push(`⚠️ <i>إدارة المخاطرة: لا تخاطر بأكثر من 1–2% من رأس المال.</i>`);
   return out;
+}
+
+// ─── Live signal journal (auto) ───────────────────────────────────────
+// Every BUY/SELL recommendation the bot sends is logged and later graded
+// (win/loss/expired) from real prices by the journal evaluator in router.ts,
+// so the bot's REAL live hit-rate is measured without selection bias.
+let ownerUserIdCache: number | null | undefined;
+async function ownerUserId(): Promise<number | null> {
+  if (ownerUserIdCache !== undefined) return ownerUserIdCache;
+  try {
+    const { db } = await import("@workspace/db");
+    const { users } = await import("@workspace/db/schema");
+    const { eq, asc } = await import("drizzle-orm");
+    const [u] = await db.select({ id: users.id }).from(users).where(eq(users.role, "admin")).orderBy(asc(users.id)).limit(1);
+    const id = u?.id ?? null;
+    ownerUserIdCache = id;
+    return id;
+  } catch {
+    ownerUserIdCache = null;
+    return null;
+  }
+}
+
+const journalDedup = new Map<string, number>();
+async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string): Promise<void> {
+  if (rec.dir === "HOLD" || !isFinite(rec.entry) || !isFinite(rec.sl)) return;
+  const key = `${pair}|${interval}|${rec.dir}`;
+  if (Date.now() - (journalDedup.get(key) ?? 0) < 30 * 60 * 1000) return; // same setup re-sent
+  journalDedup.set(key, Date.now());
+  try {
+    const { insertSignalJournal, ensureSignalJournalSchema } = await import("../hayo/db.js");
+    await ensureSignalJournalSchema();
+    await insertSignalJournal({
+      userId: await ownerUserId(), pair, timeframe: interval, direction: rec.dir,
+      entry: rec.entry, stopLoss: rec.sl, takeProfit: rec.tp, confidence: rec.conf, source,
+      note: rec.levelsFrom === "AI" ? "levels: AI (validated)" : "levels: ATR",
+    });
+  } catch (err: any) { console.error("[Journal] insert failed:", err.message); }
+}
+
+/** One-line live track record of the bot's own recommendations. */
+async function journalStatsLine(): Promise<string> {
+  try {
+    const { getJournalStats } = await import("../hayo/db.js");
+    const st = await getJournalStats(await ownerUserId());
+    if (!st) return "";
+    const closed = Number(st.wins ?? 0) + Number(st.losses ?? 0);
+    if (closed === 0) return `📒 <i>سجل الإشارات الحي: لا صفقات مغلقة بعد (${st.open ?? 0} مفتوحة)</i>`;
+    return `📒 <b>سجل الإشارات الحي:</b> ${closed} مغلقة | فوز <code>${st.winRate ?? Math.round(Number(st.wins) / closed * 100)}%</code> | متوسط <code>${Number(st.avgR ?? 0) >= 0 ? "+" : ""}${Number(st.avgR ?? 0).toFixed(2)}R</code>${closed < 30 ? " <i>(عينة صغيرة)</i>" : ""}`;
+  } catch { return ""; }
 }
 
 function buildAIMsg(
@@ -596,16 +863,14 @@ function buildAIMsg(
   isAutoSignal = false,
   news: NewsEvent[] = [],
   htfBias = "",
+  journalLine = "",
 ) {
   const p = PAIRS[pair];
   const buys  = d.strategies.filter(s=>s.signal==="BUY").length;
   const sells = d.strategies.filter(s=>s.signal==="SELL").length;
-  const valid = aiResults.filter(r=>r.signal!=="ERROR"&&r.signal!=="HOLD");
-  const validAll = aiResults.filter(r=>r.signal!=="ERROR");
-  const aiBuys  = valid.filter(r=>r.signal==="BUY").length;
-  const aiSells = valid.filter(r=>r.signal==="SELL").length;
-  const aiCons  = aiBuys>aiSells?"🟢 شراء":aiSells>aiBuys?"🔴 بيع":"🟡 انتظار";
-  const avgConf = validAll.length ? Math.round(validAll.reduce((a:number,r:any)=>a+r.confidence,0)/validAll.length) : 0;
+  const ai = aiConsensus(aiResults);
+  const aiCons = ai.label==="BUY"?"🟢 شراء":ai.label==="SELL"?"🔴 بيع":ai.label==="HOLD"?"🟡 انتظار":"⚖️ منقسم";
+  const avgConf = ai.avgConf;
   const highImpactNews = news.filter(e=>e.impact==="High");
   // Live news countdown: nearest high-impact event + a danger/caution gate.
   const fmtCd = (m: number|null) => {
@@ -649,88 +914,110 @@ function buildAIMsg(
       `📰 أخبار متوسطة: ${news.map(e=>e.currency+"—"+e.title.slice(0,22)+fmtCd(e.minutesUntil)).join(" | ")}`,
     ] : []),
     ``,
-    `<b>━━ 🤖 الذكاء الاصطناعي (5 نماذج) ━━</b>`,
+    `<b>━━ 🤖 الذكاء الاصطناعي (${aiResults.length} نماذج — ${aiResults.filter((r:any)=>r.sawChart).length} قرأت الشارت 👁️) ━━</b>`,
     ...aiResults.map((r:any)=>r.signal==="ERROR"
       ? `${r.icon} <b>${r.name}</b>: ⚠️ غير متاح`
       : [
-          `${r.icon} <b>${r.name}</b>: ${r.signal==="BUY"?"🟢 شراء":r.signal==="SELL"?"🔴 بيع":"🟡 انتظار"} <code>${r.confidence}%</code> | خطر: ${r.risk==="LOW"?"🟢 منخفض":r.risk==="HIGH"?"🔴 مرتفع":"🟡 متوسط"}`,
-          `   💬 <i>${r.reasoning.slice(0,120)}${r.reasoning.length>120?"…":""}</i>`,
-          `   🎯 دخول <code>${r.entry}</code> | SL <code>${r.sl}</code> | TP <code>${r.tp}</code>`,
+          `${r.icon} <b>${r.name}</b>${r.sawChart?" 👁️":""}: ${r.signal==="BUY"?"🟢 شراء":r.signal==="SELL"?"🔴 بيع":"🟡 انتظار"} <code>${r.confidence}%</code> | خطر: ${r.risk==="LOW"?"🟢 منخفض":r.risk==="HIGH"?"🔴 مرتفع":"🟡 متوسط"}`,
+          ...(r.sawChart && r.chartReading ? [`   👁️ ${r.chartAgrees===false?"⚠️ الشارت يناقض المؤشرات":r.chartAgrees===true?"✅ الشارت يؤكد المؤشرات":"الشارت"}: <i>${escHtml(r.chartReading.slice(0,160))}${r.chartReading.length>160?"…":""}</i>`] : []),
+          `   💬 <i>${escHtml(r.reasoning.slice(0,120))}${r.reasoning.length>120?"…":""}</i>`,
+          `   🎯 دخول <code>${escHtml(r.entry)}</code> | SL <code>${escHtml(r.sl)}</code> | TP <code>${escHtml(r.tp)}</code>`,
         ].join("\n")
     ),
     ``,
     `┌────────────────────────────────┐`,
-    `│  AI توافق: ${aiCons.padEnd(10)} ثقة: ${avgConf}%  │`,
+    `│  AI توافق: ${aiCons.padEnd(10)} ${ai.votes}/${ai.answered} | ثقة: ${avgConf}%  │`,
     `└────────────────────────────────┘`,
-    ...buildRecommendation(d, aiResults),
+    ...buildRecommendation(pair, d, aiResults, news),
+    journalLine,
     ``,
     `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
   ].filter(l=>l!=="").join("\n");
 }
 
-// ─── Auto-Signal Scanner ──────────────────────────────────────────────
-async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTimeLocal: Map<string, number>) {
-  if (!autoConfig.enabled) return;
-  const { pairs, timeframes, minConsensus, minAIConfidence } = autoConfig;
-  console.log(`[AutoScan] Scanning ${pairs.length} pairs × ${timeframes.length} timeframes`);
+// ─── Auto-Signal Scanner ─────────────────────────────────────────────
+// Scans the selected pairs × timeframes (one of each, or all = SCAN). A pair/TF
+// becomes a signal when:
+//   1) technical agreement ≥ minConsensus (share of strategies that took a side),
+//   2) with AI: the AI plurality decision equals that direction and the winning
+//      models' average confidence ≥ minAIConfidence;
+//      without AI: the technical final decision equals that direction,
+//   3) the safety gates pass (spread cost, high-impact news).
+// Each sent signal starts a 4h cooldown for that pair/TF (only when SENT).
+let autoScanRunning = false;
+let autoManualRunning = false;
 
-  for (const pair of pairs) {
-    for (const tf of timeframes) {
-      const key = `${pair}:${tf}`;
-      const lastSent = lastSignalTimeLocal.get(key) || 0;
-      if (Date.now() - lastSent < SIGNAL_COOLDOWN_MS) {
-        console.log(`[AutoScan] ${key} skipped (cooldown)`);
-        continue;
-      }
+interface ScanSummary { checked: number; sent: number; busy?: boolean; lines: string[] }
 
-      try {
-        await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
-        const d = await fetchMarket(pair, TIMEFRAMES[tf]);
-        const cons = calcConsensus(d.strategies);
-
-        if (cons.direction === "NEUTRAL" || cons.pct < minConsensus) {
-          console.log(`[AutoScan] ${key}: consensus ${cons.pct}% < ${minConsensus}% — skip`);
+async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTimeLocal: Map<string, number>, manual = false): Promise<ScanSummary> {
+  const summary: ScanSummary = { checked: 0, sent: 0, lines: [] };
+  if (!autoConfig.enabled && !manual) return summary;
+  if (manual ? autoManualRunning : autoScanRunning) { summary.busy = true; return summary; }
+  if (manual) autoManualRunning = true; else autoScanRunning = true;
+  try {
+    const { pairs, timeframes, minConsensus, minAIConfidence, useAI } = autoConfig;
+    console.log(`[AutoScan] Scanning ${pairs.length} pairs × ${timeframes.length} TFs (${useAI ? "AI" : "technical"})`);
+    for (const pair of pairs) {
+      for (const tf of timeframes) {
+        if (!TIMEFRAMES[tf] || !PAIRS[pair]) continue;
+        const key = `${pair}:${tf}`;
+        const label = `${PAIRS[pair].label} ${tf}`;
+        if (Date.now() - (lastSignalTimeLocal.get(key) || 0) < SIGNAL_COOLDOWN_MS) {
+          summary.lines.push(`⏸️ ${label}: أُرسلت إشارة خلال آخر 4 ساعات`);
           continue;
         }
+        try {
+          await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
+          const d = await fetchMarket(pair, TIMEFRAMES[tf]);
+          summary.checked++;
+          const cons = calcConsensus(d.strategies);
+          if (cons.direction === "NEUTRAL" || cons.pct < minConsensus) {
+            summary.lines.push(`➖ ${label}: توافق فني غير كافٍ (${cons.buys}🟢 ${cons.sells}🔴)`);
+            continue;
+          }
 
-        console.log(`[AutoScan] ${key}: consensus ${cons.pct}% ≥ ${minConsensus}% — running AI + news...`);
+          const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, d), computeHtfBias(pair, tf)]);
+          let rec: Recommendation;
+          let msg: string;
+          if (useAI) {
+            const aiResults = await runAI(pair, tf, d, news, chart, htfBias);
+            rec = computeRecommendation(pair, d, aiResults, news);
+            const ai = aiConsensus(aiResults);
+            if (rec.dir !== cons.direction || ai.avgConf < minAIConfidence) {
+              summary.lines.push(`🤖 ${label}: فني ${cons.direction === "BUY" ? "شراء" : "بيع"} لكن قرار AI ${rec.dir === "BUY" ? "شراء" : rec.dir === "SELL" ? "بيع" : "انتظار"} (ثقة ${ai.avgConf}%)${rec.blockers.length ? " — " + rec.blockers[0] : ""}`);
+              continue;
+            }
+            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "tg-auto");
+            msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias, await journalStatsLine());
+          } else {
+            rec = computeRecommendation(pair, d, [], news);
+            if (rec.dir !== cons.direction) {
+              summary.lines.push(`⛔ ${label}: ${rec.blockers[0] || "القرار الفني النهائي انتظار"}`);
+              continue;
+            }
+            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "tg-auto-tech");
+            msg = buildQuickMsg(pair, tf, d, news, await journalStatsLine(), `🔔 <b>إشارة تلقائية — تحليل فني (بدون AI)</b>`);
+          }
 
-        // Fetch news first, then run AI with it
-        const news = await fetchEconomicNews(pair);
-        const aiResults = await runAI(pair, tf, d, news);
-        const valid = aiResults.filter((r:any) => r.signal !== "ERROR" && r.signal === cons.direction);
-        const avgConf = valid.length
-          ? Math.round(valid.reduce((a:number, r:any) => a + r.confidence, 0) / valid.length)
-          : 0;
-
-        if (avgConf < minAIConfidence || valid.length < 2) {
-          console.log(`[AutoScan] ${key}: AI conf ${avgConf}% < ${minAIConfidence}% or only ${valid.length} models agree — skip`);
-          continue;
+          lastSignalTimeLocal.set(key, Date.now());
+          summary.sent++;
+          summary.lines.push(`🚨 ${label}: ${rec.dir === "BUY" ? "🟢 شراء" : "🔴 بيع"} — أُرسلت إشارة`);
+          console.log(`[AutoScan] 🚨 Signal: ${key} ${rec.dir} (tech ${cons.pct}%)`);
+          await sendChartPhoto(bot, ownerChatId, chart, `📸 ${PAIRS[pair].label} | ${tf} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
+          await deliverLong(bot, ownerChatId, msg, { replyMarkup: { inline_keyboard: [[
+            { text: "🔄 إعادة تحليل هذا الزوج", callback_data: `pair:${pair}` },
+            { text: "🏠 القائمة الرئيسية", callback_data: "back:pairs" },
+          ]] } });
+        } catch (err: any) {
+          summary.lines.push(`⚠️ ${label}: خطأ في البيانات`);
+          console.error(`[AutoScan] ${key} error:`, err.message);
         }
-
-        // SEND SIGNAL!
-        console.log(`[AutoScan] 🚨 Signal: ${pair} ${tf} ${cons.direction} — consensus ${cons.pct}%, AI conf ${avgConf}%`);
-        lastSignalTimeLocal.set(key, Date.now());
-
-        const htfBias = await computeHtfBias(pair, tf);
-        const msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias);
-        await bot.sendMessage(ownerChatId, msg, {
-          parse_mode: "HTML",
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "🔄 إعادة تحليل هذا الزوج", callback_data: `pair:${pair}` },
-                { text: "🏠 القائمة الرئيسية",       callback_data: "back:pairs" },
-              ],
-            ],
-          },
-        });
-
-      } catch (err: any) {
-        console.error(`[AutoScan] ${key} error:`, err.message);
       }
     }
+  } finally {
+    if (manual) autoManualRunning = false; else autoScanRunning = false;
   }
+  return summary;
 }
 
 function restartAutoScanner(bot: TelegramBot, ownerChatId: number, lastSignalTimeLocal: Map<string, number>) {
@@ -747,11 +1034,60 @@ function restartAutoScanner(bot: TelegramBot, ownerChatId: number, lastSignalTim
 }
 
 // ─── Convergence Config ──────────────────────────────────────────────
+export type ConvergencePreset = "fast" | "mid" | "long";
 interface ConvergenceConfig {
   enabled: boolean;
   intervalMinutes: number;
+  preset: ConvergencePreset;   // which 3 timeframes must agree
+  pairs: string[];             // pairs to scan (one, several, or all = SCAN)
+  useAI: boolean;              // AI plurality must confirm the match
 }
-let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 5 };
+let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 5, preset: "fast", pairs: Object.keys(PAIRS), useAI: true };
+// ─── Settings persistence (DB) ────────────────────────────────────────
+// Auto-signal and convergence settings are saved on every change and restored
+// on startup, so a redeploy/restart keeps what the owner configured.
+// Saves run strictly one after another and read the CURRENT config when they
+// execute, so rapid button presses can't land out of order on the DB pool and
+// leave an older snapshot as the final value.
+let persistChain: Promise<void> = Promise.resolve();
+function persistSetting(key: string, current: () => unknown): void {
+  persistChain = persistChain
+    .then(async () => { const m = await import("../hayo/db.js"); await m.saveBotSetting(key, current()); })
+    .catch(() => {});
+}
+function persistAutoConfig(): void { persistSetting("autoConfig", () => autoConfig); }
+function persistConvergenceConfig(): void { persistSetting("convergenceConfig", () => convergenceConfig); }
+async function loadPersistedBotSettings(): Promise<void> {
+  try {
+    const { loadBotSetting } = await import("../hayo/db.js");
+    const a = await loadBotSetting<Partial<AutoConfig>>("autoConfig");
+    if (a && typeof a === "object") {
+      autoConfig = {
+        ...defaultAutoConfig, ...a,
+        pairs: Array.isArray(a.pairs) ? a.pairs.filter(p => PAIRS[p]) : defaultAutoConfig.pairs,
+        timeframes: Array.isArray(a.timeframes) ? a.timeframes.filter(t => TIMEFRAMES[t]) : defaultAutoConfig.timeframes,
+      };
+    }
+    const c = await loadBotSetting<Partial<ConvergenceConfig>>("convergenceConfig");
+    if (c && typeof c === "object") {
+      convergenceConfig = {
+        ...convergenceConfig, ...c,
+        preset: c.preset && CONVERGENCE_PRESETS[c.preset] ? c.preset : convergenceConfig.preset,
+        pairs: Array.isArray(c.pairs) ? c.pairs.filter(p => PAIRS[p]) : convergenceConfig.pairs,
+      };
+    }
+    console.log(`[Settings] restored — auto: ${autoConfig.enabled ? "on" : "off"} (${autoConfig.pairs.length} pairs × ${autoConfig.timeframes.length} TFs, ${autoConfig.useAI ? "AI" : "tech"}), convergence: ${convergenceConfig.enabled ? "on" : "off"} (${convergenceConfig.preset}, ${convergenceConfig.pairs.length} pairs, ${convergenceConfig.useAI ? "AI" : "tech"})`);
+  } catch (err: any) {
+    console.error("[Settings] restore failed — using defaults:", err.message);
+  }
+}
+
+/** The three timeframes that must agree, lowest → highest. Analysis/AI/chart use the highest. */
+const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, string]; label: string }> = {
+  fast: { keys: ["1m", "5m", "15m"], label: "سريع: 1م + 5م + 15م" },
+  mid:  { keys: ["15m", "1h", "4h"], label: "متوسط: 15م + 1س + 4س" },
+  long: { keys: ["1h", "4h", "1d"],  label: "طويل: 1س + 4س + يومي" },
+};
 let convergenceTimer: NodeJS.Timeout | null = null;
 const convergenceCooldown = new Map<string, number>();
 const CONVERGENCE_COOLDOWN_MS = 60 * 60 * 1000;
@@ -780,6 +1116,10 @@ let _ownerRef: number = 0;
 export function setConvergenceConfig(patch: Partial<ConvergenceConfig>) {
   if (patch.enabled !== undefined) convergenceConfig.enabled = patch.enabled;
   if (patch.intervalMinutes !== undefined) convergenceConfig.intervalMinutes = patch.intervalMinutes;
+  if (patch.preset !== undefined && CONVERGENCE_PRESETS[patch.preset]) convergenceConfig.preset = patch.preset;
+  if (patch.useAI !== undefined) convergenceConfig.useAI = patch.useAI;
+  if (patch.pairs !== undefined) convergenceConfig.pairs = patch.pairs.filter(p => PAIRS[p]);
+  persistConvergenceConfig();
   if (_botRef && _ownerRef) restartConvergenceScanner(_botRef, _ownerRef);
 }
 export function getConvergenceSignals() { return [...convergenceSignals]; }
@@ -812,7 +1152,7 @@ export async function sendTestConvergenceSignal() {
     if (r.signal === "ERROR") return `${r.icon} <b>${r.name}</b>: ⚠️ غير متاح`;
     return [
       `${r.icon} <b>${r.name}</b>: ${r.signal === "BUY" ? "🟢 شراء" : r.signal === "SELL" ? "🔴 بيع" : "🟡 انتظار"} <code>${r.confidence}%</code>`,
-      `   🎯 دخول <code>${r.entry}</code> | SL <code>${r.sl}</code> | TP <code>${r.tp}</code>`,
+      `   🎯 دخول <code>${escHtml(r.entry)}</code> | SL <code>${escHtml(r.sl)}</code> | TP <code>${escHtml(r.tp)}</code>`,
       `   💬 <i>${r.reasoning}</i>`,
     ].join("\n");
   }).join("\n");
@@ -845,69 +1185,92 @@ export async function sendTestConvergenceSignal() {
 
 let _triggerConvergenceScanRef: (() => Promise<void>) | null = null;
 
-const CONVERGENCE_TFS: { key: string; cfg: TfConfig }[] = [
-  { key: "1m",  cfg: TIMEFRAMES["1m"]  },
-  { key: "5m",  cfg: TIMEFRAMES["5m"]  },
-  { key: "15m", cfg: TIMEFRAMES["15m"] },
-];
+const convergenceTfs = (): { key: string; cfg: TfConfig }[] =>
+  CONVERGENCE_PRESETS[convergenceConfig.preset].keys.map(key => ({ key, cfg: TIMEFRAMES[key] }));
 
-async function runConvergenceScan(bot: TelegramBot, ownerChatId: number) {
-  if (!convergenceConfig.enabled) return;
-  const allPairs = Object.keys(PAIRS);
-  console.log(`[Convergence] Scanning ${allPairs.length} pairs × 3 timeframes (1m, 5m, 15m)...`);
+// A full scan (all pairs × 3 TFs, throttled for API limits) can outlast the
+// interval; without this guard setInterval stacked concurrent scans.
+// Manual scans have their own lock: pressing "scan now" must not wait for a
+// long background scan of all pairs (≈ 7 min) to finish.
+let convergenceScanRunning = false;
+let convergenceManualRunning = false;
+
+async function runConvergenceScan(bot: TelegramBot, ownerChatId: number, manual = false): Promise<ScanSummary> {
+  const summary: ScanSummary = { checked: 0, sent: 0, lines: [] };
+  if (!convergenceConfig.enabled && !manual) return summary;
+  if (manual ? convergenceManualRunning : convergenceScanRunning) { console.log("[Convergence] previous scan still running — skipping"); summary.busy = true; return summary; }
+  if (manual) convergenceManualRunning = true; else convergenceScanRunning = true;
+  try { await runConvergenceScanInner(bot, ownerChatId, manual, summary); }
+  finally { if (manual) convergenceManualRunning = false; else convergenceScanRunning = false; }
+  return summary;
+}
+
+/**
+ * For each selected pair: all 3 timeframes of the preset must point the same
+ * way (technical agreement on each). Then the final decision on the highest TF
+ * (AI plurality with AI on, technical decision with AI off, plus safety gates)
+ * must agree before a signal is sent. A manual scan ignores the 1h cooldown.
+ */
+async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, manual: boolean, summary: ScanSummary) {
+  const pairsToScan = convergenceConfig.pairs.filter(p => PAIRS[p]);
+  const useAI = convergenceConfig.useAI;
+  console.log(`[Convergence] Scanning ${pairsToScan.length} pairs × ${CONVERGENCE_PRESETS[convergenceConfig.preset].label} (${useAI ? "AI" : "technical"})`);
   try {
 
-  for (const pair of allPairs) {
+  for (const pair of pairsToScan) {
     const coolKey = `conv:${pair}`;
     const lastSent = convergenceCooldown.get(coolKey) || 0;
-    if (Date.now() - lastSent < CONVERGENCE_COOLDOWN_MS) continue;
+    if (!manual && Date.now() - lastSent < CONVERGENCE_COOLDOWN_MS) continue;
+    const plabel = PAIRS[pair].label;
 
     try {
       const results: { tf: string; direction: "BUY"|"SELL"|"NEUTRAL"; pct: number; data: any }[] = [];
 
-      for (const { key, cfg } of CONVERGENCE_TFS) {
+      const tfs = convergenceTfs();
+      const topTf = tfs[tfs.length - 1];
+      for (const { key, cfg } of tfs) {
         await new Promise(r => setTimeout(r, 8500));
         const d = await fetchMarket(pair, cfg);
         const cons = calcConsensus(d.strategies);
         results.push({ tf: key, direction: cons.direction, pct: cons.pct, data: d });
       }
 
+      summary.checked++;
       const dirs = results.map(r => r.direction);
-      if (dirs.includes("NEUTRAL")) {
-        console.log(`[Convergence] ${pair}: has NEUTRAL tf — skip`);
-        continue;
-      }
-
+      const icons = results.map(r => `${r.tf}${r.direction === "BUY" ? "🟢" : r.direction === "SELL" ? "🔴" : "🟡"}`).join(" ");
       const allBuy  = dirs.every(d => d === "BUY");
       const allSell = dirs.every(d => d === "SELL");
       if (!allBuy && !allSell) {
-        console.log(`[Convergence] ${pair}: no agreement (${dirs.join(",")}) — skip`);
+        summary.lines.push(`➖ ${plabel}: لا تطابق (${icons})`);
         continue;
       }
 
-      const convergenceDir = allBuy ? "BUY" : "SELL";
+      const convergenceDir: "BUY" | "SELL" = allBuy ? "BUY" : "SELL";
       const avgPct = Math.round(results.reduce((a, r) => a + r.pct, 0) / results.length);
+      console.log(`[Convergence] 🎯 ${pair} MATCH ${convergenceDir} on ${tfs.map(t => t.key).join("/")} — deciding (${useAI ? "AI" : "technical"})...`);
 
-      if (avgPct < 60) {
-        console.log(`[Convergence] ${pair}: avg consensus ${avgPct}% too low — skip`);
+      const topData = results[2].data;
+      const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, topTf.key, topData), computeHtfBias(pair, topTf.key)]);
+      const aiResults: any[] = useAI
+        ? await runAI(pair, `${topTf.key} (تطابق ${tfs.map(t => t.key).join(" + ")})`, topData, news, chart, htfBias)
+        : [];
+      const ai = aiConsensus(aiResults);
+      const validAI = aiResults.filter((r: any) => r.signal === convergenceDir);
+      const avgConf = ai.avgConf;
+
+      // The final decision (AI plurality, or technical without AI) + safety
+      // gates must agree with the 3-timeframe match.
+      const rec = computeRecommendation(pair, topData, aiResults, news);
+      if (rec.dir !== convergenceDir) {
+        summary.lines.push(`🎯 ${plabel}: تطابق ${convergenceDir === "BUY" ? "شراء" : "بيع"} (${icons}) لكن القرار النهائي ${rec.dir === "HOLD" ? "انتظار" : rec.dir === "BUY" ? "شراء" : "بيع"}${rec.blockers.length ? " — " + rec.blockers[0] : ""}`);
         continue;
       }
-
-      console.log(`[Convergence] 🎯 ${pair} MATCH! ${convergenceDir} across all 3 TFs — running AI...`);
-
-      const news = await fetchEconomicNews(pair);
-      const aiResults = await runAI(pair, "1m,5m,15m", results[2].data, news);
-      const validAI = aiResults.filter((r: any) => r.signal !== "ERROR" && r.signal === convergenceDir);
-      const avgConf = validAI.length
-        ? Math.round(validAI.reduce((a: number, r: any) => a + r.confidence, 0) / validAI.length)
-        : 0;
-
-      if (validAI.length < 2 || avgConf < 60) {
-        console.log(`[Convergence] ${pair}: AI doesn't confirm (${validAI.length} models, ${avgConf}% conf) — skip`);
-        continue;
-      }
+      summary.sent++;
+      summary.lines.push(`🚨 ${plabel}: تطابق ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} (${icons}) — أُرسلت إشارة`);
 
       convergenceCooldown.set(coolKey, Date.now());
+      await journalRecommendation(pair, topTf.cfg.interval, rec, useAI ? "tg-conv" : "tg-conv-tech");
+      const journalLine = await journalStatsLine();
 
       const p = PAIRS[pair];
       const d15 = results[2].data;
@@ -932,8 +1295,9 @@ async function runConvergenceScan(bot: TelegramBot, ownerChatId: number) {
         if (r.signal === "ERROR") return `${r.icon} <b>${r.name}</b>: ⚠️ غير متاح`;
         return [
           `${r.icon} <b>${r.name}</b>: ${r.signal === "BUY" ? "🟢 شراء" : r.signal === "SELL" ? "🔴 بيع" : "🟡 انتظار"} <code>${r.confidence}%</code>`,
-          `   🎯 دخول <code>${r.entry}</code> | SL <code>${r.sl}</code> | TP <code>${r.tp}</code>`,
-          `   💬 <i>${r.reasoning.slice(0, 100)}${r.reasoning.length > 100 ? "…" : ""}</i>`,
+          `   🎯 دخول <code>${escHtml(r.entry)}</code> | SL <code>${escHtml(r.sl)}</code> | TP <code>${escHtml(r.tp)}</code>`,
+          ...(r.sawChart && r.chartReading ? [`   👁️ <i>${escHtml(r.chartReading.slice(0, 120))}</i>`] : []),
+          `   💬 <i>${escHtml(r.reasoning.slice(0, 100))}${r.reasoning.length > 100 ? "…" : ""}</i>`,
         ].join("\n");
       }).join("\n");
 
@@ -959,12 +1323,12 @@ async function runConvergenceScan(bot: TelegramBot, ownerChatId: number) {
         tfDetails,
         `📊 متوسط التوافق: <b>${avgPct}%</b>`,
         ``,
-        `<b>━━ 📈 المؤشرات (15م) ━━</b>`,
+        `<b>━━ 📈 المؤشرات (${topTf.key}) ━━</b>`,
         `RSI <code>${d15.RSI.toFixed(1)}</code> ${d15.RSI < 30 ? "🔴 ذروة بيع" : d15.RSI > 70 ? "🟢 ذروة شراء" : "⚪"} | MACD ${d15.MACD.macd > d15.MACD.signal ? "✅ صاعد" : "❌ هابط"}`,
         `SMA20 ${d15.price > d15.SMA20 ? "✅" : "❌"} | SMA50 ${d15.price > d15.SMA50 ? "✅" : "❌"}${d15.SMA200 ? " | SMA200 " + (d15.price > d15.SMA200 ? "✅" : "❌") : ""}`,
         `BB ${d15.price < d15.BB.lower ? "↓ أسفل" : d15.price > d15.BB.upper ? "↑ أعلى" : "↔ داخل"} | ATR <code>${d15.fmt(d15.ATR)}</code>`,
         ``,
-        `<b>━━ 🎯 الاستراتيجيات (15م) ━━</b>`,
+        `<b>━━ 🎯 الاستراتيجيات (${topTf.key}) ━━</b>`,
         ...d15.strategies.map((s: Sig) => `${s.emoji} ${s.name}: ${s.signal === "BUY" ? "🟢" : s.signal === "SELL" ? "🔴" : "🟡"} ${s.signal !== "NEUTRAL" ? `<code>${s.strength}%</code>` : ""}`),
         ``,
         `<b>━━ 🔍 الفلاتر ━━</b>`,
@@ -976,31 +1340,29 @@ async function runConvergenceScan(bot: TelegramBot, ownerChatId: number) {
           `<i>⚠️ احذر من التداول!</i>`,
         ] : []),
         ``,
-        `<b>━━ 🤖 تأكيد AI (${validAI.length}/${aiResults.length} نموذج) ━━</b>`,
-        aiDetails,
-        ``,
+        ...(useAI ? [
+          `<b>━━ 🤖 نماذج AI (${ai.buys}🟢 ${ai.sells}🔴 ${ai.holds}🟡 من ${ai.answered}) ━━</b>`,
+          aiDetails,
+          ``,
+        ] : []),
         `┌──────────────────────────────────┐`,
-        `│  🎯 التطابق: ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"}  ثقة AI: ${avgConf}%  │`,
+        `│  🎯 التطابق: ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"}${useAI ? `  ثقة AI: ${avgConf}%` : "  (فني)"}  │`,
         `│  3/3 فريمات متطابقة             │`,
         `└──────────────────────────────────┘`,
-        ...buildRecommendation(d15, aiResults),
+        ...buildRecommendation(pair, d15, aiResults, news),
+        journalLine,
         ``,
         `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
       ].join("\n");
 
-      await bot.sendMessage(ownerChatId, msg, {
-        parse_mode: "HTML",
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "🔄 إعادة تحليل", callback_data: `pair:${pair}` },
-              { text: "🏠 القائمة", callback_data: "back:pairs" },
-            ],
-          ],
-        },
-      });
+      await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
+      await deliverLong(bot, ownerChatId, msg, { replyMarkup: { inline_keyboard: [[
+        { text: "🔄 إعادة تحليل", callback_data: `pair:${pair}` },
+        { text: "🏠 القائمة", callback_data: "back:pairs" },
+      ]] } });
 
     } catch (err: any) {
+      summary.lines.push(`⚠️ ${plabel}: خطأ في البيانات`);
       console.error(`[Convergence] ${pair} error:`, err.message);
     }
   }
@@ -1011,12 +1373,7 @@ async function runConvergenceScan(bot: TelegramBot, ownerChatId: number) {
 
 function restartConvergenceScanner(bot: TelegramBot, ownerChatId: number) {
   if (convergenceTimer) { clearInterval(convergenceTimer); convergenceTimer = null; }
-  _triggerConvergenceScanRef = async () => {
-    const prev = convergenceConfig.enabled;
-    convergenceConfig.enabled = true;
-    await runConvergenceScan(bot, ownerChatId);
-    convergenceConfig.enabled = prev;
-  };
+  _triggerConvergenceScanRef = async () => { await runConvergenceScan(bot, ownerChatId, true); };
   if (!convergenceConfig.enabled) return;
   const ms = convergenceConfig.intervalMinutes * 60 * 1000;
   console.log(`[Convergence] Started — interval ${convergenceConfig.intervalMinutes}min, all ${Object.keys(PAIRS).length} pairs`);
@@ -1130,16 +1487,19 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
   }
 
   async function sendAutoMenu(chatId: number, editing?: number) {
+    persistAutoConfig(); // called after every settings change
     const text = [
       `⚙️ <b>إعدادات الإشارات التلقائية</b>`,
       ``,
       `الحالة: ${autoConfig.enabled ? "✅ <b>مفعّلة</b>" : "❌ <b>معطّلة</b>"}`,
-      `الأزواج: <code>${autoConfig.pairs.join(", ")||"لا يوجد"}</code>`,
+      `النوع: ${autoConfig.useAI ? "🤖 <b>مع AI</b> — القرار = الأكثر توافقاً بين النماذج" : "⚡ <b>بدون AI</b> — قرار فني من الاستراتيجيات والفلاتر"}`,
+      `الأزواج: <code>${autoConfig.pairs.length === Object.keys(PAIRS).length ? "جميع الأزواج (SCAN)" : autoConfig.pairs.join(", ")||"لا يوجد"}</code>`,
       `الإطارات: <code>${autoConfig.timeframes.join(", ")||"لا يوجد"}</code>`,
       `فترة الفحص: كل <code>${autoConfig.intervalMinutes}</code> دقيقة`,
       `الحد الأدنى للتوافق: <code>${autoConfig.minConsensus}%</code>`,
-      `ثقة AI الأدنى: <code>${autoConfig.minAIConfidence}%</code>`,
+      ...(autoConfig.useAI ? [`ثقة AI الأدنى: <code>${autoConfig.minAIConfidence}%</code>`] : []),
       ``,
+      `<i>عند ظهور إشارة شراء/بيع قوية تصلك رسالة تفصيلية تلقائياً.</i>`,
       `اضغط ✅ على خيار لتفعيله أو إلغائه:`,
     ].join("\n");
     if (editing) {
@@ -1255,7 +1615,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
     const chatId  = query.message.chat.id;
     const msgId   = query.message.message_id;
-    const data    = query.data ?? "";
+    let data      = query.data ?? "";
     const session = getSession(chatId);
     const bridgeSession = getBridgeSession(chatId);
 
@@ -1576,9 +1936,33 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       return;
     }
 
+    if (data === "auto:ai:on" || data === "auto:ai:off") {
+      autoConfig.useAI = data === "auto:ai:on";
+      await sendAutoMenu(chatId, msgId);
+      return;
+    }
+
+    if (data === "auto:now") {
+      if (!autoConfig.pairs.length || !autoConfig.timeframes.length) {
+        await bot.sendMessage(chatId, "⚠️ اختر زوجاً واحداً وإطاراً واحداً على الأقل.", { reply_markup: { inline_keyboard: [[{ text: "⚙️ الإعدادات", callback_data: "auto:menu" }]] } });
+        return;
+      }
+      const n = autoConfig.pairs.length * autoConfig.timeframes.length;
+      await bot.editMessageText(
+        `📡 <b>جاري الفحص...</b>\n${autoConfig.pairs.length} زوج × ${autoConfig.timeframes.length} إطار = ${n} فحص (${autoConfig.useAI ? "مع AI" : "بدون AI"})\n<i>ستصلك الإشارات القوية فور ظهورها، ثم ملخص الفحص.</i>`,
+        { chat_id: chatId, message_id: msgId, parse_mode: "HTML" });
+      const sum = await runAutoScan(bot, ownerChatId, lastSignalTimeLocal, true);
+      const head = sum.busy ? "⏳ فحص آخر قيد التشغيل — حاول بعد قليل." : `✅ <b>اكتمل الفحص</b>: ${sum.checked} فحص — ${sum.sent} إشارة أُرسلت`;
+      await deliverLong(bot, chatId, [head, "", ...sum.lines.slice(0, 120)].join("\n"), { replyMarkup: { inline_keyboard: [[{ text: "⚙️ الإعدادات", callback_data: "auto:menu" }, { text: "🏠 القائمة", callback_data: "back:pairs" }]] } });
+      return;
+    }
+
     if (data.startsWith("auto:tf:")) {
       const t = data.split(":")[2];
-      if (autoConfig.timeframes.includes(t)) {
+      if (t === "ALL") {
+        const all = Object.keys(TIMEFRAMES);
+        autoConfig.timeframes = autoConfig.timeframes.length === all.length ? [] : [...all];
+      } else if (autoConfig.timeframes.includes(t)) {
         autoConfig.timeframes = autoConfig.timeframes.filter(x=>x!==t);
       } else {
         autoConfig.timeframes.push(t);
@@ -1595,6 +1979,18 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     }
 
     // ── Convergence (التطابق) ────────────────────────────────
+    if (data.startsWith("conv:pair:")) {
+      const k = data.split(":")[2];
+      const all = Object.keys(PAIRS);
+      let next = [...convergenceConfig.pairs];
+      if (k === "ALL") next = next.length === all.length ? [] : [...all];
+      else if (next.includes(k)) next = next.filter(x => x !== k);
+      else if (PAIRS[k]) next.push(k);
+      setConvergenceConfig({ pairs: next });
+      // re-open the menu with the updated ticks
+      data = "conv:menu";
+    }
+
     if (data === "conv:menu") {
       const c = convergenceConfig;
       const text = [
@@ -1602,16 +1998,25 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         ``,
         `الحالة: ${c.enabled ? "✅ <b>مفعّل</b>" : "❌ <b>معطّل</b>"}`,
         `الفحص: كل <code>${c.intervalMinutes}</code> دقائق`,
-        `الأزواج: جميع الأزواج (${Object.keys(PAIRS).length})`,
-        `الفريمات: <code>1م + 5م + 15م</code>`,
+        `النوع: ${c.useAI ? "🤖 <b>مع AI</b> (القرار = الأكثر توافقاً بين النماذج)" : "⚡ <b>بدون AI</b> (قرار فني)"}`,
+        `الأزواج: <code>${c.pairs.length === Object.keys(PAIRS).length ? `جميع الأزواج — SCAN (${c.pairs.length})` : c.pairs.map(x => PAIRS[x]?.label || x).join(", ") || "لا يوجد"}</code>`,
+        `الفريمات: <code>${CONVERGENCE_PRESETS[c.preset].label}</code>`,
         ``,
-        `<i>يفحص تطابق الاتجاه في 3 فريمات + تأكيد AI</i>`,
-        `<i>عند التطابق تصل إشارة تلقائية</i>`,
+        `<i>عند تطابق الاتجاه في الفريمات الثلاثة + موافقة القرار النهائي تصل إشارة تلقائية.</i>`,
       ].join("\n");
 
       const kb: TelegramBot.InlineKeyboardMarkup = {
         inline_keyboard: [
-          [{ text: c.enabled ? "🔴 إيقاف التطابق" : "🟢 تفعيل التطابق", callback_data: "conv:toggle" }],
+          [{ text: c.enabled ? "🔴 إيقاف التطابق التلقائي" : "🟢 تفعيل التطابق التلقائي", callback_data: "conv:toggle" }],
+          [{ text: "▶️ فحص فوري الآن", callback_data: "conv:now" }],
+          [{ text: "━━ نوع التحليل ━━", callback_data: "conv:noop" }],
+          [
+            { text: `${c.useAI ? "✅ " : ""}🤖 مع AI`, callback_data: "conv:ai:on" },
+            { text: `${!c.useAI ? "✅ " : ""}⚡ بدون AI (فني)`, callback_data: "conv:ai:off" },
+          ],
+          [{ text: `━━ الأزواج (${c.pairs.length}/${Object.keys(PAIRS).length}) ━━`, callback_data: "conv:noop" }],
+          [{ text: `${c.pairs.length === Object.keys(PAIRS).length ? "✅ " : ""}جميع الأزواج (SCAN)`, callback_data: "conv:pair:ALL" }],
+          ...chunk(Object.keys(PAIRS).map(k => ({ text: `${c.pairs.includes(k) ? "✅ " : ""}${PAIRS[k].label}`, callback_data: `conv:pair:${k}` })), 3),
           [{ text: "━━ فترة الفحص ━━", callback_data: "conv:noop" }],
           [
             { text: `${c.intervalMinutes===1?"✅ ":""}1د`, callback_data: "conv:int:1" },
@@ -1624,7 +2029,10 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
             { text: `${c.intervalMinutes===10?"✅ ":""}10د`, callback_data: "conv:int:10" },
             { text: `${c.intervalMinutes===15?"✅ ":""}15د`, callback_data: "conv:int:15" },
           ],
-          [{ text: "▶️ فحص فوري الآن", callback_data: "conv:now" }],
+          [{ text: "━━ الفريمات المتطابقة ━━", callback_data: "conv:noop" }],
+          ...(Object.keys(CONVERGENCE_PRESETS) as ConvergencePreset[]).map(k => [
+            { text: `${c.preset === k ? "✅ " : ""}${CONVERGENCE_PRESETS[k].label}`, callback_data: `conv:preset:${k}` },
+          ]),
           [{ text: "◀️ رجوع", callback_data: "back:pairs" }],
         ],
       };
@@ -1641,6 +2049,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
     if (data === "conv:toggle") {
       convergenceConfig.enabled = !convergenceConfig.enabled;
+      persistConvergenceConfig();
       restartConvergenceScanner(bot, ownerChatId);
       await bot.editMessageText(
         `🎯 التطابق: ${convergenceConfig.enabled ? "✅ <b>مفعّل</b> — يتم فحص جميع الأزواج كل ${convergenceConfig.intervalMinutes} دقائق" : "❌ <b>معطّل</b>"}`,
@@ -1649,8 +2058,24 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       return;
     }
 
+    if (data === "conv:ai:on" || data === "conv:ai:off") {
+      setConvergenceConfig({ useAI: data === "conv:ai:on" });
+      await bot.editMessageText(`✅ نوع التحليل في التطابق: <b>${convergenceConfig.useAI ? "مع AI" : "بدون AI (فني)"}</b>`,
+        { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }]] } });
+      return;
+    }
+
+    if (data.startsWith("conv:preset:")) {
+      const k = data.split(":")[2] as ConvergencePreset;
+      if (CONVERGENCE_PRESETS[k]) setConvergenceConfig({ preset: k });
+      await bot.editMessageText(`✅ فريمات التطابق: <b>${CONVERGENCE_PRESETS[convergenceConfig.preset].label}</b>`,
+        { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }]] } });
+      return;
+    }
+
     if (data.startsWith("conv:int:")) {
       convergenceConfig.intervalMinutes = parseInt(data.split(":")[2]);
+      persistConvergenceConfig();
       if (convergenceConfig.enabled) restartConvergenceScanner(bot, ownerChatId);
       await bot.editMessageText(
         `🎯 فترة الفحص: <code>${convergenceConfig.intervalMinutes}</code> دقائق`,
@@ -1660,17 +2085,20 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     }
 
     if (data === "conv:now") {
+      const c = convergenceConfig;
+      if (!c.pairs.length) {
+        await bot.sendMessage(chatId, "⚠️ اختر زوجاً واحداً على الأقل في إعدادات التطابق.", { reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }]] } });
+        return;
+      }
+      const estMin = Math.max(1, Math.round(c.pairs.length * 3 * 9 / 60));
       await bot.editMessageText(
-        `🎯 <b>جاري فحص التطابق...</b>\n⏳ فحص ${Object.keys(PAIRS).length} أزواج × 3 فريمات\nانتظر من فضلك...`,
+        `🎯 <b>جاري فحص التطابق...</b>\n${c.pairs.length} زوج × ${CONVERGENCE_PRESETS[c.preset].label} (${c.useAI ? "مع AI" : "بدون AI"})\n⏱ المدة التقريبية: ~${estMin} دقيقة\n<i>تصلك إشارة لكل تطابق فور حدوثه، ثم ملخص الفحص.</i>`,
         { chat_id: chatId, message_id: msgId, parse_mode: "HTML" }
       );
-      const prevEnabled = convergenceConfig.enabled;
-      convergenceConfig.enabled = true;
-      await runConvergenceScan(bot, ownerChatId);
-      convergenceConfig.enabled = prevEnabled;
-      await bot.sendMessage(chatId, `✅ اكتمل فحص التطابق. سيتم إرسال أي إشارات متطابقة.`, {
-        parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }, { text: "🏠 القائمة", callback_data: "back:pairs" }]] },
+      const sum = await runConvergenceScan(bot, ownerChatId, true);
+      const head = sum.busy ? "⏳ فحص تطابق آخر قيد التشغيل — حاول بعد قليل." : `✅ <b>اكتمل فحص التطابق</b>: ${sum.checked} زوج — ${sum.sent} إشارة أُرسلت`;
+      await deliverLong(bot, chatId, [head, "", ...sum.lines].join("\n"), {
+        replyMarkup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }, { text: "🏠 القائمة", callback_data: "back:pairs" }]] },
       });
       return;
     }
@@ -1685,7 +2113,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       const loadingMsg = await bot.sendMessage(chatId,
         type === "quick"
           ? `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n⏳ جاري الحساب...`
-          : `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n⏳ جاري جلب البيانات...\n🔄 10 استراتيجيات + 4 فلاتر\n🤖 5 نماذج AI تحلل...\n<i>لحظات (30-60 ثانية)</i>`,
+          : `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n⏳ جاري جلب البيانات...\n🔄 15 استراتيجية + 4 فلاتر\n📸 التقاط الشارت الحي\n🤖 5 نماذج AI تقرأ الشارت وتحلل...\n<i>لحظات (30-90 ثانية)</i>`,
         { parse_mode:"HTML" }
       );
       const loadMsgId = loadingMsg.message_id;
@@ -1693,19 +2121,23 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       try {
         const marketData = await fetchMarket(pair, TIMEFRAMES[tf]);
         if (type === "quick") {
-          await bot.editMessageText(buildQuickMsg(pair, tf, marketData), {
-            chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML", reply_markup:afterResultKeyboard(),
+          const news = await fetchEconomicNews(pair);
+          await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, [], news), "tg-manual-tech");
+          await deliverLong(bot, chatId, buildQuickMsg(pair, tf, marketData, news, await journalStatsLine()), {
+            editMessageId: loadMsgId, replyMarkup: afterResultKeyboard(),
           });
         } else {
           await bot.editMessageText(
-            `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n✅ تم جلب البيانات\n📰 جلب الأخبار الاقتصادية...\n🤖 5 نماذج AI تحلل الآن...\n<i>لحظات (30-60 ثانية)</i>`,
+            `${p.flag} <b>${p.label}</b> | <code>${tf}</code>\n\n✅ تم جلب البيانات\n📰 جلب الأخبار + 📸 التقاط الشارت...\n🤖 5 نماذج AI تقرأ الشارت وتحلل الآن...\n<i>لحظات (30-90 ثانية)</i>`,
             { chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML" }
           );
-          const news = await fetchEconomicNews(pair);
-          const [aiResults, htfBias] = await Promise.all([runAI(pair, tf, marketData, news), computeHtfBias(pair, tf)]);
-          await bot.editMessageText(buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias), {
-            chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML", reply_markup:afterResultKeyboard(),
+          const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, marketData), computeHtfBias(pair, tf)]);
+          const aiResults = await runAI(pair, tf, marketData, news, chart, htfBias);
+          await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, aiResults, news), "tg-manual");
+          await deliverLong(bot, chatId, buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias, await journalStatsLine()), {
+            editMessageId: loadMsgId, replyMarkup: afterResultKeyboard(),
           });
+          await sendChartPhoto(bot, chatId, chart, `📸 ${p.label} | ${tf} — الشارت الحي الذي قرأته نماذج AI`);
         }
       } catch (err: any) {
         try {
@@ -2171,14 +2603,18 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
   if (botRole === "trading" || (botRole === "bridge" && !tradingConfigured)) {
     _botRef = bot;
     _ownerRef = ownerChatId;
-    if (convergenceConfig.enabled) {
-      console.log(`[Convergence] Auto-starting convergence scanner on ${botRole} bot (interval: ${convergenceConfig.intervalMinutes}min)`);
-      restartConvergenceScanner(bot, ownerChatId);
-    }
-    if (autoConfig.enabled) {
-      console.log(`[AutoSignal] Auto-starting signal scanner on ${botRole} bot`);
-      restartAutoScanner(bot, ownerChatId, lastSignalTimeLocal);
-    }
+    // Restore the owner's saved settings first, then start the scanners with them.
+    void (async () => {
+      await loadPersistedBotSettings();
+      if (convergenceConfig.enabled) {
+        console.log(`[Convergence] Auto-starting convergence scanner on ${botRole} bot (interval: ${convergenceConfig.intervalMinutes}min)`);
+        restartConvergenceScanner(bot, ownerChatId);
+      }
+      if (autoConfig.enabled) {
+        console.log(`[AutoSignal] Auto-starting signal scanner on ${botRole} bot`);
+        restartAutoScanner(bot, ownerChatId, lastSignalTimeLocal);
+      }
+    })();
   }
 
   return bot;

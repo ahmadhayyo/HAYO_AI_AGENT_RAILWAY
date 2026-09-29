@@ -15,7 +15,7 @@ const OANDA_INSTRUMENT: Record<string, string> = {
   "EUR/GBP": "EUR_GBP", "EUR/JPY": "EUR_JPY", "EUR/CHF": "EUR_CHF", "AUD/CAD": "AUD_CAD",
   "XAU/USD": "XAU_USD", "XAG/USD": "XAG_USD", "DJIA": "US30_USD", "CL": "WTICO_USD",
 };
-const OANDA_GRAN: Record<string, string> = { "1min": "M1", "5min": "M5", "15min": "M15", "30min": "M30", "1h": "H1", "4h": "H4", "1day": "D" };
+const OANDA_GRAN: Record<string, string> = { "1min": "M1", "5min": "M5", "15min": "M15", "30min": "M30", "1h": "H1", "4h": "H4", "1day": "D", "1week": "W" };
 
 // TwelveData symbol → Yahoo Finance ticker
 const YAHOO_TICKER: Record<string, string> = {
@@ -25,10 +25,37 @@ const YAHOO_TICKER: Record<string, string> = {
   "XAU/USD": "XAUUSD=X", "XAG/USD": "XAGUSD=X", "BTC/USD": "BTC-USD", "ETH/USD": "ETH-USD",
   "DJIA": "^DJI", "CL": "CL=F",
 };
-const YAHOO_INTERVAL: Record<string, string> = { "1min": "1m", "5min": "5m", "15min": "15m", "30min": "30m", "1h": "60m", "4h": "60m", "1day": "1d" };
-const YAHOO_RANGE: Record<string, string> = { "1min": "5d", "5min": "1mo", "15min": "1mo", "30min": "2mo", "1h": "3mo", "4h": "3mo", "1day": "1y" };
+// Yahoo has no 4h bars: 4h is built by aggregating 60m bars (see fetchFromYahoo).
+const YAHOO_INTERVAL: Record<string, string> = { "1min": "1m", "5min": "5m", "15min": "15m", "30min": "30m", "1h": "60m", "4h": "60m", "1day": "1d", "1week": "1wk" };
+// Ranges sized to give ≥ 250 closed bars (SMA200 + warm-up) where Yahoo allows it.
+const YAHOO_RANGE: Record<string, string> = { "1min": "5d", "5min": "1mo", "15min": "1mo", "30min": "2mo", "1h": "3mo", "4h": "2y", "1day": "2y", "1week": "10y" };
 
 export interface OhlcResult { status: "ok"; values: any[]; meta: { source: string } }
+
+const INTERVAL_MS: Record<string, number> = {
+  "1min": 60_000, "5min": 300_000, "15min": 900_000, "30min": 1_800_000,
+  "1h": 3_600_000, "4h": 14_400_000, "1day": 86_400_000, "1week": 604_800_000,
+};
+
+/** Candle timestamp → epoch ms, treating zone-less strings as UTC. */
+function candleMs(dt: string): number {
+  const s = /[zZ]|[+-]\d\d:?\d\d$/.test(dt) ? dt : dt.replace(" ", "T") + "Z";
+  return Date.parse(s);
+}
+
+/**
+ * Drop the still-forming candle (values NEWEST-first). Signals must be computed
+ * on CLOSED candles only — otherwise they repaint as the bar develops and each
+ * provider (OANDA omits it, TwelveData/Yahoo include it) yields a different
+ * answer for the same moment.
+ */
+export function dropFormingCandle(values: any[], interval: string, now = Date.now()): any[] {
+  const ms = INTERVAL_MS[interval];
+  if (!ms || !Array.isArray(values) || values.length === 0) return values;
+  const t = candleMs(String(values[0]?.datetime ?? ""));
+  if (!isFinite(t)) return values;
+  return t + ms > now ? values.slice(1) : values;
+}
 
 export async function fetchFromOanda(symbol: string, interval: string, outputsize: number): Promise<OhlcResult | null> {
   const token = process.env.OANDA_API_TOKEN || process.env.OANDA_TOKEN;
@@ -69,8 +96,30 @@ export async function fetchFromYahoo(symbol: string, interval: string, outputsiz
     rows.push({ datetime: new Date(ts[i] * 1000).toISOString(), open: String(q.open[i]), high: String(q.high[i]), low: String(q.low[i]), close: String(q.close[i]), volume: String(q.volume?.[i] ?? 0) });
   }
   if (rows.length === 0) return null;
-  const values = rows.slice(-outputsize).reverse(); // newest-first
+  const bars = interval === "4h" ? aggregateBars(rows, INTERVAL_MS["4h"]) : rows;
+  const values = bars.slice(-outputsize).reverse(); // newest-first
   return { status: "ok", values, meta: { source: "yahoo" } };
+}
+
+/** Aggregate oldest-first OHLC rows into UTC-aligned buckets of `ms`. */
+function aggregateBars(rows: any[], ms: number): any[] {
+  const out: any[] = [];
+  let cur: any = null, curKey = NaN;
+  for (const r of rows) {
+    const key = Math.floor(candleMs(r.datetime) / ms) * ms;
+    if (cur && key === curKey) {
+      cur.high = String(Math.max(+cur.high, +r.high));
+      cur.low = String(Math.min(+cur.low, +r.low));
+      cur.close = r.close;
+      cur.volume = String(+cur.volume + +r.volume);
+    } else {
+      if (cur) out.push(cur);
+      cur = { ...r, datetime: new Date(key).toISOString() };
+      curKey = key;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
 }
 
 /**

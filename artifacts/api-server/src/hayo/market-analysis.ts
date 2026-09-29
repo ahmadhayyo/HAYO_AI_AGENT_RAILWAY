@@ -6,6 +6,44 @@
  */
 
 // ─── Technical Indicator Helpers ─────────────────────────────────────
+// Standard definitions, matching TradingView / Wilder so the numbers users see
+// here agree with their charts:
+//  • EMA is seeded with the SMA of its first `period` values.
+//  • RSI, ATR and ADX use Wilder's smoothing (RMA), not a simple average.
+//  • ADX is the Wilder average of DX (not a single raw DX reading).
+// All inputs are oldest-first; scalar helpers return the latest value.
+
+/** Series helpers (oldest-first, NaN until the indicator is warmed up). */
+function emaSeries(arr: number[], period: number): number[] {
+  const out = new Array(arr.length).fill(NaN);
+  if (arr.length < period) return out;
+  const k = 2 / (period + 1);
+  let e = 0;
+  for (let i = 0; i < period; i++) e += arr[i];
+  e /= period;
+  out[period - 1] = e;
+  for (let i = period; i < arr.length; i++) { e = arr[i] * k + e * (1 - k); out[i] = e; }
+  return out;
+}
+function rmaSeries(arr: number[], period: number): number[] {
+  const out = new Array(arr.length).fill(NaN);
+  if (arr.length < period) return out;
+  let r = 0;
+  for (let i = 0; i < period; i++) r += arr[i];
+  r /= period;
+  out[period - 1] = r;
+  for (let i = period; i < arr.length; i++) { r = (r * (period - 1) + arr[i]) / period; out[i] = r; }
+  return out;
+}
+function trueRanges(highs: number[], lows: number[], closes: number[]): number[] {
+  const trs: number[] = [];
+  for (let i = 1; i < highs.length; i++) {
+    trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  return trs;
+}
+const last = (a: number[]) => a[a.length - 1];
+
 function calcSMA(arr: number[], period: number): number {
   if (arr.length < period) return arr[arr.length - 1] ?? 0;
   const slice = arr.slice(-period);
@@ -13,35 +51,26 @@ function calcSMA(arr: number[], period: number): number {
 }
 function calcEMA(arr: number[], period: number): number {
   if (arr.length === 0) return 0;
-  const k = 2 / (period + 1);
-  let ema = arr[0];
-  for (let i = 1; i < arr.length; i++) ema = arr[i] * k + ema * (1 - k);
-  return ema;
+  if (arr.length < period) return arr.reduce((a, b) => a + b, 0) / arr.length;
+  return last(emaSeries(arr, period));
 }
 function calcRSI(closes: number[], period = 14): number {
   if (closes.length < period + 1) return 50;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
+  const gains: number[] = [], losses: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
     const d = closes[i] - closes[i - 1];
-    if (d > 0) gains += d; else losses -= d;
+    gains.push(Math.max(d, 0)); losses.push(Math.max(-d, 0));
   }
-  const ag = gains / period, al = losses / period;
-  if (al === 0) return 100;
+  const ag = last(rmaSeries(gains, period)), al = last(rmaSeries(losses, period));
+  if (al === 0) return ag === 0 ? 50 : 100;
   return 100 - 100 / (1 + ag / al);
 }
 function calcMACD(closes: number[]) {
   if (closes.length < 26) return { macd: 0, signal: 0, histogram: 0 };
-  const ema12 = calcEMA(closes, 12);
-  const ema26 = calcEMA(closes, 26);
-  const macdLine = ema12 - ema26;
-
-  // Build MACD line history for proper EMA(9) signal
-  const macdHistory: number[] = [];
-  for (let i = 26; i <= closes.length; i++) {
-    const slice = closes.slice(0, i);
-    macdHistory.push(calcEMA(slice, 12) - calcEMA(slice, 26));
-  }
-  const signalLine = macdHistory.length >= 9 ? calcEMA(macdHistory, 9) : macdLine;
+  const e12 = emaSeries(closes, 12), e26 = emaSeries(closes, 26);
+  const line = closes.map((_, i) => e12[i] - e26[i]).slice(25); // valid from index 25
+  const macdLine = last(line);
+  const signalLine = line.length >= 9 ? last(emaSeries(line, 9)) : macdLine;
   return { macd: macdLine, signal: signalLine, histogram: macdLine - signalLine };
 }
 function calcBB(closes: number[], period = 20, mult = 2) {
@@ -52,37 +81,25 @@ function calcBB(closes: number[], period = 20, mult = 2) {
   return { upper: middle + mult * sd, middle, lower: middle - mult * sd };
 }
 function calcATR(highs: number[], lows: number[], closes: number[], period = 14): number {
-  const trs: number[] = [];
-  for (let i = 1; i < highs.length; i++) {
-    trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
-  }
+  const trs = trueRanges(highs, lows, closes);
   if (trs.length === 0) return 0;
-  return calcSMA(trs, period);
+  if (trs.length < period) return trs.reduce((a, b) => a + b, 0) / trs.length;
+  return last(rmaSeries(trs, period));
 }
 
-// Stochastic Oscillator (%K, %D)
+// Stochastic Oscillator (%K, %D) — %D is the 3-period SMA of the last %K values
 function calcStochastic(closes: number[], highs: number[], lows: number[], kPeriod = 14, dPeriod = 3): { k: number; d: number } {
   if (closes.length < kPeriod) return { k: 50, d: 50 };
-  const recentHighs = highs.slice(-kPeriod);
-  const recentLows = lows.slice(-kPeriod);
-  const highestHigh = Math.max(...recentHighs);
-  const lowestLow = Math.min(...recentLows);
-  const range = highestHigh - lowestLow;
-  const k = range === 0 ? 50 : ((closes[closes.length - 1] - lowestLow) / range) * 100;
-
-  // %D = SMA of recent %K values
-  const kValues: number[] = [];
-  for (let i = Math.max(kPeriod, closes.length - dPeriod * 2); i <= closes.length; i++) {
-    const sliceH = highs.slice(Math.max(0, i - kPeriod), i);
-    const sliceL = lows.slice(Math.max(0, i - kPeriod), i);
-    const sliceC = closes.slice(0, i);
-    if (sliceH.length < kPeriod) continue;
-    const hh = Math.max(...sliceH);
-    const ll = Math.min(...sliceL);
-    const rng = hh - ll;
-    kValues.push(rng === 0 ? 50 : ((sliceC[sliceC.length - 1] - ll) / rng) * 100);
-  }
-  const d = kValues.length >= dPeriod ? calcSMA(kValues, dPeriod) : k;
+  const kAt = (end: number) => { // %K using bars [end-kPeriod+1 .. end]
+    const hh = Math.max(...highs.slice(end - kPeriod + 1, end + 1));
+    const ll = Math.min(...lows.slice(end - kPeriod + 1, end + 1));
+    return hh === ll ? 50 : ((closes[end] - ll) / (hh - ll)) * 100;
+  };
+  const n = closes.length - 1;
+  const k = kAt(n);
+  const ks: number[] = [];
+  for (let e = n - dPeriod + 1; e <= n; e++) if (e >= kPeriod - 1) ks.push(kAt(e));
+  const d = ks.length === dPeriod ? ks.reduce((a, b) => a + b, 0) / dPeriod : k;
   return { k, d };
 }
 
@@ -97,46 +114,95 @@ function calcWilliamsR(closes: number[], highs: number[], lows: number[], period
   return range === 0 ? -50 : ((hh - closes[closes.length - 1]) / range) * -100;
 }
 
-// Pivot Points (Standard)
-function calcPivotPoints(highs: number[], lows: number[], closes: number[]): {
-  pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number;
+/** Parse a candle timestamp as UTC (TwelveData omits the zone when timezone=UTC). */
+function toUtcMs(t: string | number): number {
+  if (typeof t === "number") return t < 1e12 ? t * 1000 : t;
+  const s = /[zZ]|[+-]\d\d:?\d\d$/.test(t) ? t : t.replace(" ", "T") + "Z";
+  return Date.parse(s);
+}
+
+// Pivot Points (Standard, "floor" pivots) — from the PREVIOUS completed UTC day.
+// With `times`, the prior day's high/low/close is reconstructed from the candles
+// (basis "prevDay"). Without enough history (e.g. 1-min charts) it falls back
+// to the whole window excluding the current bar (basis "window"); the pivot
+// strategy only trades real prior-day pivots.
+function calcPivotPoints(highs: number[], lows: number[], closes: number[], times?: Array<string | number>): {
+  pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number; basis: "prevDay" | "window";
 } {
-  const h = highs[highs.length - 1] || 0;
-  const l = lows[lows.length - 1] || 0;
-  const c = closes[closes.length - 1] || 0;
+  let h = NaN, l = NaN, c = NaN, basis: "prevDay" | "window" = "window";
+  if (times && times.length === closes.length && closes.length > 1) {
+    const day = (i: number) => Math.floor(toUtcMs(times[i]) / 86400000);
+    const today = day(closes.length - 1);
+    let end = closes.length - 1;
+    while (end >= 0 && day(end) === today) end--;          // last bar of previous day
+    if (end >= 0) {
+      const prev = day(end);
+      let start = end;
+      while (start > 0 && day(start - 1) === prev) start--;
+      if (start > 0) {                                      // the day is fully inside the window
+        h = Math.max(...highs.slice(start, end + 1));
+        l = Math.min(...lows.slice(start, end + 1));
+        c = closes[end];
+        basis = "prevDay";
+      }
+    }
+  }
+  if (basis === "window") {
+    const n = Math.max(1, closes.length - 1);
+    h = Math.max(...highs.slice(0, n)); l = Math.min(...lows.slice(0, n)); c = closes[n - 1] ?? 0;
+  }
   const pivot = (h + l + c) / 3;
   return {
     pivot,
     r1: 2 * pivot - l, r2: pivot + (h - l), r3: h + 2 * (pivot - l),
     s1: 2 * pivot - h, s2: pivot - (h - l), s3: l - 2 * (h - pivot),
+    basis,
   };
 }
 
-// ADX (Average Directional Index) — trend strength
+// ADX (Average Directional Index) — Wilder: smoothed ±DM/TR → ±DI → DX → RMA(DX)
 function calcADX(highs: number[], lows: number[], closes: number[], period = 14): { adx: number; pdi: number; mdi: number } {
-  if (highs.length < period + 1) return { adx: 25, pdi: 25, mdi: 25 };
-  const pdm: number[] = [];
-  const mdm: number[] = [];
-  const tr: number[] = [];
-
+  if (highs.length < period * 2 + 1) return { adx: 0, pdi: 0, mdi: 0 };
+  const pdm: number[] = [], mdm: number[] = [];
   for (let i = 1; i < highs.length; i++) {
     const upMove = highs[i] - highs[i - 1];
     const downMove = lows[i - 1] - lows[i];
     pdm.push(upMove > downMove && upMove > 0 ? upMove : 0);
     mdm.push(downMove > upMove && downMove > 0 ? downMove : 0);
-    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
   }
-
-  const smoothTR = calcEMA(tr, period);
-  const smoothPDM = calcEMA(pdm, period);
-  const smoothMDM = calcEMA(mdm, period);
-  const pdi = smoothTR > 0 ? (smoothPDM / smoothTR) * 100 : 0;
-  const mdi = smoothTR > 0 ? (smoothMDM / smoothTR) * 100 : 0;
-  const dx = (pdi + mdi) > 0 ? Math.abs(pdi - mdi) / (pdi + mdi) * 100 : 0;
-
-  // Simplified ADX — ideally EMA of DX history
-  const adx = dx;
+  const str = rmaSeries(trueRanges(highs, lows, closes), period);
+  const spdm = rmaSeries(pdm, period), smdm = rmaSeries(mdm, period);
+  const dx: number[] = [];
+  let pdi = 0, mdi = 0;
+  for (let i = period - 1; i < str.length; i++) {
+    pdi = str[i] > 0 ? (spdm[i] / str[i]) * 100 : 0;
+    mdi = str[i] > 0 ? (smdm[i] / str[i]) * 100 : 0;
+    dx.push(pdi + mdi > 0 ? (Math.abs(pdi - mdi) / (pdi + mdi)) * 100 : 0);
+  }
+  const adx = dx.length >= period ? last(rmaSeries(dx, period)) : last(dx);
   return { adx, pdi, mdi };
+}
+
+// ─── Trading-cost awareness ───────────────────────────────────────────
+/**
+ * Typical retail spread per instrument, in price units (HAYO pair codes).
+ * Used to express the round-trip cost as a fraction of the stop distance.
+ * Measured on 2018-19 OANDA data: with a 1.5×ATR stop the spread alone costs
+ * ~70-110% of 1R on 1-min charts, ~30-45% on 5-min, ~15-25% on 15-min and
+ * ~7-12% on 1h — the dominant reason short-timeframe signals lose money.
+ */
+const TYPICAL_SPREAD: Record<string, number> = {
+  EURUSD: 0.00012, GBPUSD: 0.00018, USDJPY: 0.014, GBPJPY: 0.03, USDCHF: 0.00018,
+  AUDUSD: 0.00014, NZDUSD: 0.0002, USDCAD: 0.00018, EURGBP: 0.00015, EURJPY: 0.018,
+  EURCHF: 0.0002, AUDCAD: 0.00025, XAUUSD: 0.35, XAGUSD: 0.03, BTCUSD: 25, ETHUSD: 2,
+  USOIL: 0.04, US30: 3,
+};
+
+/** Spread as a % of the risk taken with a stop at `slAtrMult`×ATR (null if unknown). */
+function spreadCostPct(pair: string, atr: number, slAtrMult = 1.5): number | null {
+  const sp = TYPICAL_SPREAD[pair];
+  if (!sp || !(atr > 0)) return null;
+  return (sp / (slAtrMult * atr)) * 100;
 }
 
 // ─── Strategy & Filter Types ──────────────────────────────────────────
@@ -168,12 +234,15 @@ function calcStrategies(
   stoch?: { k: number; d: number },
   williamsR?: number,
   adx?: { adx: number; pdi: number; mdi: number },
-  pivots?: { pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number },
+  pivots?: { pivot: number; r1: number; r2: number; r3: number; s1: number; s2: number; s3: number; basis?: "prevDay" | "window" },
   opens?: number[],
 ): StrategySignal[] {
   const price = closes[closes.length - 1];
   const prevPrice = closes[closes.length - 2] || price;
   const signals: StrategySignal[] = [];
+  const dec = price >= 1000 ? 2 : price >= 20 ? 3 : 5;       // display precision per asset
+  const fmtP = (n: number) => n.toFixed(dec);
+  const n = closes.length - 1;
 
   // 1 — Trend Following (SMA Alignment)
   {
@@ -195,28 +264,32 @@ function calcStrategies(
             "لا توافق واضح بين المتوسطات المتحركة" });
   }
 
-  // 2 — Breakout / Bollinger Bands
+  // 2 — Bollinger squeeze BREAKOUT: bands were tight (width < 2.5×ATR, ≈ the
+  // tightest 15% on FX) within the last 10 bars and the close now breaks OUT of
+  // a band → trade in the breakout direction. (Previously this fired the
+  // opposite way — a band touch was treated as a reversal, which duplicated
+  // the mean-reversion strategies under a "breakout" name.)
   {
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
     const bbWidth = (bb.upper - bb.lower) / bb.middle * 100;
-    if (bbWidth < 0.8) {
-      sig = "NEUTRAL"; str = 0;
-    } else if (prevPrice <= bb.lower && price > bb.lower) {
-      sig = "BUY"; str = 82;
-    } else if (prevPrice >= bb.upper && price < bb.upper) {
-      sig = "SELL"; str = 82;
-    } else if (price < bb.lower) {
-      sig = "BUY"; str = 68;
-    } else if (price > bb.upper) {
-      sig = "SELL"; str = 68;
-    }
-    signals.push({ id: "breakout", name: "الاختراق (Bollinger)", emoji: "💥",
+    const widthAtr = (end: number) => {           // band width at bar `end`, in ATRs of that time
+      if (end < 20 || atr <= 0) return Infinity;
+      const w = closes.slice(end - 19, end + 1), m = w.reduce((x, y) => x + y, 0) / 20;
+      const sd = Math.sqrt(w.reduce((x, y) => x + (y - m) ** 2, 0) / 20);
+      return (4 * sd) / atr;
+    };
+    let squeezeRecently = false;
+    for (let k = 1; k <= 10 && !squeezeRecently; k++) squeezeRecently = widthAtr(n - k) < 2.5;
+    const squeezeNow = widthAtr(n) < 2.5;
+    if (squeezeRecently && price > bb.upper) { sig = "BUY"; str = 78; }
+    else if (squeezeRecently && price < bb.lower) { sig = "SELL"; str = 78; }
+    signals.push({ id: "breakout", name: "الاختراق (Bollinger Squeeze)", emoji: "💥",
       signal: sig, strength: str,
-      desc: bbWidth < 0.8 ? "النطاقات ضيقة جداً — انتظار اختراق وشيك" :
-            sig === "BUY" ? "ارتداد من النطاق السفلي — إشارة صعود" :
-            sig === "SELL" ? "ارتداد من النطاق العلوي — إشارة هبوط" :
-            `السعر داخل النطاق الطبيعي (عرض ${bbWidth.toFixed(2)}%)` });
+      desc: sig === "BUY" ? "اختراق صعودي للنطاق العلوي بعد انضغاط — بداية حركة محتملة" :
+            sig === "SELL" ? "اختراق هبوطي للنطاق السفلي بعد انضغاط — بداية حركة محتملة" :
+            squeezeNow ? "النطاقات منضغطة — انتظار اختراق" :
+            `لا انضغاط ولا اختراق (عرض النطاق ${bbWidth.toFixed(2)}%)` });
   }
 
   // 3 — RSI Momentum
@@ -229,34 +302,44 @@ function calcStrategies(
     else if (rsi > 80) { sig = "SELL"; str = 92; }
     else if (rsi > 70) { sig = "SELL"; str = 78; }
     else if (rsi > 62) { sig = "SELL"; str = 58; }
-    signals.push({ id: "rsi_momentum", name: "زخم RSI", emoji: "⚡",
+    signals.push({ id: "rsi_momentum", name: "انعكاس RSI (ذروة بيع/شراء)", emoji: "⚡",
       signal: sig, strength: str,
-      desc: `RSI = ${rsi.toFixed(1)} — ${rsi < 30 ? "ذروة بيع قوية 🔴" : rsi < 38 ? "اقتراب ذروة بيع" : rsi > 70 ? "ذروة شراء قوية 🟢" : rsi > 62 ? "اقتراب ذروة شراء" : "منطقة محايدة (40-60)"}` });
+      desc: `RSI = ${rsi.toFixed(1)} — ${rsi < 30 ? "ذروة بيع قوية 🔴" : rsi < 38 ? "اقتراب ذروة بيع" : rsi > 70 ? "ذروة شراء قوية 🟢" : rsi > 62 ? "اقتراب ذروة شراء" : "منطقة محايدة (38-62)"}` });
   }
 
-  // 4 — MACD Crossover
+  // 4 — MACD: a fresh CROSSOVER on this bar is the signal (strong); an
+  // established position above/below the signal line is weaker. Strength
+  // scales with |histogram| in ATRs (was divided by MACD itself, which blows
+  // up near zero).
   {
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
-    if (macd.histogram > 0 && macd.macd > macd.signal) {
-      sig = "BUY";  str = Math.min(88, 50 + Math.round(Math.abs(macd.histogram) / (Math.abs(macd.macd) || 1) * 80));
-    } else if (macd.histogram < 0 && macd.macd < macd.signal) {
-      sig = "SELL"; str = Math.min(88, 50 + Math.round(Math.abs(macd.histogram) / (Math.abs(macd.macd) || 1) * 80));
-    }
+    const prev = closes.length > 35 ? calcMACD(closes.slice(0, -1)) : null;
+    const crossUp = prev !== null && prev.histogram <= 0 && macd.histogram > 0;
+    const crossDn = prev !== null && prev.histogram >= 0 && macd.histogram < 0;
+    const histAtr = atr > 0 ? Math.abs(macd.histogram) / atr : 0;
+    if (crossUp) { sig = "BUY"; str = 80; }
+    else if (crossDn) { sig = "SELL"; str = 80; }
+    else if (macd.histogram > 0) { sig = "BUY"; str = Math.min(70, 50 + Math.round(histAtr * 100)); }
+    else if (macd.histogram < 0) { sig = "SELL"; str = Math.min(70, 50 + Math.round(histAtr * 100)); }
     signals.push({ id: "macd_crossover", name: "تقاطع MACD", emoji: "📊",
       signal: sig, strength: str,
-      desc: `MACD ${macd.macd > macd.signal ? "فوق" : "تحت"} خط الإشارة | Histogram: ${macd.histogram.toFixed(5)}` });
+      desc: crossUp ? "تقاطع صاعد جديد: MACD قطع خط الإشارة للأعلى على هذه الشمعة" :
+            crossDn ? "تقاطع هابط جديد: MACD قطع خط الإشارة للأسفل على هذه الشمعة" :
+            `MACD ${macd.histogram > 0 ? "فوق" : "تحت"} خط الإشارة (بلا تقاطع جديد) | Histogram: ${macd.histogram.toFixed(dec + 1)}` });
   }
 
-  // 5 — Scalping (Mean Reversion from SMA20)
+  // 5 — Scalping (Mean Reversion from SMA20) — stretch measured in ATRs
+  // (2.2 ATR ≈ the most stretched 15% of bars, 1.6 ATR ≈ 30%).
   {
     const dist = (price - sma20) / sma20 * 100;
+    const distAtr = atr > 0 ? (price - sma20) / atr : 0;
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
-    if      (dist < -0.20) { sig = "BUY";  str = 75; }
-    else if (dist < -0.10) { sig = "BUY";  str = 58; }
-    else if (dist >  0.20) { sig = "SELL"; str = 75; }
-    else if (dist >  0.10) { sig = "SELL"; str = 58; }
+    if      (distAtr < -2.2) { sig = "BUY";  str = 75; }
+    else if (distAtr < -1.6) { sig = "BUY";  str = 58; }
+    else if (distAtr >  2.2) { sig = "SELL"; str = 75; }
+    else if (distAtr >  1.6) { sig = "SELL"; str = 58; }
     signals.push({ id: "scalping", name: "سكالبينج (ارتداد)", emoji: "⚡",
       signal: sig, strength: str,
       desc: `البعد عن SMA20: ${dist >= 0 ? "+" : ""}${dist.toFixed(3)}% — ${sig === "BUY" ? "السعر بعيد أسفل المتوسط" : sig === "SELL" ? "السعر بعيد فوق المتوسط" : "السعر قريب من المتوسط"}` });
@@ -265,7 +348,7 @@ function calcStrategies(
   // 6 — Swing Trading (Pullback to SMA50)
   {
     const distSMA50 = Math.abs(price - sma50) / sma50 * 100;
-    const nearSMA50 = distSMA50 < 0.18;
+    const nearSMA50 = atr > 0 ? Math.abs(price - sma50) < 0.5 * atr : distSMA50 < 0.18;
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
     if (nearSMA50 && sma20 > sma50)          { sig = "BUY";  str = 74; }
@@ -387,19 +470,24 @@ function calcStrategies(
     });
   }
 
-  // 8 — Stochastic Crossover
+  // 8 — Stochastic: a %K/%D CROSS inside the oversold/overbought zone
+  // (previously only the current state %K>%D was checked, not a cross).
   if (stoch) {
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
-    if (stoch.k < 20 && stoch.k > stoch.d) { sig = "BUY"; str = 82; }
-    else if (stoch.k > 80 && stoch.k < stoch.d) { sig = "SELL"; str = 82; }
-    else if (stoch.k < 30 && stoch.k > stoch.d) { sig = "BUY"; str = 65; }
-    else if (stoch.k > 70 && stoch.k < stoch.d) { sig = "SELL"; str = 65; }
+    const prev = closes.length > 17 ? calcStochastic(closes.slice(0, -1), highs.slice(0, -1), lows.slice(0, -1)) : null;
+    const crossUp = prev !== null && prev.k <= prev.d && stoch.k > stoch.d;
+    const crossDn = prev !== null && prev.k >= prev.d && stoch.k < stoch.d;
+    if (crossUp && stoch.k < 20) { sig = "BUY"; str = 82; }
+    else if (crossDn && stoch.k > 80) { sig = "SELL"; str = 82; }
+    else if (crossUp && stoch.k < 30) { sig = "BUY"; str = 65; }
+    else if (crossDn && stoch.k > 70) { sig = "SELL"; str = 65; }
     signals.push({ id: "stochastic", name: "تقاطع Stochastic", emoji: "🔄",
       signal: sig, strength: str,
       desc: `%K=${stoch.k.toFixed(1)} %D=${stoch.d.toFixed(1)} — ${
-        stoch.k < 20 ? "ذروة بيع شديدة" : stoch.k > 80 ? "ذروة شراء شديدة" :
-        stoch.k > stoch.d ? "تقاطع صاعد" : stoch.k < stoch.d ? "تقاطع هابط" : "محايد"
+        crossUp ? (stoch.k < 30 ? "تقاطع صاعد في منطقة ذروة البيع" : "تقاطع صاعد خارج منطقة ذروة البيع") :
+        crossDn ? (stoch.k > 70 ? "تقاطع هابط في منطقة ذروة الشراء" : "تقاطع هابط خارج منطقة ذروة الشراء") :
+        stoch.k < 20 ? "ذروة بيع (بلا تقاطع)" : stoch.k > 80 ? "ذروة شراء (بلا تقاطع)" : "لا تقاطع"
       }` });
   }
 
@@ -417,18 +505,18 @@ function calcStrategies(
   }
 
   // 10 — Pivot Point Bounce
-  if (pivots) {
+  if (pivots && pivots.basis !== "window") {
     const price = closes[closes.length - 1];
     const tolerance = atr * 0.3;
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
     let desc = "";
-    if (Math.abs(price - pivots.s1) < tolerance) { sig = "BUY"; str = 75; desc = `ارتداد من S1 (${pivots.s1.toFixed(2)})`; }
-    else if (Math.abs(price - pivots.s2) < tolerance) { sig = "BUY"; str = 85; desc = `ارتداد من S2 (${pivots.s2.toFixed(2)}) — دعم قوي`; }
-    else if (Math.abs(price - pivots.r1) < tolerance) { sig = "SELL"; str = 75; desc = `ارتداد من R1 (${pivots.r1.toFixed(2)})`; }
-    else if (Math.abs(price - pivots.r2) < tolerance) { sig = "SELL"; str = 85; desc = `ارتداد من R2 (${pivots.r2.toFixed(2)}) — مقاومة قوية`; }
-    else if (price > pivots.pivot) { desc = `فوق Pivot (${pivots.pivot.toFixed(2)}) — نطاق صعودي`; }
-    else { desc = `تحت Pivot (${pivots.pivot.toFixed(2)}) — نطاق هبوطي`; }
+    if (Math.abs(price - pivots.s1) < tolerance) { sig = "BUY"; str = 75; desc = `ارتداد من S1 (${fmtP(pivots.s1)})`; }
+    else if (Math.abs(price - pivots.s2) < tolerance) { sig = "BUY"; str = 85; desc = `ارتداد من S2 (${fmtP(pivots.s2)}) — دعم قوي`; }
+    else if (Math.abs(price - pivots.r1) < tolerance) { sig = "SELL"; str = 75; desc = `ارتداد من R1 (${fmtP(pivots.r1)})`; }
+    else if (Math.abs(price - pivots.r2) < tolerance) { sig = "SELL"; str = 85; desc = `ارتداد من R2 (${fmtP(pivots.r2)}) — مقاومة قوية`; }
+    else if (price > pivots.pivot) { desc = `فوق Pivot (${fmtP(pivots.pivot)}) — نطاق صعودي`; }
+    else { desc = `تحت Pivot (${fmtP(pivots.pivot)}) — نطاق هبوطي`; }
     signals.push({ id: "pivot_bounce", name: "ارتداد Pivot", emoji: "📍",
       signal: sig, strength: str, desc });
   }
@@ -466,10 +554,10 @@ function calcStrategies(
       const priorDown = lh || ll;        // prior bearish structure
       if (price > lastHi.v && hl) {
         sig = "BUY"; str = 84;
-        desc = `اختراق صعودي للبنية (BOS) فوق ${lastHi.v.toFixed(price > 100 ? 2 : 5)} مع قيعان صاعدة — استمرار صعودي`;
+        desc = `اختراق صعودي للبنية (BOS) فوق ${fmtP(lastHi.v)} مع قيعان صاعدة — استمرار صعودي`;
       } else if (price < lastLo.v && lh) {
         sig = "SELL"; str = 84;
-        desc = `كسر هبوطي للبنية (BOS) تحت ${lastLo.v.toFixed(price > 100 ? 2 : 5)} مع قمم هابطة — استمرار هبوطي`;
+        desc = `كسر هبوطي للبنية (BOS) تحت ${fmtP(lastLo.v)} مع قمم هابطة — استمرار هبوطي`;
       } else if (price > lastHi.v && priorDown) {
         sig = "BUY"; str = 70;
         desc = `تغيّر الطابع (CHoCH) صعودي — كسر آخر قمة بعد هيكل هابط — انعكاس محتمل للأعلى`;
@@ -487,32 +575,36 @@ function calcStrategies(
     signals.push({ id: "market_structure", name: "بنية السوق (BOS/CHoCH)", emoji: "🏗️", signal: sig, strength: str, desc });
   }
 
-  // 12 — Fibonacci Golden Zone (retracement of last impulse leg)
+  // 12 — Fibonacci golden zone on the DOMINANT leg: the highest high and
+  // lowest low of the last 60 bars (previously the last 2-bar fractals, i.e.
+  // legs of a few pips, so price was "in the zone" almost every bar). The leg
+  // must be ≥ 3×ATR to count as an impulse; a close beyond the 0.786 level
+  // invalidates the setup.
   {
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
     let desc = "لا يوجد اندفاع واضح لحساب فيبوناتشي";
-    const lastHi = swHi[swHi.length - 1];
-    const lastLo = swLo[swLo.length - 1];
-    if (lastHi && lastLo) {
-      const dec = price > 100 ? 2 : price > 10 ? 3 : 5;
-      const up = lastLo.i < lastHi.i; // impulse leg direction (low then high = bullish)
-      const hi = lastHi.v, lo = lastLo.v, range = hi - lo;
-      if (range > 0) {
-        const fib = (r: number) => up ? hi - range * r : lo + range * r;
-        const z618 = fib(0.618), z50 = fib(0.5), z382 = fib(0.382);
-        const golden = up ? (price <= z50 && price >= z618) : (price >= z50 && price <= z618);
-        const near = (a: number, b: number) => Math.abs(a - b) <= (atr * 0.6 || range * 0.03);
-        if (up && (golden || near(price, z618) || near(price, z50))) {
-          sig = "BUY"; str = golden ? 80 : 68;
-          desc = `ارتداد صعودي في منطقة فيبوناتشي الذهبية (0.5=${z50.toFixed(dec)} / 0.618=${z618.toFixed(dec)}) — استمرار الاندفاع الصاعد`;
-        } else if (!up && (golden || near(price, z618) || near(price, z50))) {
-          sig = "SELL"; str = golden ? 80 : 68;
-          desc = `ارتداد هبوطي في منطقة فيبوناتشي الذهبية (0.5=${z50.toFixed(dec)} / 0.618=${z618.toFixed(dec)}) — استمرار الاندفاع الهابط`;
-        } else {
-          desc = `اندفاع ${up ? "صاعد" : "هابط"} | مناطق فيبو: 0.382=${z382.toFixed(dec)} · 0.5=${z50.toFixed(dec)} · 0.618=${z618.toFixed(dec)}`;
-        }
+    const look = Math.min(60, highs.length);
+    const start = highs.length - look;
+    let hiI = start, loI = start;
+    for (let k = start; k < highs.length; k++) { if (highs[k] > highs[hiI]) hiI = k; if (lows[k] < lows[loI]) loI = k; }
+    const hi = highs[hiI], lo = lows[loI], range = hi - lo;
+    const up = loI < hiI;                          // low first, then high → bullish impulse
+    const extremeIsCurrent = (up ? hiI : loI) >= n - 1; // still extending: nothing to retrace yet
+    if (range > 0 && atr > 0 && range >= 3 * atr && !extremeIsCurrent) {
+      const fib = (r: number) => (up ? hi - range * r : lo + range * r);
+      const z382 = fib(0.382), z50 = fib(0.5), z618 = fib(0.618), z786 = fib(0.786);
+      const inGolden = up ? price <= z50 && price >= z618 : price >= z50 && price <= z618;
+      const nearGolden = Math.min(Math.abs(price - z50), Math.abs(price - z618)) <= 0.3 * atr;
+      const invalid = up ? price < z786 : price > z786;
+      if (!invalid && (inGolden || nearGolden)) {
+        sig = up ? "BUY" : "SELL"; str = inGolden ? 78 : 66;
+        desc = `تصحيح إلى المنطقة الذهبية لاندفاع ${up ? "صاعد" : "هابط"} (${fmtP(lo)}→${fmtP(hi)}): 0.5=${fmtP(z50)} · 0.618=${fmtP(z618)} — احتمال استمرار الاتجاه`;
+      } else {
+        desc = `اندفاع ${up ? "صاعد" : "هابط"} ${fmtP(lo)}→${fmtP(hi)} | 0.382=${fmtP(z382)} · 0.5=${fmtP(z50)} · 0.618=${fmtP(z618)}${invalid ? " — تجاوز 0.786 (الإعداد ملغى)" : ""}`;
       }
+    } else if (range > 0 && extremeIsCurrent) {
+      desc = "السعر عند طرف الاندفاع الحالي — لا تصحيح بعد";
     }
     signals.push({ id: "fibonacci", name: "فيبوناتشي (منطقة ذهبية)", emoji: "🌀", signal: sig, strength: str, desc });
   }
@@ -526,20 +618,23 @@ function calcStrategies(
       if (idx < 15) return null;
       return calcRSI(closes.slice(0, idx + 1), 14);
     };
+    // The second swing must be recent (≤ 15 bars ago) and the two swings
+    // 5–60 bars apart — otherwise the "divergence" is stale or meaningless.
+    const valid = (a: { i: number }, b: { i: number }) => n - b.i <= 15 && b.i - a.i >= 5 && b.i - a.i <= 60;
     if (swHi.length >= 2) {
       const a = swHi[swHi.length - 2], b = swHi[swHi.length - 1];
       const ra = rsiAt(a.i), rb = rsiAt(b.i);
-      if (ra !== null && rb !== null && b.v > a.v && rb < ra - 2) {
+      if (valid(a, b) && ra !== null && rb !== null && b.v > a.v && rb < ra - 2) {
         sig = "SELL"; str = 83;
-        desc = `دايفرجنس هبوطي: قمة سعرية أعلى (${a.v.toFixed(5)}→${b.v.toFixed(5)}) مقابل RSI أدنى (${ra.toFixed(1)}→${rb.toFixed(1)}) — ضعف زخم صاعد`;
+        desc = `دايفرجنس هبوطي: قمة سعرية أعلى (${fmtP(a.v)}→${fmtP(b.v)}) مقابل RSI أدنى (${ra.toFixed(1)}→${rb.toFixed(1)}) — ضعف زخم صاعد`;
       }
     }
     if (sig === "NEUTRAL" && swLo.length >= 2) {
       const a = swLo[swLo.length - 2], b = swLo[swLo.length - 1];
       const ra = rsiAt(a.i), rb = rsiAt(b.i);
-      if (ra !== null && rb !== null && b.v < a.v && rb > ra + 2) {
+      if (valid(a, b) && ra !== null && rb !== null && b.v < a.v && rb > ra + 2) {
         sig = "BUY"; str = 83;
-        desc = `دايفرجنس صعودي: قاع سعري أدنى (${a.v.toFixed(5)}→${b.v.toFixed(5)}) مقابل RSI أعلى (${ra.toFixed(1)}→${rb.toFixed(1)}) — ضعف زخم هابط`;
+        desc = `دايفرجنس صعودي: قاع سعري أدنى (${fmtP(a.v)}→${fmtP(b.v)}) مقابل RSI أعلى (${ra.toFixed(1)}→${rb.toFixed(1)}) — ضعف زخم هابط`;
       }
     }
     signals.push({ id: "rsi_divergence", name: "دايفرجنس RSI", emoji: "🔀", signal: sig, strength: str, desc });
@@ -550,17 +645,20 @@ function calcStrategies(
     let sig: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
     let str = 0;
     let desc = "لا يوجد نموذج شمعة انعكاسي واضح";
-    const n = closes.length - 1;
     const o = opens[n], c = closes[n], h = highs[n], l = lows[n];
+    // Reversal patterns only mean something after a move INTO them: the 3 bars
+    // before the pattern must have declined (bullish) / risen (bearish).
+    const priorDecline = n >= 4 && closes[n - 1] < closes[n - 4];
+    const priorRise = n >= 4 && closes[n - 1] > closes[n - 4];
     const po = opens[n - 1], pc = closes[n - 1];
     const body = Math.abs(c - o), range = (h - l) || 1e-9;
     const upperWick = h - Math.max(o, c), lowerWick = Math.min(o, c) - l;
     // Bullish/bearish engulfing
-    if (c > o && pc < po && c >= po && o <= pc) { sig = "BUY"; str = 78; desc = "ابتلاع شرائي (Bullish Engulfing) — انعكاس صعودي"; }
-    else if (c < o && pc > po && c <= po && o >= pc) { sig = "SELL"; str = 78; desc = "ابتلاع بيعي (Bearish Engulfing) — انعكاس هبوطي"; }
-    // Pin bars (hammer / shooting star)
-    else if (lowerWick > body * 2 && upperWick < body && body / range < 0.4) { sig = "BUY"; str = 70; desc = "شمعة مطرقة (Hammer) — رفض للأسعار المنخفضة — صعودي"; }
-    else if (upperWick > body * 2 && lowerWick < body && body / range < 0.4) { sig = "SELL"; str = 70; desc = "شمعة نجمة ساقطة (Shooting Star) — رفض للأسعار المرتفعة — هبوطي"; }
+    if (priorDecline && c > o && pc < po && c >= po && o <= pc) { sig = "BUY"; str = 78; desc = "ابتلاع شرائي (Bullish Engulfing) بعد هبوط — انعكاس صعودي"; }
+    else if (priorRise && c < o && pc > po && c <= po && o >= pc) { sig = "SELL"; str = 78; desc = "ابتلاع بيعي (Bearish Engulfing) بعد صعود — انعكاس هبوطي"; }
+    // Pin bars (hammer after a decline / shooting star after a rise)
+    else if (priorDecline && lowerWick > body * 2 && upperWick < body && body / range < 0.4) { sig = "BUY"; str = 70; desc = "شمعة مطرقة (Hammer) بعد هبوط — رفض للأسعار المنخفضة"; }
+    else if (priorRise && upperWick > body * 2 && lowerWick < body && body / range < 0.4) { sig = "SELL"; str = 70; desc = "شمعة نجمة ساقطة (Shooting Star) بعد صعود — رفض للأسعار المرتفعة"; }
     // Confluence with S/R proximity boosts strength (structure levels)
     signals.push({ id: "candlestick", name: "نماذج الشموع", emoji: "🕯️", signal: sig, strength: str, desc });
   }
@@ -571,11 +669,13 @@ function calcStrategies(
     let str = 0;
     const look = Math.min(10, closes.length - 1);
     const roc = look > 0 ? (price - closes[closes.length - 1 - look]) / closes[closes.length - 1 - look] * 100 : 0;
-    if (roc > 0.35) { sig = "BUY"; str = Math.min(85, 55 + Math.round(roc * 8)); }
-    else if (roc < -0.35) { sig = "SELL"; str = Math.min(85, 55 + Math.round(Math.abs(roc) * 8)); }
+    // Move over `look` bars in ATRs: > 2.8 ATR ≈ the strongest 15% of moves.
+    const rocAtr = look > 0 && atr > 0 ? (price - closes[closes.length - 1 - look]) / atr : 0;
+    if (rocAtr > 2.8) { sig = "BUY"; str = Math.min(85, 55 + Math.round((rocAtr - 2.8) * 10)); }
+    else if (rocAtr < -2.8) { sig = "SELL"; str = Math.min(85, 55 + Math.round((Math.abs(rocAtr) - 2.8) * 10)); }
     signals.push({ id: "momentum_roc", name: "الزخم (ROC)", emoji: "🚀", signal: sig, strength: str,
       desc: `معدّل التغيّر خلال ${look} شمعة: ${roc >= 0 ? "+" : ""}${roc.toFixed(3)}% — ${
-        roc > 0.35 ? "زخم صاعد" : roc < -0.35 ? "زخم هابط" : "زخم ضعيف/محايد"
+        rocAtr > 2.8 ? "زخم صاعد" : rocAtr < -2.8 ? "زخم هابط" : "زخم ضعيف/محايد"
       }` });
   }
 
@@ -586,6 +686,7 @@ function calcStrategies(
 function calcFilters(
   price: number, sma20: number, sma50: number, sma200: number | null,
   rsi: number, atr: number, closes: number[],
+  opts: { market24x7?: boolean; highs?: number[]; lows?: number[] } = {},
 ): FilterResult[] {
   const filters: FilterResult[] = [];
 
@@ -596,20 +697,33 @@ function calcFilters(
     filters.push({ id: "trend_filter", name: "الاتجاه الرئيسي", emoji: "🧭",
       passed: true, allowsBuy: bull, allowsSell: !bull,
       desc: bull
-        ? `📈 اتجاه صاعد (السعر فوق ${sma200 ? "SMA200" : "SMA50"}) — يفضّل البيع يُصفَّى`
-        : `📉 اتجاه هابط (السعر تحت ${sma200 ? "SMA200" : "SMA50"}) — يفضّل الشراء يُصفَّى` });
+        ? `📈 اتجاه صاعد (السعر فوق ${sma200 ? "SMA200" : "SMA50"}) — الشراء مع الاتجاه، والبيع عكسه`
+        : `📉 اتجاه هابط (السعر تحت ${sma200 ? "SMA200" : "SMA50"}) — البيع مع الاتجاه، والشراء عكسه` });
   }
 
-  // 2 — Volatility Filter (ATR ratio)
+  // 2 — Volatility regime: current volatility vs its OWN long-run average
+  // (ATR14 / mean true range over the last 100 bars). Previously ATR was divided
+  // by the mean close-to-close move of the same 20 bars — two measures of the
+  // same thing, so the ratio was ~1.5 regardless of the regime.
   {
-    const avgMove = calcSMA(closes.slice(-20).map((c, i, a) => i > 0 ? Math.abs(c - a[i - 1]) : 0).slice(1), 14);
-    const ratio = avgMove > 0 ? atr / avgMove : 1;
-    const high = ratio > 2.8;
-    const low  = ratio < 0.35;
+    let cur: number, base: number;
+    if (opts.highs && opts.lows && opts.highs.length === closes.length) {
+      const trs = trueRanges(opts.highs, opts.lows, closes);
+      cur = atr;
+      const tail = trs.slice(-100);
+      base = tail.reduce((x, y) => x + y, 0) / (tail.length || 1);
+    } else {
+      const moves = closes.slice(1).map((c, i) => Math.abs(c - closes[i]));
+      const avg = (a: number[]) => a.reduce((x, y) => x + y, 0) / (a.length || 1);
+      cur = avg(moves.slice(-14)); base = avg(moves.slice(-100));
+    }
+    const ratio = base > 0 ? cur / base : 1;
+    const high = ratio > 2.0;
+    const low  = ratio < 0.5;
     filters.push({ id: "volatility_filter", name: "فلتر التقلب", emoji: "📉",
       passed: !high, allowsBuy: !high, allowsSell: !high,
-      desc: high ? `⚠️ تقلب مفرط (${ratio.toFixed(2)}x) — خطر عالٍ` :
-            low  ? `😴 تقلب منخفض جداً (${ratio.toFixed(2)}x) — سوق راكد` :
+      desc: high ? `⚠️ تقلب مفرط (${ratio.toFixed(2)}x المعدل) — خطر عالٍ` :
+            low  ? `😴 تقلب منخفض جداً (${ratio.toFixed(2)}x المعدل) — سوق راكد` :
             `✅ تقلب طبيعي (${ratio.toFixed(2)}x المعدل)` });
   }
 
@@ -622,8 +736,12 @@ function calcFilters(
       desc: `RSI = ${rsi.toFixed(1)} — ${buyOk && sellOk ? "يسمح بكلا الاتجاهين" : buyOk ? "✅ يدعم الشراء فقط" : "✅ يدعم البيع فقط"}` });
   }
 
-  // 4 — Session Filter (UTC)
-  {
+  // 4 — Session Filter (UTC) — FX sessions don't apply to 24/7 crypto markets
+  if (opts.market24x7) {
+    filters.push({ id: "session_filter", name: "فلتر الجلسة", emoji: "🕐",
+      passed: true, allowsBuy: true, allowsSell: true,
+      desc: "سوق يعمل 24/7 — فلتر جلسات الفوركس لا ينطبق" });
+  } else {
     const h = new Date().getUTCHours();
     const overlap  = h >= 13 && h < 16;
     const london   = h >= 8  && h < 16;
@@ -642,5 +760,6 @@ function calcFilters(
 export {
   calcSMA, calcEMA, calcRSI, calcMACD, calcBB, calcATR, calcStochastic,
   calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters,
+  spreadCostPct, TYPICAL_SPREAD, toUtcMs,
 };
 export type { StrategySignal, FilterResult };

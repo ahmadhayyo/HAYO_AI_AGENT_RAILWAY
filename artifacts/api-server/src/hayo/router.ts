@@ -7,12 +7,18 @@ import { router, publicProcedure, protectedProcedure, adminProcedure, tradingPro
 import { reverseEngineerRouter } from "./reverse-engineer-router";
 import { aiAgentRouter } from "./ai-agent-router";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
-import { fetchFromOanda, fetchFromYahoo, fetchRealtimePrice } from "./market-data";
+import { fetchFromOanda, fetchFromYahoo, fetchRealtimePrice, dropFormingCandle } from "./market-data";
 import {
   calcSMA, calcEMA, calcRSI, calcMACD, calcBB, calcATR, calcStochastic,
-  calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters,
+  calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
   type StrategySignal, type FilterResult,
 } from "./market-analysis";
+
+// Spread cost (as % of a 1.5×ATR stop) above which a trade is not worth taking:
+// the entry alone already gives up this much of the risk. Measured on 2018-19
+// OANDA data: 1-min ≈ 70-110%, 5-min ≈ 30-45%, 15-min ≈ 15-25%, 1h ≈ 7-12%.
+const COST_BLOCK_PCT = Number(process.env.HAYO_COST_BLOCK_PCT ?? 25); // 0 disables the block
+const COST_WARN_PCT = 12;
 
 // ─── Market data provider chain: OANDA → Yahoo → TwelveData ──────────────
 // OANDA/Yahoo fallbacks live in ./market-data (shared with the Telegram bot).
@@ -21,7 +27,9 @@ async function fetchFromTwelveData(url: string): Promise<any> {
   for (let attempt = 0; attempt < 8; attempt++) {
     const apiKey = getTwelveDataKey();
     if (!apiKey) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا توجد مفاتيح TwelveData متاحة" });
-    const fullUrl = url.replace("__API_KEY__", apiKey);
+    // timezone=UTC: candle datetimes are then unambiguous (used for pivots and
+    // for dropping the still-forming candle).
+    const fullUrl = url.replace("__API_KEY__", apiKey) + (url.includes("timezone=") ? "" : "&timezone=UTC");
     try {
       const res = await fetch(fullUrl, { signal: AbortSignal.timeout(12000) });
       if (res.status === 429) {
@@ -49,7 +57,7 @@ async function fetchFromTwelveData(url: string): Promise<any> {
   throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "نفد رصيد جميع مفاتيح TwelveData اليوم — يتجدد غداً" });
 }
 
-async function fetchTwelveData(url: string): Promise<any> {
+async function fetchTwelveData(url: string, opts: { includeForming?: boolean } = {}): Promise<any> {
   // Parse the TwelveData-style URL so the fallbacks can reuse symbol/interval/size.
   let symbol = "", interval = "5min", outputsize = 100;
   try {
@@ -59,12 +67,16 @@ async function fetchTwelveData(url: string): Promise<any> {
     outputsize = parseInt(u.searchParams.get("outputsize") || "100", 10) || 100;
   } catch { /* fall through to TwelveData */ }
 
+  // Every provider is normalised to CLOSED candles only (see dropFormingCandle).
+  // The live chart (getCandles) opts out so it still shows the developing bar.
+  const closedOnly = (d: any) => (!opts.includeForming && d && Array.isArray(d.values) ? { ...d, values: dropFormingCandle(d.values, interval) } : d);
+
   // 1) OANDA — broker-grade, only if OANDA_API_TOKEN is configured
-  try { const o = await fetchFromOanda(symbol, interval, outputsize); if (o) return o; } catch { /* try next */ }
+  try { const o = await fetchFromOanda(symbol, interval, outputsize); if (o) return closedOnly(o); } catch { /* try next */ }
   // 2) Yahoo Finance — keyless universal fallback (covers crypto + indices too)
-  try { const y = await fetchFromYahoo(symbol, interval, outputsize); if (y) return y; } catch { /* try next */ }
+  try { const y = await fetchFromYahoo(symbol, interval, outputsize); if (y) return closedOnly(y); } catch { /* try next */ }
   // 3) TwelveData — original key-rotation path
-  return await fetchFromTwelveData(url);
+  return closedOnly(await fetchFromTwelveData(url));
 }
 
 import {
@@ -118,7 +130,10 @@ async function evaluateSignalJournal(): Promise<void> {
     USOIL: "CL", US30: "DJIA",
   };
   const now = Date.now();
-  const EXPIRE_MS = 5 * 24 * 60 * 60 * 1000;
+  // A signal stays open for 5 days or 60 bars of its timeframe, whichever is
+  // longer (a daily signal needs weeks, not 5 days, to reach its target).
+  const TF_MS: Record<string, number> = { "1min": 6e4, "5min": 3e5, "15min": 9e5, "30min": 18e5, "1h": 36e5, "4h": 144e5, "1day": 864e5 };
+  const expireMs = (tf: string) => Math.max(5 * 864e5, 60 * (TF_MS[tf] ?? 36e5));
   // Group by pair+timeframe to reuse one candle fetch per group.
   const groups = new Map<string, any[]>();
   for (const s of open) {
@@ -133,7 +148,7 @@ async function evaluateSignalJournal(): Promise<void> {
     try {
       const td = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${timeframe}&outputsize=200&apikey=__API_KEY__`);
       if (td?.values && Array.isArray(td.values)) {
-        candles = td.values.map((c: any) => ({ high: parseFloat(c.high), low: parseFloat(c.low), time: Date.parse(c.datetime) })).filter((c: any) => !Number.isNaN(c.time));
+        candles = td.values.map((c: any) => ({ high: parseFloat(c.high), low: parseFloat(c.low), time: toUtcMs(String(c.datetime)) })).filter((c: any) => !Number.isNaN(c.time));
       }
     } catch { /* skip group this cycle */ }
     for (const s of sigs) {
@@ -150,7 +165,7 @@ async function evaluateSignalJournal(): Promise<void> {
         if (hitSL) { await closeSignalJournal(s.id, "loss", sl, -1).catch(() => {}); done = true; break; }
         if (hitTP) { const r = Math.abs((tp as number) - entry) / rDen; await closeSignalJournal(s.id, "win", tp, Number(r.toFixed(2))).catch(() => {}); done = true; break; }
       }
-      if (!done && now - created > EXPIRE_MS) {
+      if (!done && now - created > expireMs(timeframe)) {
         await closeSignalJournal(s.id, "expired", null, null).catch(() => {});
       }
     }
@@ -158,6 +173,66 @@ async function evaluateSignalJournal(): Promise<void> {
 }
 setInterval(() => { evaluateSignalJournal().catch(() => {}); }, 15 * 60 * 1000);
 setTimeout(() => { evaluateSignalJournal().catch(() => {}); }, 60 * 1000);
+
+// ── Telegram delivery targets for a user's trading messages ────────────
+// The server bot + TELEGRAM_OWNER_CHAT_ID belong to the platform owner, so only
+// admins may send there. Everyone else can only reach their OWN bot and the
+// chats that explicitly /start-ed it (telegram_chats, receiveSignals=true).
+async function resolveTelegramTargets(user: { id: number; role?: string | null }): Promise<{ botToken: string | null; chatIds: string[]; isOwnerChannel: boolean }> {
+  const envToken = process.env.TELEGRAM_BOT_TOKEN;
+  const ownerChat = process.env.TELEGRAM_OWNER_CHAT_ID;
+  if (user.role === "admin" && envToken && ownerChat) {
+    return { botToken: envToken, chatIds: [ownerChat], isOwnerChannel: true };
+  }
+  const { db } = await import("@workspace/db");
+  const { telegramBots, telegramChats } = await import("@workspace/db/schema");
+  const { and, eq } = await import("drizzle-orm");
+  const [bot] = await db.select().from(telegramBots).where(eq(telegramBots.userId, user.id)).limit(1);
+  if (!bot?.isActive || !bot.botToken) return { botToken: null, chatIds: [], isOwnerChannel: false };
+  let chatIds: string[] = [];
+  try {
+    const chats = await db.select().from(telegramChats)
+      .where(and(eq(telegramChats.userId, user.id), eq(telegramChats.isActive, true), eq(telegramChats.receiveSignals, true)));
+    chatIds = chats.map((c: { chatId: string }) => c.chatId);
+  } catch { /* table may not exist yet on first deploy */ }
+  return { botToken: bot.botToken, chatIds, isOwnerChannel: false };
+}
+
+async function sendTelegramToTargets(
+  targets: { botToken: string | null; chatIds: string[] },
+  text: string,
+  parseMode?: "HTML" | "Markdown",
+): Promise<number> {
+  if (!targets.botToken) return 0;
+  let sent = 0;
+  for (const chatId of targets.chatIds) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${targets.botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text, ...(parseMode ? { parse_mode: parseMode } : {}) }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r.ok) sent++;
+    } catch { /* try next chat */ }
+  }
+  return sent;
+}
+
+// ── OANDA credentials for a user's saved broker account (server-side only) ──
+async function getOandaConfigForUser(userId: number, brokerAccountId: number) {
+  const { db } = await import("@workspace/db");
+  const { brokerAccounts } = await import("@workspace/db/schema");
+  const { and, eq } = await import("drizzle-orm");
+  const { decryptCred } = await import("./services/trading-bridge.js");
+  const [acc] = await db.select().from(brokerAccounts)
+    .where(and(eq(brokerAccounts.id, brokerAccountId), eq(brokerAccounts.userId, userId)));
+  if (!acc) throw new TRPCError({ code: "NOT_FOUND", message: "حساب الوساطة غير موجود" });
+  if (acc.platform !== "oanda") throw new TRPCError({ code: "BAD_REQUEST", message: "هذا الحساب ليس حساب OANDA" });
+  const apiToken = decryptCred(acc.apiTokenEnc);
+  if (!apiToken || !acc.externalAccountId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "بيانات OANDA ناقصة لهذا الحساب" });
+  return { apiToken, accountId: acc.externalAccountId, environment: (acc.environment === "live" ? "live" : "practice") as "live" | "practice" };
+}
 
 // ── Desktop download token store (in-memory, 24h TTL) ────────────
 export const desktopDownloadMap = new Map<string, { zipPath: string; filename: string; expiresAt: number }>();
@@ -928,119 +1003,91 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
   }),
 
   // ==================== Trading (OANDA Forex) ====================
+  // Credentials are NEVER sent from the browser: every call names one of the
+  // caller's saved OANDA broker accounts, whose token is decrypted server-side.
   trading: router({
     // Test OANDA connection
     testOanda: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-      }))
-      .mutation(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
         const { testConnection } = await import("./services/oanda-trading.js");
-        return testConnection(input);
+        return testConnection(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId));
       }),
 
     // Get account summary
     accountInfo: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-      }))
-      .query(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number() }))
+      .query(async ({ input, ctx }) => {
         const { getAccountInfo } = await import("./services/oanda-trading.js");
-        return getAccountInfo(input);
+        return getAccountInfo(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId));
       }),
 
     // Get live prices
     prices: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-        instruments: z.array(z.string()),
-      }))
-      .query(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number(), instruments: z.array(z.string().regex(/^[A-Z0-9]+_[A-Z0-9]+$/)).min(1).max(20) }))
+      .query(async ({ input, ctx }) => {
         const { getPrices } = await import("./services/oanda-trading.js");
-        return getPrices(input, input.instruments);
+        return getPrices(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId), input.instruments);
       }),
 
-    // Place order
+    // Place order — a protective stop-loss is mandatory
     placeOrder: tradingProcedure
       .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-        instrument: z.string(),
-        units: z.number(),
+        brokerAccountId: z.number(),
+        instrument: z.string().regex(/^[A-Z0-9]+_[A-Z0-9]+$/),
+        units: z.number().int().refine(u => u !== 0, "units must be non-zero"),
         type: z.enum(["MARKET", "LIMIT", "STOP"]).default("MARKET"),
-        price: z.number().optional(),
-        stopLossPrice: z.number().optional(),
-        takeProfitPrice: z.number().optional(),
+        price: z.number().positive().optional(),
+        stopLossPrice: z.number().positive(),
+        takeProfitPrice: z.number().positive().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { placeOrder } = await import("./services/oanda-trading.js");
         return placeOrder(
-          { apiToken: input.apiToken, accountId: input.accountId, environment: input.environment },
+          await getOandaConfigForUser(ctx.user.id, input.brokerAccountId),
           { instrument: input.instrument, units: input.units, type: input.type, price: input.price, stopLossPrice: input.stopLossPrice, takeProfitPrice: input.takeProfitPrice }
         );
       }),
 
     // Get open positions
     positions: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-      }))
-      .query(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number() }))
+      .query(async ({ input, ctx }) => {
         const { getOpenPositions } = await import("./services/oanda-trading.js");
-        return getOpenPositions(input);
+        return getOpenPositions(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId));
       }),
 
     // Get open trades
     trades: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-      }))
-      .query(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number() }))
+      .query(async ({ input, ctx }) => {
         const { getOpenTrades } = await import("./services/oanda-trading.js");
-        return getOpenTrades(input);
+        return getOpenTrades(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId));
       }),
 
     // Close trade
     closeTrade: tradingProcedure
-      .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
-        tradeId: z.string(),
-      }))
-      .mutation(async ({ input }) => {
+      .input(z.object({ brokerAccountId: z.number(), tradeId: z.string().regex(/^\d+$/) }))
+      .mutation(async ({ input, ctx }) => {
         const { closeTrade } = await import("./services/oanda-trading.js");
-        return closeTrade(input, input.tradeId);
+        return closeTrade(await getOandaConfigForUser(ctx.user.id, input.brokerAccountId), input.tradeId);
       }),
 
-    // Auto-execute signal from TradingAnalysis page
+    // Auto-execute a signal — stop-loss mandatory, risk-based sizing
     autoExecute: tradingProcedure
       .input(z.object({
-        apiToken: z.string(),
-        accountId: z.string(),
-        environment: z.enum(["practice", "live"]).default("practice"),
+        brokerAccountId: z.number(),
         pair: z.string(),
         direction: z.enum(["BUY", "SELL"]),
         confidence: z.number().min(0).max(100),
-        stopLoss: z.number().optional(),
-        takeProfit: z.number().optional(),
+        stopLoss: z.number().positive(),
+        takeProfit: z.number().positive().optional(),
         riskPercent: z.number().min(0.1).max(5).default(1),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { autoExecuteSignal } = await import("./services/oanda-trading.js");
         return autoExecuteSignal(
-          { apiToken: input.apiToken, accountId: input.accountId, environment: input.environment },
+          await getOandaConfigForUser(ctx.user.id, input.brokerAccountId),
           { pair: input.pair, direction: input.direction, confidence: input.confidence, stopLoss: input.stopLoss, takeProfit: input.takeProfit },
           input.riskPercent
         );
@@ -1049,7 +1096,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
     getCandles: tradingProcedure
       .input(z.object({
         pair: z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
-        interval: z.enum(["1min", "5min", "15min", "30min", "1h"]).default("1h"),
+        interval: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1day"]).default("1h"),
         outputsize: z.number().min(5).max(200).default(120),
       }))
       .mutation(async ({ input }) => {
@@ -1064,7 +1111,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         };
 
         const symbol = symbolMap[input.pair] || input.pair;
-        const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.interval}&outputsize=${input.outputsize}&apikey=__API_KEY__`);
+        const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.interval}&outputsize=${input.outputsize}&apikey=__API_KEY__`, { includeForming: true });
         if (data.status === "error" || !data.values) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: data.message || "فشل جلب البيانات" });
         }
@@ -1458,7 +1505,6 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         platform: z.enum(["quotex", "iqoption", "pocketoption", "olymptrade", "oanda", "mt4", "mt5"]),
         accountEmail: z.string().email().optional().or(z.literal("")),
         accountName: z.string().min(1).max(128).optional(),
-        accountPassword: z.string().min(1).optional(),
         apiToken: z.string().min(1).optional(),
         apiSecret: z.string().min(1).optional(),
         externalAccountId: z.string().optional(),
@@ -1477,19 +1523,17 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         // Validate per-platform required fields
         const isOanda = input.platform === "oanda";
         const isMT = input.platform === "mt4" || input.platform === "mt5";
-        const isBinary = !isOanda && !isMT;
 
-        if (isBinary && (!input.accountEmail || !input.accountPassword)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "البريد الإلكتروني وكلمة المرور مطلوبان لمنصات الخيارات الثنائية" });
-        }
+        // Platform passwords are never collected: nothing can use them (no official
+        // API for binary options, no MT bridge yet) so storing them is pure liability.
         if (isOanda && (!input.apiToken || !input.externalAccountId)) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "OANDA يتطلب API Token + Account ID" });
         }
-        if (isMT && (!input.externalAccountId || !input.accountPassword || !input.serverHost)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "MT4/MT5 يتطلب رقم الحساب + كلمة المرور + اسم السيرفر" });
+        if (isMT && (!input.externalAccountId || !input.serverHost)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "MT4/MT5 يتطلب رقم الحساب + اسم السيرفر" });
         }
 
-        const accountPasswordEnc = encryptCred(input.accountPassword);
+        const accountPasswordEnc = null;
         const apiTokenEnc = encryptCred(input.apiToken);
         const apiSecretEnc = encryptCred(input.apiSecret);
 
@@ -1518,7 +1562,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           environment: input.environment,
           autoTradeEnabled: input.autoTradeEnabled,
           riskPercent: input.riskPercent.toString(),
-          connectionStatus: test.success ? "connected" : "error",
+          connectionStatus: test.status,
           connectionMessage: test.message,
           lastConnectedAt: test.success ? new Date() : null,
           balance: input.balance?.toString(),
@@ -1548,7 +1592,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         const r = await testBrokerConnection(account as any);
         await db.update(brokerAccounts)
           .set({
-            connectionStatus: r.success ? "connected" : "error",
+            connectionStatus: r.status,
             connectionMessage: r.message,
             lastConnectedAt: r.success ? new Date() : account.lastConnectedAt,
             updatedAt: new Date(),
@@ -1584,9 +1628,9 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
       }))
       .mutation(async ({ ctx, input }) => {
         const { db } = await import("@workspace/db");
-        const { brokerAccounts, brokerTrades, telegramBots } = await import("@workspace/db/schema");
+        const { brokerAccounts, brokerTrades } = await import("@workspace/db/schema");
         const { and, eq } = await import("drizzle-orm");
-        const { executeSignalOnBroker, broadcastToTelegram, formatSignalMessage } = await import("./services/trading-bridge.js");
+        const { executeSignalOnBroker, formatSignalMessage } = await import("./services/trading-bridge.js");
 
         const [account] = await db.select().from(brokerAccounts)
           .where(and(eq(brokerAccounts.id, input.accountId), eq(brokerAccounts.userId, ctx.user.id)));
@@ -1619,36 +1663,10 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           signalSource: "HAYO Auto-Bridge",
         });
 
-        // Broadcast to user's Telegram bot + global bot
-        const userBots = await db.select().from(telegramBots)
-          .where(eq(telegramBots.userId, ctx.user.id)).limit(1);
-        const userBotToken = userBots[0]?.botToken || null;
-
-        // Pull persisted chat_ids from telegram_chats (filled by /start in the webhook)
-        let userChatIds: number[] = [];
-        try {
-          const { telegramChats } = await import("@workspace/db/schema");
-          const chats = await db.select().from(telegramChats)
-            .where(and(eq(telegramChats.userId, ctx.user.id), eq(telegramChats.isActive, true)));
-          userChatIds = chats
-            .filter((c: any) => c.receiveSignals)
-            .map((c: any) => parseInt(c.chatId, 10))
-            .filter((n: number) => !Number.isNaN(n));
-        } catch { /* table may not exist yet on first deploy */ }
-
-        // Fallback: discover chatIds from the bot's recent updates if persistence empty
-        if (userBotToken && userChatIds.length === 0) {
-          try {
-            const upd = await fetch(`https://api.telegram.org/bot${userBotToken}/getUpdates?limit=20`).then(r => r.json()) as any;
-            if (upd?.ok && Array.isArray(upd.result)) {
-              const seen = new Set<number>();
-              for (const u of upd.result) {
-                const id = u?.message?.chat?.id;
-                if (typeof id === "number" && !seen.has(id)) { seen.add(id); userChatIds.push(id); }
-              }
-            }
-          } catch {/* ignore */}
-        }
+        // Notify ONLY this user's own channels: their bot + chats that /start-ed it
+        // (admins get the owner channel). Never the owner's chat for other users,
+        // and never "whoever messaged the bot recently" (getUpdates).
+        const targets = await resolveTelegramTargets(ctx.user);
 
         const text = formatSignalMessage(
           { pair: input.pair, direction: input.direction, confidence: input.confidence,
@@ -1658,13 +1676,11 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           result,
         );
 
-        const broadcast = await broadcastToTelegram({
-          userBotToken,
-          userChatIds,
-          globalBotToken: process.env.TELEGRAM_BOT_TOKEN || null,
-          globalChatId: process.env.TELEGRAM_OWNER_CHAT_ID || null,
-          text,
-        });
+        const sentCount = await sendTelegramToTargets(targets, text, "Markdown");
+        const broadcast = {
+          sentToUserBot: !targets.isOwnerChannel && sentCount > 0,
+          sentToGlobalBot: targets.isOwnerChannel && sentCount > 0,
+        };
 
         return { ...result, telegram: broadcast };
       }),
@@ -3351,7 +3367,7 @@ const root = document.getElementById('root');`;
     quickScan: protectedProcedure
       .input(z.object({
         pairs: z.array(z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"])).default(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
-        timeframe: z.enum(["1min", "5min", "15min", "30min", "1h"]).default("15min"),
+        timeframe: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1day"]).default("15min"),
       }))
       .mutation(async ({ input }) => {
         const symbolMap: Record<string, string> = {
@@ -3376,7 +3392,7 @@ const root = document.getElementById('root');`;
 
         async function scanOnePair(pair: string) {
             const symbol = symbolMap[pair];
-            const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=60&apikey=__API_KEY__`);
+            const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=250&apikey=__API_KEY__`);
             if (data.status === "error" || !data.values || !Array.isArray(data.values)) {
               throw new Error(`${pair}: ${data.message || "فشل"}`);
             }
@@ -3396,7 +3412,7 @@ const root = document.getElementById('root');`;
             const atr  = calcATR(highs, lows, closes);
 
             const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, undefined, undefined, undefined, undefined);
-            const filters    = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes);
+            const filters    = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes, { highs, lows, market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
             const buySigs  = strategies.filter(s => s.signal === "BUY").length;
             const sellSigs = strategies.filter(s => s.signal === "SELL").length;
@@ -3513,12 +3529,14 @@ ${scanSummary}
       }),
 
     // ── Convergence (التطابق) ────────────────────────────────────────
+    // The scanner is a single global, owner-facing service: anyone may read its
+    // status, but only admins may reconfigure it, trigger scans or send tests.
     convergenceStatus: protectedProcedure.query(async () => {
       const { getConvergenceConfig, getConvergenceSignals } = await import("../telegram/bot.js");
       return { config: getConvergenceConfig(), signals: getConvergenceSignals() };
     }),
 
-    convergenceToggle: protectedProcedure
+    convergenceToggle: adminProcedure
       .input(z.object({ enabled: z.boolean() }))
       .mutation(async ({ input }) => {
         const { setConvergenceConfig, getConvergenceConfig } = await import("../telegram/bot.js");
@@ -3526,7 +3544,7 @@ ${scanSummary}
         return { config: getConvergenceConfig() };
       }),
 
-    convergenceSetInterval: protectedProcedure
+    convergenceSetInterval: adminProcedure
       .input(z.object({ intervalMinutes: z.number().min(1).max(15) }))
       .mutation(async ({ input }) => {
         const { setConvergenceConfig, getConvergenceConfig } = await import("../telegram/bot.js");
@@ -3534,14 +3552,14 @@ ${scanSummary}
         return { config: getConvergenceConfig() };
       }),
 
-    convergenceScanNow: protectedProcedure.mutation(async () => {
+    convergenceScanNow: adminProcedure.mutation(async () => {
       const { triggerConvergenceScan, getConvergenceSignals } = await import("../telegram/bot.js");
       const fn = triggerConvergenceScan();
       if (fn) await fn();
       return { signals: getConvergenceSignals() };
     }),
 
-    convergenceTestSignal: protectedProcedure.mutation(async () => {
+    convergenceTestSignal: adminProcedure.mutation(async () => {
       const { sendTestConvergenceSignal } = await import("../telegram/bot.js");
       const result = await sendTestConvergenceSignal();
       return { result };
@@ -3639,22 +3657,12 @@ ${scanSummary}
         })),
       }))
       .mutation(async ({ input, ctx }) => {
-        const botToken = process.env.TELEGRAM_BOT_TOKEN;
-        const chatId = process.env.TELEGRAM_OWNER_CHAT_ID;
-
-        if (!botToken) {
-          const { db } = await import("@workspace/db");
-          const { telegramBots } = await import("@workspace/db/schema");
-          const { eq } = await import("drizzle-orm");
-          const bots = await db.select().from(telegramBots)
-            .where(eq(telegramBots.userId, ctx.user.id)).limit(1);
-          if (!bots[0]?.isActive || !bots[0].botToken) {
-            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لم يتم ضبط بوت Telegram (TELEGRAM_BOT_TOKEN أو إعدادات البوت)" });
-          }
+        const targets = await resolveTelegramTargets(ctx.user);
+        if (!targets.botToken) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لم يتم ضبط بوت Telegram خاص بك — أضف بوتك من صفحة التكاملات" });
         }
-        const finalToken = botToken || "";
-        if (!chatId) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "TELEGRAM_OWNER_CHAT_ID غير مضبوط" });
+        if (targets.chatIds.length === 0) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا توجد محادثة مسجلة لبوتك — أرسل /start للبوت أولاً" });
         }
 
         const flagMap: Record<string, string> = {
@@ -3730,19 +3738,12 @@ ${scanSummary}
 
         const text = lines.join("\n");
 
-        const sendRes = await fetch(`https://api.telegram.org/bot${finalToken}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, text }),
-          signal: AbortSignal.timeout(10000),
-        });
-
-        if (!sendRes.ok) {
-          const err = await sendRes.json() as any;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `فشل الإرسال: ${err?.description || sendRes.statusText}` });
+        const sent = await sendTelegramToTargets(targets, text);
+        if (sent === 0) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "فشل الإرسال إلى Telegram" });
         }
 
-        return { success: true, chatId };
+        return { success: true, chatId: targets.chatIds[0] };
       }),
 
     // ── Auto Signal: Multi-Timeframe Cross Detection + Telegram Alert ──
@@ -3802,9 +3803,10 @@ ${scanSummary}
 
           for (const tf of timeframes) {
             try {
-              const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=100&apikey=__API_KEY__`;
-              const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
-              const data = await res.json() as any;
+              // fetchTwelveData substitutes the API key (the raw fetch sent the
+              // literal "__API_KEY__" and every request failed) and falls back
+              // to OANDA/Yahoo.
+              const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=250&apikey=__API_KEY__`);
               if (data.status === "error" || !data.values) continue;
 
               const candles = [...data.values].reverse() as any[];
@@ -3825,11 +3827,11 @@ ${scanSummary}
               const stoch = calcStochastic(closes, highs, lows);
               const williamsR = calcWilliamsR(closes, highs, lows);
               const adxVal = calcADX(highs, lows, closes);
-              const pivots = calcPivotPoints(highs, lows, closes);
+              const pivots = calcPivotPoints(highs, lows, closes, candles.map((c: any) => c.datetime));
               lastATR = atr;
 
               const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adxVal, pivots, opens);
-              const filters = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes);
+              const filters = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes, { highs, lows, market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
               const buys = strategies.filter(s => s.signal === "BUY").length;
               const sells = strategies.filter(s => s.signal === "SELL").length;
@@ -3884,6 +3886,10 @@ ${scanSummary}
             .sort((a, b) => b.strength - a.strength)
             .slice(0, 5)
             .map(s => `${s.emoji} ${s.name} (${s.strength}%)`);
+
+          // Skip setups where the spread alone eats too much of the 1.5×ATR stop.
+          const costPct = spreadCostPct(pair, lastATR);
+          if (COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) continue;
 
           // Calculate SL/TP based on ATR
           const slDistance = lastATR * 1.5;
@@ -4003,10 +4009,9 @@ ${scanSummary}
 
         // Send confirmed signals to Telegram (with AI analysis)
         if (input.sendToTelegram && aiConfirmedSignals.length > 0) {
-          const botToken = process.env.TELEGRAM_BOT_TOKEN;
-          const chatId = process.env.TELEGRAM_OWNER_CHAT_ID;
+          const targets = await resolveTelegramTargets(ctx.user);
 
-          if (botToken && chatId) {
+          if (targets.botToken && targets.chatIds.length > 0) {
             for (const sig of aiConfirmedSignals) {
               const sigEmoji = sig.signal === "BUY" ? "🟢" : "🔴";
               const sigLabel = sig.signal === "BUY" ? "شراء" : "بيع";
@@ -4060,15 +4065,8 @@ ${scanSummary}
                 `⚠️ للأغراض التعليمية فقط — ليست نصيحة مالية`,
               ].join("\n");
 
-              try {
-                await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" }),
-                  signal: AbortSignal.timeout(10000),
-                });
-              } catch (e: any) {
-                console.warn(`[AutoSignal] Failed to send to Telegram: ${e.message}`);
+              if (await sendTelegramToTargets(targets, msg, "HTML") === 0) {
+                console.warn(`[AutoSignal] Failed to send ${sig.pair} to Telegram`);
               }
             }
           }
@@ -4086,14 +4084,15 @@ ${scanSummary}
     analyzeMarket: protectedProcedure
       .input(z.object({
         pair: z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
-        timeframe: z.enum(["1min", "5min", "15min", "30min", "1h"]),
+        timeframe: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1day"]),
       }))
       .mutation(async ({ input, ctx }) => {
         const creditCheck = await checkCredits(ctx.user.id, "war_room");
         if (!creditCheck.allowed) {
           throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: creditCheck.message || "نفدت نقاطك اليومية" });
         }
-        await deductCredits(ctx.user.id, "war_room");
+        // Credits are charged only once market data has been fetched (below) —
+        // a provider outage must not cost the user.
 
         // Map pair to TwelveData symbol
         const symbolMap: Record<string, string> = {
@@ -4108,9 +4107,11 @@ ${scanSummary}
 
         // Relevant currencies for each pair
         const pairCurrencies: Record<string, string[]> = {
-          EURUSD: ["EUR", "USD"], USDJPY: ["USD", "JPY"], GBPUSD: ["GBP", "USD"],
-          GBPJPY: ["GBP", "JPY"], XAUUSD: ["USD", "XAU"],
-          BTCUSD: ["BTC", "USD"], USDCHF: ["USD", "CHF"], AUDUSD: ["AUD", "USD"], XAGUSD: ["XAG", "USD"],
+          EURUSD: ["EUR", "USD"], USDJPY: ["USD", "JPY"], GBPUSD: ["GBP", "USD"], GBPJPY: ["GBP", "JPY"],
+          USDCHF: ["USD", "CHF"], AUDUSD: ["AUD", "USD"], NZDUSD: ["NZD", "USD"], USDCAD: ["USD", "CAD"],
+          EURGBP: ["EUR", "GBP"], EURJPY: ["EUR", "JPY"], EURCHF: ["EUR", "CHF"], AUDCAD: ["AUD", "CAD"],
+          // Metals, crypto, oil and the Dow are USD-priced: USD releases move them.
+          XAUUSD: ["USD"], XAGUSD: ["USD"], BTCUSD: ["USD"], ETHUSD: ["USD"], USOIL: ["USD", "CAD"], US30: ["USD"],
         };
 
         const symbol = symbolMap[input.pair];
@@ -4118,12 +4119,12 @@ ${scanSummary}
 
         // Higher-timeframe map for MTF bias (does NOT replace the selected TF —
         // adds top-down context on top of it; all timeframes remain available).
-        const htfMap: Record<string, string> = { "1min": "15min", "5min": "1h", "15min": "4h", "30min": "4h", "1h": "1day" };
+        const htfMap: Record<string, string> = { "1min": "15min", "5min": "1h", "15min": "4h", "30min": "4h", "1h": "1day", "4h": "1day", "1day": "1week" };
         const htfInterval = htfMap[input.timeframe] || "4h";
 
         // Fetch OHLCV + Economic News + Higher-TF in parallel
         const [tdRes, newsRes, htfRes] = await Promise.allSettled([
-          fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=100&apikey=__API_KEY__`),
+          fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${input.timeframe}&outputsize=250&apikey=__API_KEY__`),
           fetch("https://nfs.faireconomy.media/ff_calendar_thisweek.json",
             { signal: AbortSignal.timeout(8000) }).then(r => r.json()).catch(() => []),
           fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${htfInterval}&outputsize=60&apikey=__API_KEY__`).catch(() => null),
@@ -4137,6 +4138,7 @@ ${scanSummary}
         if (tdData.status === "error" || !tdData.values || !Array.isArray(tdData.values)) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: tdData.message || "فشل جلب بيانات السوق من TwelveData" });
         }
+        await deductCredits(ctx.user.id, "war_room");
 
         // Extract economic news for relevant currencies + LIVE proximity filter
         let newsContext = "";
@@ -4277,12 +4279,12 @@ ${scanSummary}
         const atr   = calcATR(highs, lows, closes);
         const stoch = calcStochastic(closes, highs, lows);
         const williamsR = calcWilliamsR(closes, highs, lows);
-        const pivots = calcPivotPoints(highs, lows, closes);
+        const pivots = calcPivotPoints(highs, lows, closes, candles.map((c: any) => c.datetime));
         const adx   = calcADX(highs, lows, closes);
 
         // Calculate strategies and filters
         const strategySignals = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adx, pivots, opens);
-        const filterResults   = calcFilters(currentPrice, sma20, sma50, sma200, rsi, atr, closes);
+        const filterResults   = calcFilters(currentPrice, sma20, sma50, sma200, rsi, atr, closes, { highs, lows, market24x7: input.pair === "BTCUSD" || input.pair === "ETHUSD" });
 
         // Strategy consensus
         const buySigs  = strategySignals.filter(s => s.signal === "BUY").length;
@@ -4327,7 +4329,18 @@ ${scanSummary}
           let direction: "BUY" | "SELL" | "HOLD" = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
           let confidence = Math.round(Math.abs(norm) * 100);
 
-          // 5) LIVE news gate overrides
+          // 5) Trading-cost gate: on short timeframes the spread eats most of the stop.
+          const costPct = spreadCostPct(input.pair, atr);
+          if (COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) {
+            direction = "HOLD";
+            confidence = Math.min(confidence, 20);
+            reasons.unshift(`⛔ تكلفة السبريد ≈ ${costPct.toFixed(0)}% من وقف الخسارة على هذا الإطار — الصفقة خاسرة إحصائياً قبل أن تبدأ؛ استخدم إطاراً أعلى (1h أو أكثر)`);
+          } else if (costPct !== null && costPct >= COST_WARN_PCT) {
+            confidence = Math.round(confidence * 0.7);
+            reasons.unshift(`⚠️ تكلفة السبريد ≈ ${costPct.toFixed(0)}% من وقف الخسارة — مرتفعة`);
+          }
+
+          // 6) LIVE news gate overrides
           if (newsRisk.dangerZone) {
             direction = "HOLD";
             confidence = Math.min(confidence, 25);
@@ -4523,9 +4536,8 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
             // Fetch all 3 timeframes in parallel
             const [res1, res5, res15] = await Promise.all(
               timeframes.map(async (tf) => {
-                const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=60&apikey=__API_KEY__`;
-                const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
-                return r.json() as Promise<any>;
+                // fetchTwelveData substitutes the API key (see autoSignal).
+                return fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=250&apikey=__API_KEY__`);
               })
             );
 
@@ -4547,7 +4559,7 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
               const atr = calcATR(highs, lows, closes);
               const stoch = calcStochastic(closes, highs, lows);
               const adxVal = calcADX(highs, lows, closes);
-              const pivotsVal = calcPivotPoints(highs, lows, closes);
+              const pivotsVal = calcPivotPoints(highs, lows, closes, candles.map((c: any) => c.datetime));
 
               const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, calcWilliamsR(closes, highs, lows), adxVal, pivotsVal, opens);
               const buys = strategies.filter(s => s.signal === "BUY").length;
@@ -4605,50 +4617,37 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
         // Send alerts to Telegram if any
         if (alerts.length > 0) {
           try {
-            const { db } = await import("@workspace/db");
-            const { telegramBots } = await import("@workspace/db/schema");
-            const { eq } = await import("drizzle-orm");
+            const targets = await resolveTelegramTargets(ctx.user);
 
-            const bots = await db.select().from(telegramBots).where(eq(telegramBots.userId, ctx.user.id)).limit(1);
-            const bot = bots[0];
+            if (targets.botToken && targets.chatIds.length > 0) {
+              for (const alert of alerts) {
+                const sigEmoji = alert.signal === "BUY" ? "🟢" : "🔴";
+                const sigLabel = alert.signal === "BUY" ? "شراء" : "بيع";
+                const now = new Date();
+                const utcTime = now.toISOString().slice(11, 16) + " UTC";
 
-            if (bot?.isActive && bot.botToken) {
-              const chatId = process.env.TELEGRAM_OWNER_CHAT_ID;
-              if (chatId) {
-                for (const alert of alerts) {
-                  const sigEmoji = alert.signal === "BUY" ? "🟢" : "🔴";
-                  const sigLabel = alert.signal === "BUY" ? "شراء" : "بيع";
-                  const now = new Date();
-                  const utcTime = now.toISOString().slice(11, 16) + " UTC";
+                const lines = [
+                  `🚨 <b>إشارة تلقائية — تقاطع 3 فريمات</b>`,
+                  ``,
+                  `${alert.flag} <b>${alert.pair.replace(/(.{3})(.{3})/, "$1/$2")}</b> | ${sigEmoji} <b>${sigLabel}</b>`,
+                  `💰 السعر: <code>${alert.price}</code>  ⏱ ${utcTime}`,
+                  `━━━━ توافق الفريمات ━━━━`,
+                  `⚡ 1M: ${alert.tf1.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf1.buys}/${alert.tf1.buys + alert.tf1.sells} استراتيجية | RSI ${alert.tf1.rsi.toFixed(1)} | قوة ${alert.tf1.strength}%`,
+                  `🕐 5M: ${alert.tf5.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf5.buys}/${alert.tf5.buys + alert.tf5.sells} استراتيجية | RSI ${alert.tf5.rsi.toFixed(1)} | قوة ${alert.tf5.strength}%`,
+                  `🕒 15M: ${alert.tf15.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf15.buys}/${alert.tf15.buys + alert.tf15.sells} استراتيجية | RSI ${alert.tf15.rsi.toFixed(1)} | قوة ${alert.tf15.strength}%`,
+                  `━━━━ التأكيدات ━━━━`,
+                  `💪 ADX: ${alert.adxStrength.toFixed(1)} ${alert.adxStrength > 25 ? "📈 اتجاه قوي" : "➡️ ضعيف"}`,
+                  `🔄 Stochastic: ${alert.stochK.toFixed(1)} ${alert.stochK > 80 ? "⚠️ ذروة شراء" : alert.stochK < 20 ? "⚠️ ذروة بيع" : "✅"}`,
+                  `📍 ${alert.pivotLevel}`,
+                  `━━━━━━━━━━━━━━━━━━━━`,
+                  `┌──────────────────────────┐`,
+                  `│ ${sigEmoji} توافق: <b>${sigLabel}</b>    ثقة: <b>${alert.confidence}%</b> │`,
+                  `└──────────────────────────┘`,
+                  ``,
+                  `⚠️ للأغراض التعليمية فقط — ليس نصيحة مالية`,
+                ];
 
-                  const lines = [
-                    `🚨 <b>إشارة تلقائية — تقاطع 3 فريمات</b>`,
-                    ``,
-                    `${alert.flag} <b>${alert.pair.replace(/(.{3})(.{3})/, "$1/$2")}</b> | ${sigEmoji} <b>${sigLabel}</b>`,
-                    `💰 السعر: <code>${alert.price}</code>  ⏱ ${utcTime}`,
-                    `━━━━ توافق الفريمات ━━━━`,
-                    `⚡ 1M: ${alert.tf1.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf1.buys}/${alert.tf1.buys + alert.tf1.sells} استراتيجية | RSI ${alert.tf1.rsi.toFixed(1)} | قوة ${alert.tf1.strength}%`,
-                    `🕐 5M: ${alert.tf5.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf5.buys}/${alert.tf5.buys + alert.tf5.sells} استراتيجية | RSI ${alert.tf5.rsi.toFixed(1)} | قوة ${alert.tf5.strength}%`,
-                    `🕒 15M: ${alert.tf15.signal === "BUY" ? "🟢" : "🔴"} ${alert.tf15.buys}/${alert.tf15.buys + alert.tf15.sells} استراتيجية | RSI ${alert.tf15.rsi.toFixed(1)} | قوة ${alert.tf15.strength}%`,
-                    `━━━━ التأكيدات ━━━━`,
-                    `💪 ADX: ${alert.adxStrength.toFixed(1)} ${alert.adxStrength > 25 ? "📈 اتجاه قوي" : "➡️ ضعيف"}`,
-                    `🔄 Stochastic: ${alert.stochK.toFixed(1)} ${alert.stochK > 80 ? "⚠️ ذروة شراء" : alert.stochK < 20 ? "⚠️ ذروة بيع" : "✅"}`,
-                    `📍 ${alert.pivotLevel}`,
-                    `━━━━━━━━━━━━━━━━━━━━`,
-                    `┌──────────────────────────┐`,
-                    `│ ${sigEmoji} توافق: <b>${sigLabel}</b>    ثقة: <b>${alert.confidence}%</b> │`,
-                    `└──────────────────────────┘`,
-                    ``,
-                    `⚠️ للأغراض التعليمية فقط — ليس نصيحة مالية`,
-                  ];
-
-                  await fetch(`https://api.telegram.org/bot${bot.botToken}/sendMessage`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ chat_id: chatId, text: lines.join("\n"), parse_mode: "HTML" }),
-                    signal: AbortSignal.timeout(10000),
-                  });
-                }
+                await sendTelegramToTargets(targets, lines.join("\n"), "HTML");
               }
             }
           } catch (err: any) {

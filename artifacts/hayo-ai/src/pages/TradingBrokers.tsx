@@ -20,7 +20,7 @@ import {
   Home, Plus, Trash2, DollarSign, BarChart3, Loader2, RefreshCw,
   Wallet, Activity, Target, CheckCircle2, XCircle, Clock,
   ArrowUpRight, ArrowDownRight, AlertTriangle, ChevronDown, ChevronUp,
-  X, Eye, EyeOff, Lock, Wifi, WifiOff, Zap, Shield,
+  X, Wifi, WifiOff, Zap, Shield,
 } from "lucide-react";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 
@@ -78,8 +78,6 @@ function AddAccountModal({ onClose, onSuccess }: { onClose: () => void; onSucces
   const [platform, setPlatform] = useState<Platform>("quotex");
   const [accountName, setAccountName] = useState("");
   const [accountEmail, setAccountEmail] = useState("");
-  const [accountPassword, setAccountPassword] = useState("");
-  const [showPwd, setShowPwd] = useState(false);
   const [apiToken, setApiToken] = useState("");
   const [externalAccountId, setExternalAccountId] = useState("");
   const [serverHost, setServerHost] = useState("");
@@ -98,6 +96,7 @@ function AddAccountModal({ onClose, onSuccess }: { onClose: () => void; onSucces
     onSuccess: (acc: any) => {
       const tr = acc?.testResult;
       if (tr?.success) toast.success(`✅ ${tr.message}`);
+      else if (tr?.status === "unverified") toast.info(tr.message);
       else if (tr) toast.warning(`⚠ تم الحفظ لكن: ${tr.message}`);
       else toast.success("تم ربط الحساب");
       onSuccess(); onClose();
@@ -107,23 +106,18 @@ function AddAccountModal({ onClose, onSuccess }: { onClose: () => void; onSucces
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (isBinary && (!accountEmail || !accountPassword)) {
-      toast.error("البريد وكلمة المرور مطلوبان لمنصات الخيارات");
-      return;
-    }
     if (isApi && (!apiToken || !externalAccountId)) {
       toast.error("API Token + Account ID مطلوبان لـ OANDA");
       return;
     }
-    if (isMT && (!externalAccountId || !accountPassword || !serverHost)) {
-      toast.error("رقم الحساب + كلمة المرور + اسم السيرفر مطلوبة لـ MT4/MT5");
+    if (isMT && (!externalAccountId || !serverHost)) {
+      toast.error("رقم الحساب + اسم السيرفر مطلوبان لـ MT4/MT5");
       return;
     }
     addMutation.mutate({
       platform,
       accountName: accountName.trim() || undefined,
       accountEmail: accountEmail.trim() || undefined,
-      accountPassword: accountPassword || undefined,
       apiToken: apiToken || undefined,
       externalAccountId: externalAccountId || undefined,
       serverHost: serverHost || undefined,
@@ -176,34 +170,19 @@ function AddAccountModal({ onClose, onSuccess }: { onClose: () => void; onSucces
 
           {isBinary && (
             <>
+              <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3 text-xs text-amber-300 flex gap-2">
+                <Shield className="size-4 shrink-0" />
+                <span>هذه المنصة لا توفّر API رسمياً: لا يمكن التحقق من الحساب ولا التنفيذ الآلي. الإشارات تُرسل إلى Telegram لتنفذها يدوياً. لذلك لا نطلب كلمة المرور.</span>
+              </div>
               <div>
                 <label className="text-sm text-gray-400 mb-1 flex items-center gap-1.5">
-                  البريد الإلكتروني للمنصة <span className="text-red-400">*</span>
+                  البريد الإلكتروني للمنصة (اختياري — للتعريف فقط)
                 </label>
-                <input type="email" required value={accountEmail}
+                <input type="email" value={accountEmail}
                   onChange={(e) => setAccountEmail(e.target.value)}
                   placeholder="email@example.com"
                   className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500/50 text-sm"
                   dir="ltr" />
-              </div>
-              <div>
-                <label className="text-sm text-gray-400 mb-1 flex items-center gap-1.5">
-                  <Lock className="size-3.5" /> كلمة مرور المنصة <span className="text-red-400">*</span>
-                </label>
-                <div className="relative">
-                  <input type={showPwd ? "text" : "password"} required
-                    value={accountPassword} onChange={(e) => setAccountPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 pr-10 text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500/50 text-sm"
-                    dir="ltr" />
-                  <button type="button" onClick={() => setShowPwd(!showPwd)}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white">
-                    {showPwd ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                  <Shield className="size-3" /> يتم التشفير بـ AES قبل الحفظ — لا يصل أحد لكلمة المرور حتى نحن
-                </p>
               </div>
             </>
           )}
@@ -259,21 +238,9 @@ function AddAccountModal({ onClose, onSuccess }: { onClose: () => void; onSucces
                   className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500/50 text-sm"
                   dir="ltr" />
               </div>
-              <div>
-                <label className="text-sm text-gray-400 mb-1 flex items-center gap-1.5">
-                  <Lock className="size-3.5" /> كلمة المرور <span className="text-red-400">*</span>
-                </label>
-                <div className="relative">
-                  <input type={showPwd ? "text" : "password"} required
-                    value={accountPassword} onChange={(e) => setAccountPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 pr-10 text-white placeholder-gray-500 focus:outline-none focus:border-yellow-500/50 text-sm"
-                    dir="ltr" />
-                  <button type="button" onClick={() => setShowPwd(!showPwd)}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white">
-                    {showPwd ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                  </button>
-                </div>
+              <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3 text-xs text-amber-300 flex gap-2">
+                <Shield className="size-4 shrink-0" />
+                <span>جسر MT4/MT5 غير متوفر بعد: لا تحقق ولا تنفيذ آلي — الإشارات تُرسل إلى Telegram للتنفيذ اليدوي. لا نطلب كلمة المرور.</span>
               </div>
               <div>
                 <label className="text-sm text-gray-400 mb-1 flex items-center gap-1.5">
@@ -480,6 +447,13 @@ function ConnectionStatus({ status }: { status?: string | null }) {
       </span>
     );
   }
+  if (status === "unverified") {
+    return (
+      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1">
+        <WifiOff className="size-3" /> غير متحقق — يدوي
+      </span>
+    );
+  }
   if (status === "error") {
     return (
       <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20 flex items-center gap-1">
@@ -510,7 +484,7 @@ export default function TradingBrokers() {
     onError: (err) => toast.error(err.message),
   });
   const testConnMut = trpc.hayo.broker.testConnection.useMutation({
-    onSuccess: (r) => { r.success ? toast.success(r.message) : toast.error(r.message); accounts.refetch(); },
+    onSuccess: (r) => { r.success ? toast.success(r.message) : r.status === "unverified" ? toast.info(r.message) : toast.error(r.message); accounts.refetch(); },
     onError: (err) => toast.error(err.message),
   });
   const setAutoMut = trpc.hayo.broker.setAutoTrade.useMutation({

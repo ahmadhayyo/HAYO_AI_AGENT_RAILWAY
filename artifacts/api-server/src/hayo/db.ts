@@ -276,6 +276,47 @@ export async function ensureSubscriptionSchema(): Promise<void> {
 // Standalone table (not in the Drizzle schema package) — created idempotently
 // at boot. Tracks each logged forex signal and its realized outcome so the
 // owner can measure win-rate / profit-factor / avg R per pair.
+// ─── Bot settings (key → JSON) ─────────────────────────────────────────
+// Persists the Telegram bot's auto-signal / convergence settings so they
+// survive restarts and redeploys (they were in-memory only).
+let botSettingsReady = false;
+async function ensureBotSettingsSchema(): Promise<boolean> {
+  if (!db) return false;
+  if (botSettingsReady) return true;
+  await db.execute(sql.raw(`
+    CREATE TABLE IF NOT EXISTS "botSettings" (
+      "key" varchar(64) PRIMARY KEY,
+      "value" jsonb NOT NULL,
+      "updatedAt" timestamp NOT NULL DEFAULT now()
+    )`));
+  botSettingsReady = true;
+  return true;
+}
+
+export async function loadBotSetting<T = unknown>(key: string): Promise<T | null> {
+  try {
+    if (!(await ensureBotSettingsSchema())) return null;
+    const res: any = await db!.execute(sql`SELECT "value" FROM "botSettings" WHERE "key" = ${key} LIMIT 1`);
+    const row = (res.rows ?? res ?? [])[0];
+    return row ? (row.value as T) : null;
+  } catch (err: any) {
+    console.error(`[Settings] load ${key} failed:`, err.message);
+    return null;
+  }
+}
+
+export async function saveBotSetting(key: string, value: unknown): Promise<void> {
+  try {
+    if (!(await ensureBotSettingsSchema())) return;
+    const json = JSON.stringify(value);
+    await db!.execute(sql`
+      INSERT INTO "botSettings" ("key", "value", "updatedAt") VALUES (${key}, ${json}::jsonb, now())
+      ON CONFLICT ("key") DO UPDATE SET "value" = EXCLUDED."value", "updatedAt" = now()`);
+  } catch (err: any) {
+    console.error(`[Settings] save ${key} failed:`, err.message);
+  }
+}
+
 export async function ensureSignalJournalSchema(): Promise<void> {
   if (!db) return;
   try {
