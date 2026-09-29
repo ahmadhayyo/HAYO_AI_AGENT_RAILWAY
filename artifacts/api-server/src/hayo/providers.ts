@@ -172,6 +172,72 @@ export async function checkOpenAIKeys(): Promise<void> {
   }
 }
 
+/**
+ * Gemini keys in priority order: the primary (GOOGLE_API_KEY3 / GEMINI_API_KEY /
+ * GOOGLE_API_KEY), then GEMINI_API_KEY_BACKUP. A key that is invalid (400
+ * API_KEY_INVALID / 401 / 403) or out of quota (429) is benched for 10 min and
+ * the next key is tried.
+ */
+function geminiKeys(): string[] {
+  const primary = process.env.GOOGLE_API_KEY3 || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  return [...new Set([primary, process.env.GEMINI_API_KEY_BACKUP].map(k => (k || "").trim()).filter(Boolean))];
+}
+const geminiBenchedUntil = new Map<string, number>();
+const geminiLabel = (i: number) => (i === 0 ? "GEMINI (primary)" : "GEMINI_API_KEY_BACKUP");
+const geminiKeyProblem = (status: number, text: string) =>
+  status === 401 || status === 403 || status === 429 || (status === 400 && /API[_ ]KEY|api key/i.test(text));
+
+async function geminiFetch(model: string, body: string, timeoutMs: number): Promise<Response> {
+  const keys = geminiKeys();
+  if (!keys.length) throw new Error("Gemini: no API key configured");
+  const now = Date.now();
+  const order = [...keys.filter(k => (geminiBenchedUntil.get(k) ?? 0) <= now), ...keys.filter(k => (geminiBenchedUntil.get(k) ?? 0) > now)];
+  let last: Response | null = null;
+  for (const key of order) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text();
+    const copy = new Response(text, { status: res.status, headers: { "Content-Type": "application/json" } });
+    if (!geminiKeyProblem(res.status, text)) { geminiBenchedUntil.delete(key); return copy; }
+    geminiBenchedUntil.set(key, Date.now() + 10 * 60_000);
+    console.warn(`[Gemini] ${geminiLabel(keys.indexOf(key))} → HTTP ${res.status}; trying the next key`);
+    last = copy;
+  }
+  return last!;
+}
+
+/** Boot-time check of every Gemini key (1-token call) — logs status, never the key. */
+export async function checkGeminiKeys(): Promise<void> {
+  const keys = geminiKeys();
+  if (!keys.length) { console.log("[Gemini] no key configured"); return; }
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": keys[i] },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "ok" }] }], generationConfig: { maxOutputTokens: 1 } }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const j: any = await res.json().catch(() => ({}));
+      const msg = String(j?.error?.message ?? "");
+      const status = res.ok ? "✅ يعمل وفيه حصة"
+        : res.status === 429 ? "❌ الحصة نفدت (quota exceeded)"
+        : res.status === 400 && /API[_ ]KEY|api key/i.test(msg) ? "❌ مفتاح غير صالح لواجهة Gemini (API key not valid)"
+        : res.status === 401 || res.status === 403 ? `❌ مرفوض (${res.status}): ${msg.slice(0, 80)}`
+        : res.status === 503 ? "⚠️ خوادم Google مشغولة الآن (المفتاح نفسه قد يكون سليماً)"
+        : `⚠️ HTTP ${res.status}: ${msg.slice(0, 80)}`;
+      console.log(`[Gemini] ${geminiLabel(i)}: ${status}`);
+      if (!res.ok && res.status !== 503) geminiBenchedUntil.set(keys[i], Date.now() + 10 * 60_000);
+    } catch (e: any) {
+      console.log(`[Gemini] ${geminiLabel(i)}: ⚠️ تعذّر الفحص — ${e.message?.slice(0, 60)}`);
+    }
+  }
+}
+
 /** True only when the provider's OWN (native) key is configured. */
 function isNativeAvailable(provider: AIProvider): boolean {
   if (provider === "claude") {
@@ -183,7 +249,10 @@ function isNativeAvailable(provider: AIProvider): boolean {
   if (provider === "deepseek") {
     return !!(dsKey());
   }
-  const config = PROVIDER_CONFIGS[provider];
+  if (provider === "gemini" || provider === "geminiPro") {
+    return geminiKeys().length > 0;
+  }
+  const config = PROVIDER_CONFIGS[provider as AIProvider];
   return !!(process.env[config.envKey]);
 }
 
@@ -266,7 +335,7 @@ export async function callProvider(
 
       case "gemini":
       case "geminiPro": {
-        const geminiKey = process.env.GOOGLE_API_KEY3 || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+        const geminiKey = geminiKeys()[0];
         const geminiBody = JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents: [{ role: "user", parts: [{ text: userMessage }] }],
@@ -281,15 +350,7 @@ export async function callProvider(
         for (const model of modelsToTry) {
           for (let retry = 0; retry < 2; retry++) {
             try {
-              const res = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
-                {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: geminiBody,
-                  signal: AbortSignal.timeout(60000),
-                }
-              );
+              const res = await geminiFetch(model, geminiBody, 60000);
               geminiData = await res.json() as any;
               if (res.status === 503 || res.status === 429) {
                 if (retry === 0) { await new Promise(r => setTimeout(r, 4000)); continue; }
@@ -374,7 +435,7 @@ export async function callPowerAI(
 
   const openaiKey = openaiKeys().length > 0;
   const hasAnthropicKey = process.env.ANTHROPIC_API_KEY || (process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY && process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL);
-  const geminiKey = process.env.GOOGLE_API_KEY3 || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const geminiKey = geminiKeys()[0];
 
   // 3. GPT-4o (fallback ✅)
   if (openaiKey) {
@@ -415,19 +476,11 @@ export async function callPowerAI(
   // 4. Gemini 2.5 Flash (if key becomes available)
   if (geminiKey) {
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+      const res = await geminiFetch("gemini-2.5-flash", JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents: [{ role: "user", parts: [{ text: userMessage }] }],
             generationConfig: { maxOutputTokens: Math.min(maxTokens, 8192), temperature: 0.2 },
-          }),
-          signal: AbortSignal.timeout(60000),
-        }
-      );
+          }), 60000);
       const data = await res.json() as any;
       if (res.ok && !data.error) {
         const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -660,18 +713,13 @@ export async function callProviderVision(
         if (!res.ok || data.error) throw new Error(`OpenAI vision: ${data.error?.message || res.status}`);
         content = data.choices?.[0]?.message?.content || "";
       } else {
-        const geminiKey = process.env.GOOGLE_API_KEY3 || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+        const geminiKey = geminiKeys()[0];
         const model = PROVIDER_CONFIGS[provider].model;
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const res = await geminiFetch(model, JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/png", data: b64 } }, { text: userMessage }] }],
             generationConfig: { maxOutputTokens: 8192, temperature: 0.3 },
-          }),
-          signal: AbortSignal.timeout(90000),
-        });
+          }), 90000);
         const data = await res.json() as any;
         if (!res.ok || data.error) throw new Error(`Gemini vision: ${data.error?.message || res.status}`);
         content = data.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "";
