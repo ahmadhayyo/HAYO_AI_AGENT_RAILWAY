@@ -10,6 +10,7 @@ import { callProvider, callProviderVision, isProviderAvailable, PROVIDER_CONFIGS
 import { renderChartSnapshot } from "../hayo/services/chart-snapshot";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
 import { fetchOhlcFallback, dropFormingCandle, assessData, fetchRealtimePrice } from "../hayo/market-data";
+import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/weights-model";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
   calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
@@ -808,7 +809,7 @@ interface Recommendation {
   blockers: string[];
   costPct: number | null;
   expiry?: number;                          // binary: expiry in candles
-  expiryFrom?: "AI" | "ADX" | "fixed";
+  expiryFrom?: "AI" | "ADX" | "fixed" | "model";
 }
 
 // Deterministic FINAL recommendation — strategies + trend filter + AI majority,
@@ -959,7 +960,7 @@ function binaryLines(d: any, rec: Recommendation, tfMin: number): string[] {
   const at = typeof d.liveAt === "number" ? d.liveAt : Date.now();
   const hhmmss = (ms: number) => new Date(ms).toISOString().slice(11, 19);
   const mins = n * tfMin;
-  const from = rec.expiryFrom === "AI" ? "حدّدها AI (وسيط النماذج الموافِقة)" : rec.expiryFrom === "ADX" ? "من قوة الاتجاه ADX" : "مدة ثابتة من الإعدادات";
+  const from = rec.expiryFrom === "AI" ? "حدّدها AI (وسيط النماذج الموافِقة)" : rec.expiryFrom === "ADX" ? "من قوة الاتجاه ADX" : rec.expiryFrom === "model" ? "أفق نموذج الأوزان الذي اختُبر عليه" : "مدة ثابتة من الإعدادات";
   const breakEven = Math.round(100 / (1 + BINARY_PAYOUT));
   return [
     `<b>━━ 🎰 خيار ثنائي ━━</b>`,
@@ -1220,7 +1221,7 @@ function restartAutoScanner(bot: TelegramBot, ownerChatId: number, lastSignalTim
 }
 
 // ─── Convergence Config ──────────────────────────────────────────────
-export type ConvergencePreset = "fast" | "mid" | "long";
+export type ConvergencePreset = "fast" | "scalp" | "mid" | "long";
 interface ConvergenceConfig {
   enabled: boolean;
   intervalMinutes: number;
@@ -1270,10 +1271,13 @@ async function loadPersistedBotSettings(): Promise<void> {
 
 /** The three timeframes that must agree, lowest → highest. Analysis/AI/chart use the highest. */
 const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, string]; label: string }> = {
-  fast: { keys: ["1m", "5m", "15m"], label: "سريع: 1م + 5م + 15م" },
+  fast: { keys: ["1m", "5m", "15m"], label: "سريع: 1م + 5م + 15م ⚖️ أوزان" },
+  scalp: { keys: ["5m", "15m", "1h"], label: "سكالب: 5م + 15م + 1س ⚖️ أوزان" },
   mid:  { keys: ["15m", "1h", "4h"], label: "متوسط: 15م + 1س + 4س" },
   long: { keys: ["1h", "4h", "1d"],  label: "طويل: 1س + 4س + يومي" },
 };
+/** Presets decided by the learned weighting model (hayo/weights-model.ts). */
+const CONVERGENCE_MODEL: Partial<Record<ConvergencePreset, string>> = { fast: "fast", scalp: "scalp" };
 let convergenceTimer: NodeJS.Timeout | null = null;
 const convergenceCooldown = new Map<string, number>();
 const CONVERGENCE_COOLDOWN_MS = 60 * 60 * 1000;
@@ -1425,6 +1429,11 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
       summary.checked++;
       const dirs = results.map(r => r.direction);
       const icons = results.map(r => `${r.tf}${r.direction === "BUY" ? "🟢" : r.direction === "SELL" ? "🔴" : "🟡"}`).join(" ");
+      const modelId = CONVERGENCE_MODEL[convergenceConfig.preset];
+      if (modelId && WEIGHT_MODELS[modelId]) {
+        await weightedConvergence(bot, ownerChatId, pair, modelId, results, tfs, icons, useAI, summary, coolKey);
+        continue;
+      }
       const allBuy  = dirs.every(d => d === "BUY");
       const allSell = dirs.every(d => d === "SELL");
       if (!allBuy && !allSell) {
@@ -1559,6 +1568,100 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
   } catch (outerErr: any) {
     console.error(`[Convergence] Fatal scan error:`, outerErr.message || outerErr);
   }
+}
+
+/**
+ * Weighted convergence: the learned model reads 11 trend/momentum/extension
+ * measures on each of the 3 timeframes and outputs P(up after H bars).
+ * Signal only at grade B (p≥0.56 / ≤0.44) or A (≥0.58 / ≤0.42) — the levels
+ * that were profitable out-of-sample. AI (if on) can only VETO with a
+ * majority for the opposite side; news/data gates still apply.
+ */
+async function weightedConvergence(
+  bot: TelegramBot, ownerChatId: number, pair: string, modelId: string,
+  results: { tf: string; direction: "BUY" | "SELL" | "NEUTRAL"; pct: number; data: any }[],
+  tfs: { key: string; cfg: TfConfig }[], icons: string, useAI: boolean, summary: ScanSummary, coolKey: string,
+): Promise<void> {
+  const p = PAIRS[pair];
+  const model = WEIGHT_MODELS[modelId];
+  const v = weightedVerdict(modelId, results.map(r => r.data.candles));
+  if (!v) { summary.lines.push(`⚠️ ${p.label}: شموع غير كافية لنموذج الأوزان`); return; }
+  const pTxt = `${(v.p * 100).toFixed(1)}%`;
+  if (v.dir === "HOLD") {
+    summary.lines.push(`➖ ${p.label}: ⚖️ احتمال الصعود ${pTxt} — لا أفضلية كافية (${icons})`);
+    return;
+  }
+  const lowData = results[0].data;
+  const topTf = tfs[tfs.length - 1];
+  const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, topTf.key, results[2].data), computeHtfBias(pair, topTf.key)]);
+
+  // Hard gates: live news danger zone and bad data.
+  const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
+  if (danger) { summary.lines.push(`⛔ ${p.label}: ⚖️ ${v.dir === "BUY" ? "شراء" : "بيع"} لكن خبر عالي التأثير ${danger.currency} خلال 15 دقيقة`); return; }
+  if (results.some(r => r.data.poorData)) { summary.lines.push(`⚠️ ${p.label}: بيانات غير صالحة — تم التخطي`); return; }
+
+  // AI: advisory + veto (majority of ≥2 answering models for the OPPOSITE side).
+  let aiResults: any[] = [];
+  let ai = aiConsensus([]);
+  if (useAI) {
+    aiResults = await runAI(pair, `${tfs[0].key} (أوزان ${tfs.map(t => t.key).join(" + ")})`, lowData, news, chart, htfBias);
+    ai = aiConsensus(aiResults);
+    const opposite = v.dir === "BUY" ? "SELL" : "BUY";
+    if (ai.answered >= MIN_AI_ANSWERS && ai.label === opposite) {
+      summary.lines.push(`🤖 ${p.label}: ⚖️ ${v.dir === "BUY" ? "شراء" : "بيع"} (${pTxt}) لكن أغلبية AI ${opposite === "BUY" ? "شراء" : "بيع"} — تم الإلغاء`);
+      return;
+    }
+  }
+
+  const tfMin = TF_MINUTES[tfs[0].key] ?? 1;
+  convergenceCooldown.set(coolKey, Date.now() - CONVERGENCE_COOLDOWN_MS + v.horizon * tfMin * 60_000);
+  summary.sent++;
+  summary.lines.push(`🚨 ${p.label}: ⚖️ ${v.dir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
+
+  const entry = tradePrice(lowData);
+  const rec: Recommendation = {
+    dir: v.dir, conf: v.edgePct, entry, sl: NaN, tp: NaN, rr: NaN, levelsFrom: "",
+    reasons: [], blockers: [], costPct: null, expiry: v.horizon, expiryFrom: "model",
+  };
+  await journalRecommendation(pair, tfs[0].cfg.interval, rec, "tg-bin");
+  const journalLine = await journalStatsLine(true);
+
+  const pct = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
+  const drivers = v.top.map(t => `• <code>${t.tf}</code> ${t.reading} <i>(${t.label})</i> <code>${pct(t.contribution)}</code>`).join("\n");
+  const tfLines = results.map(r => `<code>${r.tf.padEnd(4)}</code> ${r.direction === "BUY" ? "🟢" : r.direction === "SELL" ? "🔴" : "🟡"} استراتيجيات ${r.direction === "NEUTRAL" ? "محايدة" : `${r.pct}%`}`).join("\n");
+  const aiLine = useAI
+    ? (ai.answered ? `🤖 AI (${ai.answered} نماذج): ${ai.buys}🟢 ${ai.sells}🔴 ${ai.holds}🟡 — ${ai.answered >= MIN_AI_ANSWERS ? "لا اعتراض" : "استشاري فقط (أقل من نموذجين)"}` : "🤖 AI: لم يستجب أي نموذج — القرار لنموذج الأوزان")
+    : "";
+  const msg = [
+    `⚖️🎯 <b>إشارة تطابق — نظام الأوزان</b>`,
+    ``,
+    `${p.flag} <b>${p.label}</b> — ${v.dir === "BUY" ? "🟢 <b>شراء (CALL)</b>" : "🔴 <b>بيع (PUT)</b>"} | درجة <b>${v.grade}</b>`,
+    priceLine(lowData),
+    dataLine(lowData),
+    ``,
+    `<b>━━ ⚖️ قرار النموذج ━━</b>`,
+    `احتمال الصعود بعد ${v.horizon} شموع (${tfs[0].key}): <b>${pTxt}</b>`,
+    v.expectedWinRate !== null ? `📈 دقة هذه الدرجة في اختبار 2019 (بيانات لم يرها النموذج): <b>${v.expectedWinRate}%</b>` : "",
+    `<b>أقوى العوامل:</b>`,
+    drivers,
+    ``,
+    `<b>━━ 📊 الفريمات ━━</b>`,
+    tfLines,
+    htfBias ? `🧭 ${htfBias}` : "",
+    aiLine,
+    ``,
+    ...binaryLines(lowData, rec, tfMin),
+    `ℹ️ <i>إشارة اتجاه قصيرة المدى (${v.horizon * tfMin} دقيقة) — مصممة للخيارات الثنائية أو الدخول والخروج بالوقت. على هذه الفريمات السبريد في الفوركس يأكل معظم الربح.</i>`,
+    journalLine,
+    `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
+  ].filter(l => l !== "").join("\n");
+
+  await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي`);
+  await deliverLong(bot, ownerChatId, msg, { replyMarkup: { inline_keyboard: [[
+    { text: "🔄 إعادة تحليل", callback_data: `pair:${pair}` },
+    { text: "🏠 القائمة", callback_data: "back:pairs" },
+  ]] } });
+  console.log(`[Convergence] ⚖️ ${pair} ${v.dir} p=${v.p.toFixed(3)} grade ${v.grade} (${model.id})`);
 }
 
 function restartConvergenceScanner(bot: TelegramBot, ownerChatId: number) {
