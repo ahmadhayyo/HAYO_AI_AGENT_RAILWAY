@@ -256,12 +256,19 @@ export async function fetchFromDukascopy(symbol: string, interval: string, outpu
     path: "chart/json3", instrument: inst, offer_side: "B", interval: iv, splits: "true", stocks: "true",
     limit: String(Math.min(outputsize, 1000)), time_direction: "P", timestamp: String(now), jsonp: "_cb",
   });
-  const res = await fetch(`https://freeserv.dukascopy.com/2.0/index.php?${params}`, {
-    headers: { Referer: "https://freeserv.dukascopy.com/2.0/", "User-Agent": "Mozilla/5.0" },
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) return null;
-  const txt = await res.text();
+  // One retry: the public feed occasionally drops a request under load.
+  let txt = "";
+  for (let attempt = 0; attempt < 2 && !txt; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 1200));
+    try {
+      const res = await fetch(`https://freeserv.dukascopy.com/2.0/index.php?${params}`, {
+        headers: { Referer: "https://freeserv.dukascopy.com/2.0/", "User-Agent": "Mozilla/5.0" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) { const t = await res.text(); if (/\(\s*\[/.test(t)) txt = t; }
+    } catch { /* retry */ }
+  }
+  if (!txt) return null;
   const m = txt.match(/\((\[[\s\S]*\])\)\s*;?\s*$/);
   if (!m) return null;
   let rows: any[];
