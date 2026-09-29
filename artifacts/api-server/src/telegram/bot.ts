@@ -67,6 +67,7 @@ interface AutoConfig {
   pairs: string[];            // pairs to scan
   timeframes: string[];       // timeframes to scan
   intervalMinutes: number;    // scan every X minutes
+  useAI: boolean;             // true: AI plurality decides; false: technical-only signals
 }
 
 const defaultAutoConfig: AutoConfig = {
@@ -76,6 +77,7 @@ const defaultAutoConfig: AutoConfig = {
   pairs: Object.keys(PAIRS),
   timeframes: ["15m", "1h"],
   intervalMinutes: 30,
+  useAI: true,
 };
 
 let autoConfig: AutoConfig = { ...defaultAutoConfig };
@@ -206,8 +208,14 @@ function autoMenuKeyboard(): TelegramBot.InlineKeyboardMarkup {
 
   return {
     inline_keyboard: [
-      [{ text: `${c.enabled ? "🔴 إيقاف الإشارات" : "🟢 تفعيل الإشارات"}`, callback_data: "auto:toggle" }],
-      [{ text: `━━ الحد الأدنى للتوافق: ${c.minConsensus}% ━━`, callback_data: "auto:noop" }],
+      [{ text: `${c.enabled ? "🔴 إيقاف الإشارات التلقائية" : "🟢 تفعيل الإشارات التلقائية"}`, callback_data: "auto:toggle" }],
+      [{ text: "▶️ فحص فوري الآن (SCAN)", callback_data: "auto:now" }],
+      [{ text: "━━ نوع التحليل ━━", callback_data: "auto:noop" }],
+      [
+        { text: `${c.useAI ? "✅ " : ""}🤖 مع AI`, callback_data: "auto:ai:on" },
+        { text: `${!c.useAI ? "✅ " : ""}⚡ بدون AI (فني)`, callback_data: "auto:ai:off" },
+      ],
+      [{ text: `━━ الحد الأدنى للتوافق الفني: ${c.minConsensus}% ━━`, callback_data: "auto:noop" }],
       [
         { text: `${c.minConsensus===65?"✅ ":""}65%`, callback_data: "auto:cons:65" },
         { text: `${c.minConsensus===75?"✅ ":""}75%`, callback_data: "auto:cons:75" },
@@ -227,7 +235,8 @@ function autoMenuKeyboard(): TelegramBot.InlineKeyboardMarkup {
       [pb("EURJPY"), pb("EURCHF"), pb("AUDCAD")],
       [pb("XAUUSD"), pb("XAGUSD"), pb("BTCUSD")],
       [pb("ETHUSD"), pb("USOIL"), pb("US30")],
-      [{ text: "━━ الإطارات الزمنية ━━", callback_data: "auto:noop" }],
+      [{ text: `━━ الإطارات الزمنية (${c.timeframes.length}/${Object.keys(TIMEFRAMES).length}) ━━`, callback_data: "auto:noop" }],
+      [{ text: `${c.timeframes.length === Object.keys(TIMEFRAMES).length ? "✅ " : ""}تحديد/إلغاء كل الفريمات`, callback_data: "auto:tf:ALL" }],
       [
         { text: `${c.timeframes.includes("1m") ?"✅ ":""}1م`,   callback_data: "auto:tf:1m" },
         { text: `${c.timeframes.includes("5m") ?"✅ ":""}5م`,   callback_data: "auto:tf:5m" },
@@ -386,13 +395,18 @@ async function computeHtfBias(pair: string, tf: string): Promise<string> {
 }
 
 // ─── Consensus Calculator ─────────────────────────────────────────────
-function calcConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; pct: number } {
+// Technical agreement: share of the strategies that TOOK a side (BUY or SELL)
+// that agree, and at least MIN_AGREEING of them. Previously the share was over
+// all 15 strategies, neutral ones included — "75%" needed 12/15 on one side,
+// which almost never happens, so auto-signals and convergence never fired.
+const MIN_AGREEING = 4;
+function calcConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; pct: number; buys: number; sells: number } {
   const buys  = strategies.filter(s=>s.signal==="BUY").length;
   const sells = strategies.filter(s=>s.signal==="SELL").length;
-  const total = strategies.length;
-  if (buys > sells)  return { direction:"BUY",  pct: Math.round(buys/total*100) };
-  if (sells > buys)  return { direction:"SELL", pct: Math.round(sells/total*100) };
-  return { direction:"NEUTRAL", pct: 0 };
+  const dom = Math.max(buys, sells), directional = buys + sells;
+  const pct = directional ? Math.round(dom / directional * 100) : 0;
+  if (buys === sells || dom < MIN_AGREEING) return { direction:"NEUTRAL", pct, buys, sells };
+  return { direction: buys > sells ? "BUY" : "SELL", pct, buys, sells };
 }
 
 // ─── Economic News Fetcher (cached 30 min) ───────────────────────────
@@ -553,13 +567,14 @@ function sigIcon(s:"BUY"|"SELL"|"NEUTRAL") {
   return s==="BUY"?"🟢 شراء":s==="SELL"?"🔴 بيع":"🟡 محايد";
 }
 
-function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>) {
+function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fetchMarket>>, news: NewsEvent[] = [], journalLine = "", header = "") {
   const p = PAIRS[pair];
   const buys  = d.strategies.filter(s=>s.signal==="BUY").length;
   const sells = d.strategies.filter(s=>s.signal==="SELL").length;
   const neutrals = d.strategies.length - buys - sells;
   const cons  = buys>sells?"🟢 شراء":sells>buys?"🔴 بيع":"🟡 محايد";
   return [
+    ...(header ? [header] : []),
     `${p.flag} <b>${p.label}</b> | <code>${tf}</code>`,
     `💰 <b>${d.fmt(d.price)}</b>  <i>${d.datetime.slice(11,16)} UTC</i>`,
     ``,
@@ -579,9 +594,50 @@ function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fe
     `┌──────────────────────────┐`,
     `│  التوافق: ${cons.padEnd(12)}│`,
     `└──────────────────────────┘`,
+    ...buildRecommendation(pair, d, [], news),
+    ...(journalLine ? [journalLine] : []),
     ``,
     `<i>⚠️ للأغراض التعليمية فقط</i>`,
   ].join("\n");
+}
+
+// ─── Long-message delivery ────────────────────────────────────────────
+// Telegram rejects messages over 4096 chars; a full AI analysis (15 strategies,
+// 5 models with chart readings, final decision) can exceed that. Split on line
+// boundaries (every line carries its own balanced HTML tags) and send in order;
+// the first part may replace a "loading…" message, the keyboard goes on the last.
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function splitForTelegram(text: string, limit = 3900): string[] {
+  const out: string[] = [];
+  let cur = "";
+  for (const raw of text.split("\n")) {
+    const line = raw.length > limit ? raw.slice(0, limit) : raw;
+    if (cur && cur.length + 1 + line.length > limit) { out.push(cur); cur = line; }
+    else cur = cur ? `${cur}\n${line}` : line;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+async function deliverLong(
+  bot: TelegramBot, chatId: number, text: string,
+  opts: { replyMarkup?: TelegramBot.InlineKeyboardMarkup; editMessageId?: number } = {},
+): Promise<void> {
+  const parts = splitForTelegram(text);
+  for (let i = 0; i < parts.length; i++) {
+    const extra: any = { parse_mode: "HTML" };
+    if (i === parts.length - 1 && opts.replyMarkup) extra.reply_markup = opts.replyMarkup;
+    if (i === 0 && opts.editMessageId) {
+      await bot.editMessageText(parts[0], { chat_id: chatId, message_id: opts.editMessageId, ...extra });
+    } else {
+      await bot.sendMessage(chatId, parts[i], extra);
+    }
+  }
 }
 
 /** AI text is untrusted: escape it before embedding in Telegram HTML. */
@@ -732,7 +788,9 @@ function buildRecommendation(
   const dirLabel = rec.dir === "BUY" ? "🟢 <b>شراء</b>" : rec.dir === "SELL" ? "🔴 <b>بيع</b>" : "🟡 <b>انتظار</b>";
   const out = [
     ``,
-    `<b>━━ ✅ القرار النهائي — الأكثر توافقاً بين نماذج AI ━━</b>`,
+    aiResults.some((r: any) => ["BUY", "SELL", "HOLD"].includes(r.signal))
+      ? `<b>━━ ✅ القرار النهائي — الأكثر توافقاً بين نماذج AI ━━</b>`
+      : `<b>━━ ✅ القرار النهائي — تحليل فني (بدون AI) ━━</b>`,
     rec.dir === "HOLD" ? dirLabel : `${dirLabel} | ثقة <code>${rec.conf}%</code>`,
     `📝 <i>${rec.reasons.join("، ")}.</i>`,
   ];
@@ -877,75 +935,89 @@ function buildAIMsg(
   ].filter(l=>l!=="").join("\n");
 }
 
-// ─── Auto-Signal Scanner ──────────────────────────────────────────────
-async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTimeLocal: Map<string, number>) {
-  if (!autoConfig.enabled) return;
-  const { pairs, timeframes, minConsensus, minAIConfidence } = autoConfig;
-  console.log(`[AutoScan] Scanning ${pairs.length} pairs × ${timeframes.length} timeframes`);
+// ─── Auto-Signal Scanner ─────────────────────────────────────────────
+// Scans the selected pairs × timeframes (one of each, or all = SCAN). A pair/TF
+// becomes a signal when:
+//   1) technical agreement ≥ minConsensus (share of strategies that took a side),
+//   2) with AI: the AI plurality decision equals that direction and the winning
+//      models' average confidence ≥ minAIConfidence;
+//      without AI: the technical final decision equals that direction,
+//   3) the safety gates pass (spread cost, high-impact news).
+// Each sent signal starts a 4h cooldown for that pair/TF (only when SENT).
+let autoScanRunning = false;
+let autoManualRunning = false;
 
-  for (const pair of pairs) {
-    for (const tf of timeframes) {
-      const key = `${pair}:${tf}`;
-      const lastSent = lastSignalTimeLocal.get(key) || 0;
-      if (Date.now() - lastSent < SIGNAL_COOLDOWN_MS) {
-        console.log(`[AutoScan] ${key} skipped (cooldown)`);
-        continue;
-      }
+interface ScanSummary { checked: number; sent: number; busy?: boolean; lines: string[] }
 
-      try {
-        await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
-        const d = await fetchMarket(pair, TIMEFRAMES[tf]);
-        const cons = calcConsensus(d.strategies);
-
-        if (cons.direction === "NEUTRAL" || cons.pct < minConsensus) {
-          console.log(`[AutoScan] ${key}: consensus ${cons.pct}% < ${minConsensus}% — skip`);
+async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTimeLocal: Map<string, number>, manual = false): Promise<ScanSummary> {
+  const summary: ScanSummary = { checked: 0, sent: 0, lines: [] };
+  if (!autoConfig.enabled && !manual) return summary;
+  if (manual ? autoManualRunning : autoScanRunning) { summary.busy = true; return summary; }
+  if (manual) autoManualRunning = true; else autoScanRunning = true;
+  try {
+    const { pairs, timeframes, minConsensus, minAIConfidence, useAI } = autoConfig;
+    console.log(`[AutoScan] Scanning ${pairs.length} pairs × ${timeframes.length} TFs (${useAI ? "AI" : "technical"})`);
+    for (const pair of pairs) {
+      for (const tf of timeframes) {
+        if (!TIMEFRAMES[tf] || !PAIRS[pair]) continue;
+        const key = `${pair}:${tf}`;
+        const label = `${PAIRS[pair].label} ${tf}`;
+        if (Date.now() - (lastSignalTimeLocal.get(key) || 0) < SIGNAL_COOLDOWN_MS) {
+          summary.lines.push(`⏸️ ${label}: أُرسلت إشارة خلال آخر 4 ساعات`);
           continue;
         }
+        try {
+          await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
+          const d = await fetchMarket(pair, TIMEFRAMES[tf]);
+          summary.checked++;
+          const cons = calcConsensus(d.strategies);
+          if (cons.direction === "NEUTRAL" || cons.pct < minConsensus) {
+            summary.lines.push(`➖ ${label}: توافق فني غير كافٍ (${cons.buys}🟢 ${cons.sells}🔴)`);
+            continue;
+          }
 
-        console.log(`[AutoScan] ${key}: consensus ${cons.pct}% ≥ ${minConsensus}% — running AI + news...`);
+          const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, d), computeHtfBias(pair, tf)]);
+          let rec: Recommendation;
+          let msg: string;
+          if (useAI) {
+            const aiResults = await runAI(pair, tf, d, news, chart, htfBias);
+            rec = computeRecommendation(pair, d, aiResults, news);
+            const ai = aiConsensus(aiResults);
+            if (rec.dir !== cons.direction || ai.avgConf < minAIConfidence) {
+              summary.lines.push(`🤖 ${label}: فني ${cons.direction === "BUY" ? "شراء" : "بيع"} لكن قرار AI ${rec.dir === "BUY" ? "شراء" : rec.dir === "SELL" ? "بيع" : "انتظار"} (ثقة ${ai.avgConf}%)${rec.blockers.length ? " — " + rec.blockers[0] : ""}`);
+              continue;
+            }
+            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "telegram-auto");
+            msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias, await journalStatsLine());
+          } else {
+            rec = computeRecommendation(pair, d, [], news);
+            if (rec.dir !== cons.direction) {
+              summary.lines.push(`⛔ ${label}: ${rec.blockers[0] || "القرار الفني النهائي انتظار"}`);
+              continue;
+            }
+            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "telegram-auto-tech");
+            msg = buildQuickMsg(pair, tf, d, news, await journalStatsLine(), `🔔 <b>إشارة تلقائية — تحليل فني (بدون AI)</b>`);
+          }
 
-        // Fetch news first, then run AI with it
-        const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, d), computeHtfBias(pair, tf)]);
-        const aiResults = await runAI(pair, tf, d, news, chart, htfBias);
-        const valid = aiResults.filter((r:any) => r.signal !== "ERROR" && r.signal === cons.direction);
-        const avgConf = valid.length
-          ? Math.round(valid.reduce((a:number, r:any) => a + r.confidence, 0) / valid.length)
-          : 0;
-
-        if (avgConf < minAIConfidence || valid.length < 2) {
-          console.log(`[AutoScan] ${key}: AI conf ${avgConf}% < ${minAIConfidence}% or only ${valid.length} models agree — skip`);
-          continue;
+          lastSignalTimeLocal.set(key, Date.now());
+          summary.sent++;
+          summary.lines.push(`🚨 ${label}: ${rec.dir === "BUY" ? "🟢 شراء" : "🔴 بيع"} — أُرسلت إشارة`);
+          console.log(`[AutoScan] 🚨 Signal: ${key} ${rec.dir} (tech ${cons.pct}%)`);
+          await sendChartPhoto(bot, ownerChatId, chart, `📸 ${PAIRS[pair].label} | ${tf} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
+          await deliverLong(bot, ownerChatId, msg, { replyMarkup: { inline_keyboard: [[
+            { text: "🔄 إعادة تحليل هذا الزوج", callback_data: `pair:${pair}` },
+            { text: "🏠 القائمة الرئيسية", callback_data: "back:pairs" },
+          ]] } });
+        } catch (err: any) {
+          summary.lines.push(`⚠️ ${label}: خطأ في البيانات`);
+          console.error(`[AutoScan] ${key} error:`, err.message);
         }
-
-        // SEND SIGNAL!
-        console.log(`[AutoScan] 🚨 Signal: ${pair} ${tf} ${cons.direction} — consensus ${cons.pct}%, AI conf ${avgConf}%`);
-        lastSignalTimeLocal.set(key, Date.now());
-
-        const rec = computeRecommendation(pair, d, aiResults, news);
-        if (rec.dir === "HOLD") {
-          console.log(`[AutoScan] ${key}: final recommendation HOLD (${rec.blockers.join("; ") || "weak"}) — skip`);
-          continue;
-        }
-        await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "telegram-auto");
-        const msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias, await journalStatsLine());
-        await sendChartPhoto(bot, ownerChatId, chart, `📸 ${PAIRS[pair].label} | ${tf} — الشارت الحي الذي قرأته نماذج AI`);
-        await bot.sendMessage(ownerChatId, msg, {
-          parse_mode: "HTML",
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "🔄 إعادة تحليل هذا الزوج", callback_data: `pair:${pair}` },
-                { text: "🏠 القائمة الرئيسية",       callback_data: "back:pairs" },
-              ],
-            ],
-          },
-        });
-
-      } catch (err: any) {
-        console.error(`[AutoScan] ${key} error:`, err.message);
       }
     }
+  } finally {
+    if (manual) autoManualRunning = false; else autoScanRunning = false;
   }
+  return summary;
 }
 
 function restartAutoScanner(bot: TelegramBot, ownerChatId: number, lastSignalTimeLocal: Map<string, number>) {
@@ -967,8 +1039,10 @@ interface ConvergenceConfig {
   enabled: boolean;
   intervalMinutes: number;
   preset: ConvergencePreset;   // which 3 timeframes must agree
+  pairs: string[];             // pairs to scan (one, several, or all = SCAN)
+  useAI: boolean;              // AI plurality must confirm the match
 }
-let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 5, preset: "fast" };
+let convergenceConfig: ConvergenceConfig = { enabled: true, intervalMinutes: 5, preset: "fast", pairs: Object.keys(PAIRS), useAI: true };
 /** The three timeframes that must agree, lowest → highest. Analysis/AI/chart use the highest. */
 const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, string]; label: string }> = {
   fast: { keys: ["1m", "5m", "15m"], label: "سريع: 1م + 5م + 15م" },
@@ -1004,6 +1078,8 @@ export function setConvergenceConfig(patch: Partial<ConvergenceConfig>) {
   if (patch.enabled !== undefined) convergenceConfig.enabled = patch.enabled;
   if (patch.intervalMinutes !== undefined) convergenceConfig.intervalMinutes = patch.intervalMinutes;
   if (patch.preset !== undefined && CONVERGENCE_PRESETS[patch.preset]) convergenceConfig.preset = patch.preset;
+  if (patch.useAI !== undefined) convergenceConfig.useAI = patch.useAI;
+  if (patch.pairs !== undefined) convergenceConfig.pairs = patch.pairs.filter(p => PAIRS[p]);
   if (_botRef && _ownerRef) restartConvergenceScanner(_botRef, _ownerRef);
 }
 export function getConvergenceSignals() { return [...convergenceSignals]; }
@@ -1074,24 +1150,38 @@ const convergenceTfs = (): { key: string; cfg: TfConfig }[] =>
 
 // A full scan (all pairs × 3 TFs, throttled for API limits) can outlast the
 // interval; without this guard setInterval stacked concurrent scans.
+// Manual scans have their own lock: pressing "scan now" must not wait for a
+// long background scan of all pairs (≈ 7 min) to finish.
 let convergenceScanRunning = false;
+let convergenceManualRunning = false;
 
-async function runConvergenceScan(bot: TelegramBot, ownerChatId: number) {
-  if (!convergenceConfig.enabled) return;
-  if (convergenceScanRunning) { console.log("[Convergence] previous scan still running — skipping this tick"); return; }
-  convergenceScanRunning = true;
-  try { await runConvergenceScanInner(bot, ownerChatId); } finally { convergenceScanRunning = false; }
+async function runConvergenceScan(bot: TelegramBot, ownerChatId: number, manual = false): Promise<ScanSummary> {
+  const summary: ScanSummary = { checked: 0, sent: 0, lines: [] };
+  if (!convergenceConfig.enabled && !manual) return summary;
+  if (manual ? convergenceManualRunning : convergenceScanRunning) { console.log("[Convergence] previous scan still running — skipping"); summary.busy = true; return summary; }
+  if (manual) convergenceManualRunning = true; else convergenceScanRunning = true;
+  try { await runConvergenceScanInner(bot, ownerChatId, manual, summary); }
+  finally { if (manual) convergenceManualRunning = false; else convergenceScanRunning = false; }
+  return summary;
 }
 
-async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
-  const allPairs = Object.keys(PAIRS);
-  console.log(`[Convergence] Scanning ${allPairs.length} pairs × 3 timeframes (1m, 5m, 15m)...`);
+/**
+ * For each selected pair: all 3 timeframes of the preset must point the same
+ * way (technical agreement on each). Then the final decision on the highest TF
+ * (AI plurality with AI on, technical decision with AI off, plus safety gates)
+ * must agree before a signal is sent. A manual scan ignores the 1h cooldown.
+ */
+async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, manual: boolean, summary: ScanSummary) {
+  const pairsToScan = convergenceConfig.pairs.filter(p => PAIRS[p]);
+  const useAI = convergenceConfig.useAI;
+  console.log(`[Convergence] Scanning ${pairsToScan.length} pairs × ${CONVERGENCE_PRESETS[convergenceConfig.preset].label} (${useAI ? "AI" : "technical"})`);
   try {
 
-  for (const pair of allPairs) {
+  for (const pair of pairsToScan) {
     const coolKey = `conv:${pair}`;
     const lastSent = convergenceCooldown.get(coolKey) || 0;
-    if (Date.now() - lastSent < CONVERGENCE_COOLDOWN_MS) continue;
+    if (!manual && Date.now() - lastSent < CONVERGENCE_COOLDOWN_MS) continue;
+    const plabel = PAIRS[pair].label;
 
     try {
       const results: { tf: string; direction: "BUY"|"SELL"|"NEUTRAL"; pct: number; data: any }[] = [];
@@ -1105,51 +1195,41 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         results.push({ tf: key, direction: cons.direction, pct: cons.pct, data: d });
       }
 
+      summary.checked++;
       const dirs = results.map(r => r.direction);
-      if (dirs.includes("NEUTRAL")) {
-        console.log(`[Convergence] ${pair}: has NEUTRAL tf — skip`);
-        continue;
-      }
-
+      const icons = results.map(r => `${r.tf}${r.direction === "BUY" ? "🟢" : r.direction === "SELL" ? "🔴" : "🟡"}`).join(" ");
       const allBuy  = dirs.every(d => d === "BUY");
       const allSell = dirs.every(d => d === "SELL");
       if (!allBuy && !allSell) {
-        console.log(`[Convergence] ${pair}: no agreement (${dirs.join(",")}) — skip`);
+        summary.lines.push(`➖ ${plabel}: لا تطابق (${icons})`);
         continue;
       }
 
-      const convergenceDir = allBuy ? "BUY" : "SELL";
+      const convergenceDir: "BUY" | "SELL" = allBuy ? "BUY" : "SELL";
       const avgPct = Math.round(results.reduce((a, r) => a + r.pct, 0) / results.length);
+      console.log(`[Convergence] 🎯 ${pair} MATCH ${convergenceDir} on ${tfs.map(t => t.key).join("/")} — deciding (${useAI ? "AI" : "technical"})...`);
 
-      if (avgPct < 60) {
-        console.log(`[Convergence] ${pair}: avg consensus ${avgPct}% too low — skip`);
-        continue;
-      }
+      const topData = results[2].data;
+      const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, topTf.key, topData), computeHtfBias(pair, topTf.key)]);
+      const aiResults: any[] = useAI
+        ? await runAI(pair, `${topTf.key} (تطابق ${tfs.map(t => t.key).join(" + ")})`, topData, news, chart, htfBias)
+        : [];
+      const ai = aiConsensus(aiResults);
+      const validAI = aiResults.filter((r: any) => r.signal === convergenceDir);
+      const avgConf = ai.avgConf;
 
-      console.log(`[Convergence] 🎯 ${pair} MATCH! ${convergenceDir} across all 3 TFs — running AI...`);
-
-      const [news, chart] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, topTf.key, results[2].data)]);
-      const aiResults = await runAI(pair, tfs.map(t => t.key).join(","), results[2].data, news, chart);
-      const validAI = aiResults.filter((r: any) => r.signal !== "ERROR" && r.signal === convergenceDir);
-      const avgConf = validAI.length
-        ? Math.round(validAI.reduce((a: number, r: any) => a + r.confidence, 0) / validAI.length)
-        : 0;
-
-      if (validAI.length < 2 || avgConf < 60) {
-        console.log(`[Convergence] ${pair}: AI doesn't confirm (${validAI.length} models, ${avgConf}% conf) — skip`);
-        continue;
-      }
-
-      // Same safety gates as a manual analysis (AI majority, confidence, spread
-      // cost, news): only send when the final recommendation agrees.
-      const rec = computeRecommendation(pair, results[2].data, aiResults, news);
+      // The final decision (AI plurality, or technical without AI) + safety
+      // gates must agree with the 3-timeframe match.
+      const rec = computeRecommendation(pair, topData, aiResults, news);
       if (rec.dir !== convergenceDir) {
-        console.log(`[Convergence] ${pair}: final recommendation ${rec.dir} (${rec.blockers.join("; ") || "weak"}) — skip`);
+        summary.lines.push(`🎯 ${plabel}: تطابق ${convergenceDir === "BUY" ? "شراء" : "بيع"} (${icons}) لكن القرار النهائي ${rec.dir === "HOLD" ? "انتظار" : rec.dir === "BUY" ? "شراء" : "بيع"}${rec.blockers.length ? " — " + rec.blockers[0] : ""}`);
         continue;
       }
+      summary.sent++;
+      summary.lines.push(`🚨 ${plabel}: تطابق ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} (${icons}) — أُرسلت إشارة`);
 
       convergenceCooldown.set(coolKey, Date.now());
-      await journalRecommendation(pair, topTf.cfg.interval, rec, "telegram-convergence");
+      await journalRecommendation(pair, topTf.cfg.interval, rec, useAI ? "telegram-convergence" : "telegram-convergence-tech");
       const journalLine = await journalStatsLine();
 
       const p = PAIRS[pair];
@@ -1176,7 +1256,8 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         return [
           `${r.icon} <b>${r.name}</b>: ${r.signal === "BUY" ? "🟢 شراء" : r.signal === "SELL" ? "🔴 بيع" : "🟡 انتظار"} <code>${r.confidence}%</code>`,
           `   🎯 دخول <code>${escHtml(r.entry)}</code> | SL <code>${escHtml(r.sl)}</code> | TP <code>${escHtml(r.tp)}</code>`,
-          `   💬 <i>${r.reasoning.slice(0, 100)}${r.reasoning.length > 100 ? "…" : ""}</i>`,
+          ...(r.sawChart && r.chartReading ? [`   👁️ <i>${escHtml(r.chartReading.slice(0, 120))}</i>`] : []),
+          `   💬 <i>${escHtml(r.reasoning.slice(0, 100))}${r.reasoning.length > 100 ? "…" : ""}</i>`,
         ].join("\n");
       }).join("\n");
 
@@ -1219,11 +1300,13 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
           `<i>⚠️ احذر من التداول!</i>`,
         ] : []),
         ``,
-        `<b>━━ 🤖 تأكيد AI (${validAI.length}/${aiResults.length} نموذج) ━━</b>`,
-        aiDetails,
-        ``,
+        ...(useAI ? [
+          `<b>━━ 🤖 نماذج AI (${ai.buys}🟢 ${ai.sells}🔴 ${ai.holds}🟡 من ${ai.answered}) ━━</b>`,
+          aiDetails,
+          ``,
+        ] : []),
         `┌──────────────────────────────────┐`,
-        `│  🎯 التطابق: ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"}  ثقة AI: ${avgConf}%  │`,
+        `│  🎯 التطابق: ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"}${useAI ? `  ثقة AI: ${avgConf}%` : "  (فني)"}  │`,
         `│  3/3 فريمات متطابقة             │`,
         `└──────────────────────────────────┘`,
         ...buildRecommendation(pair, d15, aiResults, news),
@@ -1232,20 +1315,14 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
       ].join("\n");
 
-      await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي الذي قرأته نماذج AI`);
-      await bot.sendMessage(ownerChatId, msg, {
-        parse_mode: "HTML",
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "🔄 إعادة تحليل", callback_data: `pair:${pair}` },
-              { text: "🏠 القائمة", callback_data: "back:pairs" },
-            ],
-          ],
-        },
-      });
+      await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
+      await deliverLong(bot, ownerChatId, msg, { replyMarkup: { inline_keyboard: [[
+        { text: "🔄 إعادة تحليل", callback_data: `pair:${pair}` },
+        { text: "🏠 القائمة", callback_data: "back:pairs" },
+      ]] } });
 
     } catch (err: any) {
+      summary.lines.push(`⚠️ ${plabel}: خطأ في البيانات`);
       console.error(`[Convergence] ${pair} error:`, err.message);
     }
   }
@@ -1256,12 +1333,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
 
 function restartConvergenceScanner(bot: TelegramBot, ownerChatId: number) {
   if (convergenceTimer) { clearInterval(convergenceTimer); convergenceTimer = null; }
-  _triggerConvergenceScanRef = async () => {
-    const prev = convergenceConfig.enabled;
-    convergenceConfig.enabled = true;
-    await runConvergenceScan(bot, ownerChatId);
-    convergenceConfig.enabled = prev;
-  };
+  _triggerConvergenceScanRef = async () => { await runConvergenceScan(bot, ownerChatId, true); };
   if (!convergenceConfig.enabled) return;
   const ms = convergenceConfig.intervalMinutes * 60 * 1000;
   console.log(`[Convergence] Started — interval ${convergenceConfig.intervalMinutes}min, all ${Object.keys(PAIRS).length} pairs`);
@@ -1379,12 +1451,14 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       `⚙️ <b>إعدادات الإشارات التلقائية</b>`,
       ``,
       `الحالة: ${autoConfig.enabled ? "✅ <b>مفعّلة</b>" : "❌ <b>معطّلة</b>"}`,
-      `الأزواج: <code>${autoConfig.pairs.join(", ")||"لا يوجد"}</code>`,
+      `النوع: ${autoConfig.useAI ? "🤖 <b>مع AI</b> — القرار = الأكثر توافقاً بين النماذج" : "⚡ <b>بدون AI</b> — قرار فني من الاستراتيجيات والفلاتر"}`,
+      `الأزواج: <code>${autoConfig.pairs.length === Object.keys(PAIRS).length ? "جميع الأزواج (SCAN)" : autoConfig.pairs.join(", ")||"لا يوجد"}</code>`,
       `الإطارات: <code>${autoConfig.timeframes.join(", ")||"لا يوجد"}</code>`,
       `فترة الفحص: كل <code>${autoConfig.intervalMinutes}</code> دقيقة`,
       `الحد الأدنى للتوافق: <code>${autoConfig.minConsensus}%</code>`,
-      `ثقة AI الأدنى: <code>${autoConfig.minAIConfidence}%</code>`,
+      ...(autoConfig.useAI ? [`ثقة AI الأدنى: <code>${autoConfig.minAIConfidence}%</code>`] : []),
       ``,
+      `<i>عند ظهور إشارة شراء/بيع قوية تصلك رسالة تفصيلية تلقائياً.</i>`,
       `اضغط ✅ على خيار لتفعيله أو إلغائه:`,
     ].join("\n");
     if (editing) {
@@ -1500,7 +1574,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
     const chatId  = query.message.chat.id;
     const msgId   = query.message.message_id;
-    const data    = query.data ?? "";
+    let data      = query.data ?? "";
     const session = getSession(chatId);
     const bridgeSession = getBridgeSession(chatId);
 
@@ -1821,9 +1895,33 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       return;
     }
 
+    if (data === "auto:ai:on" || data === "auto:ai:off") {
+      autoConfig.useAI = data === "auto:ai:on";
+      await sendAutoMenu(chatId, msgId);
+      return;
+    }
+
+    if (data === "auto:now") {
+      if (!autoConfig.pairs.length || !autoConfig.timeframes.length) {
+        await bot.sendMessage(chatId, "⚠️ اختر زوجاً واحداً وإطاراً واحداً على الأقل.", { reply_markup: { inline_keyboard: [[{ text: "⚙️ الإعدادات", callback_data: "auto:menu" }]] } });
+        return;
+      }
+      const n = autoConfig.pairs.length * autoConfig.timeframes.length;
+      await bot.editMessageText(
+        `📡 <b>جاري الفحص...</b>\n${autoConfig.pairs.length} زوج × ${autoConfig.timeframes.length} إطار = ${n} فحص (${autoConfig.useAI ? "مع AI" : "بدون AI"})\n<i>ستصلك الإشارات القوية فور ظهورها، ثم ملخص الفحص.</i>`,
+        { chat_id: chatId, message_id: msgId, parse_mode: "HTML" });
+      const sum = await runAutoScan(bot, ownerChatId, lastSignalTimeLocal, true);
+      const head = sum.busy ? "⏳ فحص آخر قيد التشغيل — حاول بعد قليل." : `✅ <b>اكتمل الفحص</b>: ${sum.checked} فحص — ${sum.sent} إشارة أُرسلت`;
+      await deliverLong(bot, chatId, [head, "", ...sum.lines.slice(0, 120)].join("\n"), { replyMarkup: { inline_keyboard: [[{ text: "⚙️ الإعدادات", callback_data: "auto:menu" }, { text: "🏠 القائمة", callback_data: "back:pairs" }]] } });
+      return;
+    }
+
     if (data.startsWith("auto:tf:")) {
       const t = data.split(":")[2];
-      if (autoConfig.timeframes.includes(t)) {
+      if (t === "ALL") {
+        const all = Object.keys(TIMEFRAMES);
+        autoConfig.timeframes = autoConfig.timeframes.length === all.length ? [] : [...all];
+      } else if (autoConfig.timeframes.includes(t)) {
         autoConfig.timeframes = autoConfig.timeframes.filter(x=>x!==t);
       } else {
         autoConfig.timeframes.push(t);
@@ -1840,6 +1938,18 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     }
 
     // ── Convergence (التطابق) ────────────────────────────────
+    if (data.startsWith("conv:pair:")) {
+      const k = data.split(":")[2];
+      const all = Object.keys(PAIRS);
+      let next = [...convergenceConfig.pairs];
+      if (k === "ALL") next = next.length === all.length ? [] : [...all];
+      else if (next.includes(k)) next = next.filter(x => x !== k);
+      else if (PAIRS[k]) next.push(k);
+      setConvergenceConfig({ pairs: next });
+      // re-open the menu with the updated ticks
+      data = "conv:menu";
+    }
+
     if (data === "conv:menu") {
       const c = convergenceConfig;
       const text = [
@@ -1847,16 +1957,25 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         ``,
         `الحالة: ${c.enabled ? "✅ <b>مفعّل</b>" : "❌ <b>معطّل</b>"}`,
         `الفحص: كل <code>${c.intervalMinutes}</code> دقائق`,
-        `الأزواج: جميع الأزواج (${Object.keys(PAIRS).length})`,
+        `النوع: ${c.useAI ? "🤖 <b>مع AI</b> (القرار = الأكثر توافقاً بين النماذج)" : "⚡ <b>بدون AI</b> (قرار فني)"}`,
+        `الأزواج: <code>${c.pairs.length === Object.keys(PAIRS).length ? `جميع الأزواج — SCAN (${c.pairs.length})` : c.pairs.map(x => PAIRS[x]?.label || x).join(", ") || "لا يوجد"}</code>`,
         `الفريمات: <code>${CONVERGENCE_PRESETS[c.preset].label}</code>`,
         ``,
-        `<i>يفحص تطابق الاتجاه في 3 فريمات + تأكيد AI</i>`,
-        `<i>عند التطابق تصل إشارة تلقائية</i>`,
+        `<i>عند تطابق الاتجاه في الفريمات الثلاثة + موافقة القرار النهائي تصل إشارة تلقائية.</i>`,
       ].join("\n");
 
       const kb: TelegramBot.InlineKeyboardMarkup = {
         inline_keyboard: [
-          [{ text: c.enabled ? "🔴 إيقاف التطابق" : "🟢 تفعيل التطابق", callback_data: "conv:toggle" }],
+          [{ text: c.enabled ? "🔴 إيقاف التطابق التلقائي" : "🟢 تفعيل التطابق التلقائي", callback_data: "conv:toggle" }],
+          [{ text: "▶️ فحص فوري الآن", callback_data: "conv:now" }],
+          [{ text: "━━ نوع التحليل ━━", callback_data: "conv:noop" }],
+          [
+            { text: `${c.useAI ? "✅ " : ""}🤖 مع AI`, callback_data: "conv:ai:on" },
+            { text: `${!c.useAI ? "✅ " : ""}⚡ بدون AI (فني)`, callback_data: "conv:ai:off" },
+          ],
+          [{ text: `━━ الأزواج (${c.pairs.length}/${Object.keys(PAIRS).length}) ━━`, callback_data: "conv:noop" }],
+          [{ text: `${c.pairs.length === Object.keys(PAIRS).length ? "✅ " : ""}جميع الأزواج (SCAN)`, callback_data: "conv:pair:ALL" }],
+          ...chunk(Object.keys(PAIRS).map(k => ({ text: `${c.pairs.includes(k) ? "✅ " : ""}${PAIRS[k].label}`, callback_data: `conv:pair:${k}` })), 3),
           [{ text: "━━ فترة الفحص ━━", callback_data: "conv:noop" }],
           [
             { text: `${c.intervalMinutes===1?"✅ ":""}1د`, callback_data: "conv:int:1" },
@@ -1873,7 +1992,6 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
           ...(Object.keys(CONVERGENCE_PRESETS) as ConvergencePreset[]).map(k => [
             { text: `${c.preset === k ? "✅ " : ""}${CONVERGENCE_PRESETS[k].label}`, callback_data: `conv:preset:${k}` },
           ]),
-          [{ text: "▶️ فحص فوري الآن", callback_data: "conv:now" }],
           [{ text: "◀️ رجوع", callback_data: "back:pairs" }],
         ],
       };
@@ -1898,6 +2016,13 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       return;
     }
 
+    if (data === "conv:ai:on" || data === "conv:ai:off") {
+      setConvergenceConfig({ useAI: data === "conv:ai:on" });
+      await bot.editMessageText(`✅ نوع التحليل في التطابق: <b>${convergenceConfig.useAI ? "مع AI" : "بدون AI (فني)"}</b>`,
+        { chat_id: chatId, message_id: msgId, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }]] } });
+      return;
+    }
+
     if (data.startsWith("conv:preset:")) {
       const k = data.split(":")[2] as ConvergencePreset;
       if (CONVERGENCE_PRESETS[k]) setConvergenceConfig({ preset: k });
@@ -1917,17 +2042,20 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     }
 
     if (data === "conv:now") {
+      const c = convergenceConfig;
+      if (!c.pairs.length) {
+        await bot.sendMessage(chatId, "⚠️ اختر زوجاً واحداً على الأقل في إعدادات التطابق.", { reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }]] } });
+        return;
+      }
+      const estMin = Math.max(1, Math.round(c.pairs.length * 3 * 9 / 60));
       await bot.editMessageText(
-        `🎯 <b>جاري فحص التطابق...</b>\n⏳ فحص ${Object.keys(PAIRS).length} أزواج × 3 فريمات\nانتظر من فضلك...`,
+        `🎯 <b>جاري فحص التطابق...</b>\n${c.pairs.length} زوج × ${CONVERGENCE_PRESETS[c.preset].label} (${c.useAI ? "مع AI" : "بدون AI"})\n⏱ المدة التقريبية: ~${estMin} دقيقة\n<i>تصلك إشارة لكل تطابق فور حدوثه، ثم ملخص الفحص.</i>`,
         { chat_id: chatId, message_id: msgId, parse_mode: "HTML" }
       );
-      const prevEnabled = convergenceConfig.enabled;
-      convergenceConfig.enabled = true;
-      await runConvergenceScan(bot, ownerChatId);
-      convergenceConfig.enabled = prevEnabled;
-      await bot.sendMessage(chatId, `✅ اكتمل فحص التطابق. سيتم إرسال أي إشارات متطابقة.`, {
-        parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }, { text: "🏠 القائمة", callback_data: "back:pairs" }]] },
+      const sum = await runConvergenceScan(bot, ownerChatId, true);
+      const head = sum.busy ? "⏳ فحص تطابق آخر قيد التشغيل — حاول بعد قليل." : `✅ <b>اكتمل فحص التطابق</b>: ${sum.checked} زوج — ${sum.sent} إشارة أُرسلت`;
+      await deliverLong(bot, chatId, [head, "", ...sum.lines].join("\n"), {
+        replyMarkup: { inline_keyboard: [[{ text: "◀️ إعدادات التطابق", callback_data: "conv:menu" }, { text: "🏠 القائمة", callback_data: "back:pairs" }]] },
       });
       return;
     }
@@ -1950,8 +2078,10 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       try {
         const marketData = await fetchMarket(pair, TIMEFRAMES[tf]);
         if (type === "quick") {
-          await bot.editMessageText(buildQuickMsg(pair, tf, marketData), {
-            chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML", reply_markup:afterResultKeyboard(),
+          const news = await fetchEconomicNews(pair);
+          await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, [], news), "telegram-manual-tech");
+          await deliverLong(bot, chatId, buildQuickMsg(pair, tf, marketData, news, await journalStatsLine()), {
+            editMessageId: loadMsgId, replyMarkup: afterResultKeyboard(),
           });
         } else {
           await bot.editMessageText(
@@ -1961,8 +2091,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
           const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, marketData), computeHtfBias(pair, tf)]);
           const aiResults = await runAI(pair, tf, marketData, news, chart, htfBias);
           await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, aiResults, news), "telegram-manual");
-          await bot.editMessageText(buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias, await journalStatsLine()), {
-            chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML", reply_markup:afterResultKeyboard(),
+          await deliverLong(bot, chatId, buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias, await journalStatsLine()), {
+            editMessageId: loadMsgId, replyMarkup: afterResultKeyboard(),
           });
           await sendChartPhoto(bot, chatId, chart, `📸 ${p.label} | ${tf} — الشارت الحي الذي قرأته نماذج AI`);
         }
