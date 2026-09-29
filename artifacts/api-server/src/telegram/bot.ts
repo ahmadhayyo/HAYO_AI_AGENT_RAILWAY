@@ -786,6 +786,13 @@ function firstNumber(v: unknown): number {
 }
 
 const MIN_RR = 1.5;          // minimum reward:risk for levels we publish
+// Counter-trend filter on by default; HAYO_COUNTER_TREND_BLOCK=0 disables it.
+const COUNTER_TREND_BLOCK = process.env.HAYO_COUNTER_TREND_BLOCK !== "0";
+/** Direction of the higher-timeframe bias line built by computeHtfBias: 1 up, -1 down, 0 flat/unknown. */
+function htfDirOf(text: unknown): 1 | -1 | 0 {
+  const t = String(text ?? "");
+  return t.includes("📈 صاعد") ? 1 : t.includes("📉 هابط") ? -1 : 0;
+}
 // Minimum AI models that must actually answer before an AI decision is trusted.
 const MIN_AI_ANSWERS = Math.max(1, Number(process.env.HAYO_MIN_AI_ANSWERS ?? 2));
 // Spread cost (% of a 1.5×ATR stop) at which a trade is blocked. Env-tunable;
@@ -851,6 +858,19 @@ export function computeRecommendation(
   if (!binary && COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
   if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
+  // Counter-trend filter: no trade AGAINST both the main trend (price vs SMA200)
+  // and the higher-timeframe trend. One of them opposing is only a warning.
+  if (dir !== "HOLD" && COUNTER_TREND_BLOCK) {
+    const side = dir === "BUY" ? 1 : -1;
+    const mainDir = trendUp === true ? 1 : trendUp === false ? -1 : 0;
+    const htf = htfDirOf((d as any).htfBias);
+    if (mainDir === -side && htf === -side) {
+      blockers.push(`عكس الاتجاه: الاتجاه الرئيسي (SMA200) والإطار الأعلى كلاهما ${side > 0 ? "هابط" : "صاعد"} — لا ${side > 0 ? "شراء" : "بيع"} عكسهما`);
+    } else if (mainDir === -side || htf === -side) {
+      reasons.push(`⚠️ ${side > 0 ? "الشراء" : "البيع"} عكس ${mainDir === -side ? "الاتجاه الرئيسي" : "الإطار الأعلى"}`);
+    }
+  }
+
   // Quorum: "the answer most models agree on" needs at least 2 models answering.
   if (aiResults.length > 0 && ai.answered < MIN_AI_ANSWERS) {
     blockers.push(`استجاب ${ai.answered} من ${aiResults.length} نماذج AI فقط — القرار التوافقي يحتاج ${MIN_AI_ANSWERS} نماذج على الأقل (تحقق من مفاتيح/رصيد النماذج)`);
@@ -1141,6 +1161,7 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
           }
 
           const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, d), computeHtfBias(pair, tf)]);
+          (d as any).htfBias = htfBias;
           let rec: Recommendation;
           let msg: string;
           if (useAI) {
@@ -1417,6 +1438,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
 
       const topData = results[2].data;
       const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, topTf.key, topData), computeHtfBias(pair, topTf.key)]);
+      (topData as any).htfBias = htfBias;
       const aiResults: any[] = useAI
         ? await runAI(pair, `${topTf.key} (تطابق ${tfs.map(t => t.key).join(" + ")})`, topData, news, chart, htfBias)
         : [];
@@ -2302,7 +2324,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       try {
         const marketData = await fetchMarket(pair, TIMEFRAMES[tf], { useTwelveData: true });
         if (type === "quick") {
-          const news = await fetchEconomicNews(pair);
+          const [news, htfBias] = await Promise.all([fetchEconomicNews(pair), computeHtfBias(pair, tf)]);
+          (marketData as any).htfBias = htfBias;
           await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, [], news), "tg-manual-tech");
           await deliverLong(bot, chatId, buildQuickMsg(pair, tf, marketData, news, await journalStatsLine()), {
             editMessageId: loadMsgId, replyMarkup: afterResultKeyboard(),
@@ -2313,6 +2336,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
             { chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML" }
           );
           const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tf, marketData), computeHtfBias(pair, tf)]);
+          (marketData as any).htfBias = htfBias;
           const aiResults = await runAI(pair, tf, marketData, news, chart, htfBias);
           await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, aiResults, news), "tg-manual");
           await deliverLong(bot, chatId, buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias, await journalStatsLine()), {
