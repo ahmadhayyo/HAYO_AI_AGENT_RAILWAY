@@ -61,6 +61,13 @@ async function fetchFromTwelveData(url: string, fast = false): Promise<any> {
   throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "نفد رصيد جميع مفاتيح TwelveData اليوم — يتجدد غداً" });
 }
 
+const LIVE_SYMBOL: Record<string, string> = {
+  EURUSD: "EUR/USD", USDJPY: "USD/JPY", GBPUSD: "GBP/USD", GBPJPY: "GBP/JPY", USDCHF: "USD/CHF", AUDUSD: "AUD/USD",
+  NZDUSD: "NZD/USD", USDCAD: "USD/CAD", EURGBP: "EUR/GBP", EURJPY: "EUR/JPY", EURCHF: "EUR/CHF", AUDCAD: "AUD/CAD",
+  XAUUSD: "XAU/USD", XAGUSD: "XAG/USD", BTCUSD: "BTC/USD", ETHUSD: "ETH/USD", USOIL: "CL", US30: "DJIA",
+};
+const livePriceCache = new Map<string, { price: number | null; source: string | null; at: number }>();
+
 async function fetchTwelveData(url: string, opts: { includeForming?: boolean } = {}): Promise<any> {
   // Parse the TwelveData-style URL so the fallbacks can reuse symbol/interval/size.
   let symbol = "", interval = "5min", outputsize = 100;
@@ -1106,6 +1113,23 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           { pair: input.pair, direction: input.direction, confidence: input.confidence, stopLoss: input.stopLoss, takeProfit: input.takeProfit },
           input.riskPercent
         );
+      }),
+
+    // Live price from the SAME feed chain the analysis used for its "current
+    // price" — polled by the page to show drift since the analysis moment.
+    // Cached 3 s per symbol; never spends TwelveData credits.
+    livePrice: tradingProcedure
+      .input(z.object({
+        pair: z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
+      }))
+      .query(async ({ input }) => {
+        const symbol = LIVE_SYMBOL[input.pair];
+        const hit = livePriceCache.get(symbol);
+        if (hit && Date.now() - hit.at < 3000) return hit;
+        const rt = await fetchRealtimePrice(symbol, { skipTwelveData: true });
+        const out = { price: rt?.price ?? null, source: rt?.source ?? null, at: Date.now() };
+        if (rt) livePriceCache.set(symbol, out);
+        return out;
       }),
 
     getCandles: tradingProcedure
@@ -4497,6 +4521,13 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
           timeframe: input.timeframe,
           currentPrice,
           priceSource,
+          analyzedAt: Date.now(),
+          // The exact closed candles the analysis ran on (for the page's
+          // "analysis chart": what you see is precisely what was analysed).
+          candles: candles.slice(-150).map(c => ({
+            time: Math.floor(toUtcMs(String(c.datetime)) / 1000),
+            open: parseFloat(c.open), high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close),
+          })).filter(c => isFinite(c.time) && isFinite(c.open) && isFinite(c.close)),
           dataSource,
           dataQuality,
           lastCandleTime,

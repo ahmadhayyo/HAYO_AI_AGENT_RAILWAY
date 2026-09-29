@@ -9,7 +9,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { callProvider, callProviderVision, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
 import { renderChartSnapshot } from "../hayo/services/chart-snapshot";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
-import { fetchOhlcFallback, dropFormingCandle, assessData } from "../hayo/market-data";
+import { fetchOhlcFallback, dropFormingCandle, assessData, fetchRealtimePrice } from "../hayo/market-data";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
   calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
@@ -289,7 +289,44 @@ const CACHE_TTL_MS = 3 * 60 * 1000; // 3-minute cache
  * pairs × 3 TFs every few minutes used up the daily TwelveData credits within
  * minutes, which is why every request had been falling back to Yahoo.
  */
+/**
+ * Live quote AT THE MOMENT of analysis (5 s cache per symbol), attached to every
+ * fetchMarket result — the indicators stay on closed candles, but the price
+ * shown, the entry and the ATR levels are anchored to the live market, so the
+ * message matches the chart at the second it was produced. A quote that
+ * disagrees with the candles by > 3 ATR (feeds out of sync) is ignored.
+ */
+const liveCache = new Map<string, { price: number; source: string; at: number }>();
+async function withLivePrice<T extends { price: number; ATR: number }>(symbol: string, d: T): Promise<T & { livePrice: number | null; liveSource: string | null; liveAt: number }> {
+  let q = liveCache.get(symbol);
+  if (!q || Date.now() - q.at > 5000) {
+    try {
+      const rt = await fetchRealtimePrice(symbol, { skipTwelveData: true });
+      if (rt) { q = { price: rt.price, source: rt.source, at: Date.now() }; liveCache.set(symbol, q); }
+    } catch { /* no live quote */ }
+  }
+  const ok = !!q && Date.now() - q.at < 60_000 && isFinite(q.price) && (!(d.ATR > 0) || Math.abs(q.price - d.price) <= 3 * d.ATR);
+  return { ...d, livePrice: ok ? q!.price : null, liveSource: ok ? q!.source : null, liveAt: ok ? q!.at : Date.now() };
+}
+
+/** Price to trade from: the live quote when available, else the last closed candle. */
+function tradePrice(d: any): number { return typeof d.livePrice === "number" && isFinite(d.livePrice) ? d.livePrice : d.price; }
+
+/** "💰 price" line: live quote with its exact time, plus the last closed candle. */
+function priceLine(d: any): string {
+  const t = (ms: number) => new Date(ms).toISOString().slice(11, 19);
+  const closeAt = d.datetime ? String(d.datetime).slice(11, 16) : "";
+  return typeof d.livePrice === "number"
+    ? `💰 <b>${d.fmt(d.livePrice)}</b> حي (${escHtml(d.liveSource || "")}) ⏱ <i>${t(d.liveAt)} UTC</i>\n🕯 آخر شمعة مغلقة <code>${d.fmt(d.price)}</code> <i>(${closeAt})</i>`
+    : `💰 <b>${d.fmt(d.price)}</b> <i>إغلاق شمعة ${closeAt} UTC — لا سعر حي متاح</i>`;
+}
+
 async function fetchMarket(pair: string, tfCfg: TfConfig, opts: { useTwelveData?: boolean } = {}) {
+  const p = PAIRS[pair];
+  return withLivePrice(p.tdSymbol, await fetchMarketCandles(pair, tfCfg, opts));
+}
+
+async function fetchMarketCandles(pair: string, tfCfg: TfConfig, opts: { useTwelveData?: boolean } = {}) {
   const p = PAIRS[pair];
   const cacheKey = `${pair}:${tfCfg.interval}:${opts.useTwelveData ? "td" : "fb"}`;
 
@@ -490,7 +527,8 @@ export async function runAI(pair: string, tf: string, d: Awaited<ReturnType<type
     : "";
 
   const ctx = `تحليل زوج ${pair} — الإطار الزمني: ${tf}
-السعر الحالي: ${d.fmt(d.price)}
+السعر الحي لحظة التحليل: ${typeof (d as any).livePrice === "number" ? `${d.fmt((d as any).livePrice)} (${(d as any).liveSource}, ${new Date((d as any).liveAt).toISOString().slice(11, 19)} UTC)` : "غير متاح"}
+إغلاق آخر شمعة: ${d.fmt(d.price)}
 مصدر البيانات: ${(d as any).dataSource} — آخر شمعة مغلقة ${d.datetime} UTC${(d as any).poorData ? ` — ⚠️ بيانات غير صالحة: ${(d as any).qualityNote}، المؤشرات لا تمثل السوق الحي → الجواب HOLD` : ""}
 
 📊 المؤشرات التقنية:
@@ -591,7 +629,7 @@ function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fe
   return [
     ...(header ? [header] : []),
     `${p.flag} <b>${p.label}</b> | <code>${tf}</code>`,
-    `💰 <b>${d.fmt(d.price)}</b>  <i>${d.datetime.slice(11,16)} UTC</i>`,
+    priceLine(d),
     dataLine(d),
     ``,
     `<b>━━ 📊 المؤشرات ━━</b>`,
@@ -779,24 +817,25 @@ export function computeRecommendation(
   // ── Levels: AI levels only if they are sane, otherwise ATR-based ──
   let entry = NaN, sl = NaN, tp = NaN, rr = NaN, levelsFrom: "AI" | "ATR" | "" = "";
   if (dir !== "HOLD") {
-    const atr = d.ATR || d.price * 0.001;
+    const px = tradePrice(d); // live quote at the analysis moment (else last close)
+    const atr = d.ATR || px * 0.001;
     const isBuy = dir === "BUY";
     const candidates = aiResults
       .filter((r: any) => r.signal === dir)
       .sort((a: any, b: any) => b.confidence - a.confidence);
     for (const r of candidates) {
       const e = firstNumber(r.entry), s0 = firstNumber(r.sl), t0 = firstNumber(r.tp);
-      const e1 = isFinite(e) ? e : d.price;
+      const e1 = isFinite(e) ? e : px;
       if (!isFinite(s0) || !isFinite(t0)) continue;
       const risk = isBuy ? e1 - s0 : s0 - e1, reward = isBuy ? t0 - e1 : e1 - t0;
-      if (risk >= 0.5 * atr && reward / risk >= MIN_RR && Math.abs(e1 - d.price) <= atr) {
+      if (risk >= 0.5 * atr && reward / risk >= MIN_RR && Math.abs(e1 - px) <= atr) {
         entry = e1; sl = s0; tp = t0; rr = reward / risk; levelsFrom = "AI"; break;
       }
     }
     if (!levelsFrom) {
-      entry = d.price;
-      sl = isBuy ? d.price - 1.5 * atr : d.price + 1.5 * atr;
-      tp = isBuy ? d.price + 2.5 * atr : d.price - 2.5 * atr;
+      entry = px;
+      sl = isBuy ? px - 1.5 * atr : px + 1.5 * atr;
+      tp = isBuy ? px + 2.5 * atr : px - 2.5 * atr;
       rr = 2.5 / 1.5; levelsFrom = "ATR";
     }
   }
@@ -915,7 +954,7 @@ function buildAIMsg(
   return [
     isAutoSignal ? `🔔 <b>إشارة تلقائية!</b>` : "",
     `${p.flag} <b>تحليل AI كامل — ${p.label}</b> | <code>${tf}</code>`,
-    `💰 <b>${d.fmt(d.price)}</b>  <i>${d.datetime.slice(11,16)} UTC</i>`,
+    priceLine(d),
     dataLine(d),
     ``,
     `<b>━━ 📊 المؤشرات ━━</b>`,
@@ -1348,7 +1387,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
         `🎯🎯🎯 <b>تطابق كامل!</b> 🎯🎯🎯`,
         ``,
         `${p.flag} <b>${p.label}</b> — ${convergenceDir === "BUY" ? "🟢 شراء قوية" : "🔴 بيع قوي"}`,
-        `💰 السعر: <b>${d15.fmt(d15.price)}</b>  <i>${d15.datetime.slice(11, 16)} UTC</i>`,
+        priceLine(d15),
         ``,
         `<b>━━ 📊 تطابق 3 فريمات ━━</b>`,
         tfDetails,

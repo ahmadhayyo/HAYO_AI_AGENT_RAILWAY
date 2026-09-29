@@ -126,11 +126,13 @@ function aggregateBars(rows: any[], ms: number): any[] {
 /**
  * Latest real-time price (a live quote, not the last closed candle). Used so the
  * analysis "current price" tracks the live chart instead of lagging a whole bar.
- * OANDA live pricing (if configured) → Yahoo regularMarketPrice. Never throws.
+ * Binance (crypto) → OANDA (if configured) → Dukascopy → TwelveData → Yahoo.
+ * The same chain serves the analysis and the page's live-price poll, so the
+ * "price at analysis" and the "price now" come from one feed. Never throws.
  */
 const BINANCE_SYMBOL: Record<string, string> = { "BTC/USD": "BTCUSDT", "ETH/USD": "ETHUSDT" };
 
-export async function fetchRealtimePrice(symbol: string): Promise<{ price: number; source: string } | null> {
+export async function fetchRealtimePrice(symbol: string, opts: { skipTwelveData?: boolean } = {}): Promise<{ price: number; source: string } | null> {
   // 0) Crypto → Binance spot: matches the BINANCE:*USDT TradingView chart EXACTLY.
   try {
     const b = BINANCE_SYMBOL[symbol];
@@ -140,22 +142,6 @@ export async function fetchRealtimePrice(symbol: string): Promise<{ price: numbe
         const j = await res.json() as any;
         const p = parseFloat(j?.price);
         if (isFinite(p) && p > 0) return { price: p, source: "binance-live" };
-      }
-    }
-  } catch { /* next */ }
-  // 0.5) Twelve Data /price (uses the rotating key) — real-time quote for FX/metals/indices.
-  try {
-    const { getTwelveDataKey, markKeyExhausted, isRateLimitError } = await import("../lib/twelvedata-keys.js");
-    const key = getTwelveDataKey();
-    if (key) {
-      const res = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${key}`, { signal: AbortSignal.timeout(8000) });
-      if (res.ok) {
-        const j = await res.json() as any;
-        if (isRateLimitError(j)) { markKeyExhausted(key); }
-        else {
-          const p = parseFloat(j?.price);
-          if (isFinite(p) && p > 0) return { price: p, source: "twelvedata-live" };
-        }
       }
     }
   } catch { /* next */ }
@@ -184,6 +170,22 @@ export async function fetchRealtimePrice(symbol: string): Promise<{ price: numbe
     if (d && staleMinutes(symbol, d.values, "1min") === 0) {
       const p = parseFloat(d.values[0].close);
       if (isFinite(p) && p > 0) return { price: p, source: "dukascopy-live" };
+    }
+  } catch { /* next */ }
+  // 1.8) Twelve Data /price (uses the rotating key; costs credits) — skipped when polling.
+  if (!opts.skipTwelveData) try {
+    const { getTwelveDataKey, markKeyExhausted, isRateLimitError } = await import("../lib/twelvedata-keys.js");
+    const key = getTwelveDataKey();
+    if (key) {
+      const res = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${key}`, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const j = await res.json() as any;
+        if (isRateLimitError(j)) { markKeyExhausted(key); }
+        else {
+          const p = parseFloat(j?.price);
+          if (isFinite(p) && p > 0) return { price: p, source: "twelvedata-live" };
+        }
+      }
     }
   } catch { /* next */ }
   // 2) Yahoo regularMarketPrice — keyless; rejected when its quote time is frozen
