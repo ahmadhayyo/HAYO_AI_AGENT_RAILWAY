@@ -12,6 +12,8 @@ import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, 
 import { fetchOhlcFallback, dropFormingCandle, assessData, fetchRealtimePrice } from "../hayo/market-data";
 import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/weights-model";
 import { lastBarTrap } from "../hayo/liquidity-trap";
+import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE } from "../hayo/signal-policy";
+import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
   calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
@@ -1215,6 +1217,51 @@ function buildAIMsg(
 //      without AI: the technical final decision equals that direction,
 //   3) the safety gates pass (spread cost, high-impact news).
 // Each sent signal starts a 4h cooldown for that pair/TF (only when SENT).
+// ─── /backtest: replay the live binary signals on recent Dukascopy data ──
+let backtestRunning = false;
+function backtestReport(results: BacktestResult[]): string {
+  const r0 = results[0];
+  const m = WEIGHT_MODELS[r0.modelId];
+  const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+  const pct = (x: number | null) => (x === null ? "—" : `${x.toFixed(1)}%`);
+  const moe = (t: { win: number; loss: number }) => { const e = margin95(t as any); return e === null ? "" : ` ±${e.toFixed(1)}`; };
+  const net = (t: any) => { const v = netStakes(t, BINARY_PAYOUT); return `${v >= 0 ? "+" : ""}${v.toFixed(1)}`; };
+  const line = (name: string, t: any) => `${name}: <b>${t.n}</b> صفقة | فوز <b>${pct(winRate(t))}</b>${moe(t)}${t.tie ? ` | تعادل ${t.tie}` : ""} | صافي <b>${net(t)}</b> رهان`;
+  const breakEven = Math.round(100 / (1 + BINARY_PAYOUT));
+  const oldest = Math.min(...Object.values(r0.coveredFrom), r0.to);
+  const out: string[] = [
+    `<b>🧪 اختبار الإشارات على بيانات حديثة</b>`,
+    `📡 المصدر: <code>Dukascopy</code> (نفس مصدر البوت الحي)`,
+    `⚖️ النموذج: <b>${r0.modelId === "fast" ? "سريع" : "سكالب"}</b> ${m.tfs.join(" + ")} — مدة الصفقة <b>${r0.horizon} شموع</b> (${r0.lowTf})`,
+    `📅 الفترة: ${day(Math.max(r0.from, oldest))} → ${day(r0.to)} (UTC)${oldest > r0.from + 86_400_000 ? ` <i>(المصدر أعاد أقل من ${r0.days} يوماً)</i>` : ""}`,
+    `📊 نقطة التعادل: فوز ≥ ${breakEven}% (بعائد ${Math.round(BINARY_PAYOUT * 100)}%)`,
+  ];
+  for (const r of results) {
+    const perDay = r.total.n / Math.max(1, r.days * 5 / 7);
+    out.push(``, `<b>━━ درجة ${r.minGrade}${r.minGrade === WEIGHTS_MIN_GRADE ? " (الإعداد الحالي)" : " (للمقارنة)"} ━━</b>`,
+      line("📈 الإجمالي", r.total),
+      `≈ ${perDay.toFixed(1)} إشارة يومياً (أيام التداول)`,
+      line("• ⚖️ أوزان", r.byMode.weights));
+    if (r.modelId === "fast") out.push(line("• 🪤 فخ السيولة", r.byMode.trap));
+  }
+  const main = results.find(r => r.minGrade === WEIGHTS_MIN_GRADE) ?? r0;
+  const pairs = Object.entries(main.byPair).sort((a, b) => b[1].n - a[1].n);
+  if (pairs.length) {
+    out.push(``, `<b>━━ حسب الزوج (درجة ${main.minGrade}) ━━</b>`);
+    for (const [code, t] of pairs) out.push(`<code>${(PAIRS[code]?.label ?? code).padEnd(8)}</code> ${String(t.n).padStart(3)} صفقة | ${pct(winRate(t))} | ${net(t)}`);
+  }
+  const days = Object.entries(main.byDay).sort((a, b) => a[0].localeCompare(b[0]));
+  if (days.length) {
+    out.push(``, `<b>━━ حسب اليوم (درجة ${main.minGrade}) ━━</b>`);
+    for (const [d, t] of days) out.push(`<code>${d}</code> ${String(t.n).padStart(3)} | ${pct(winRate(t))} | ${net(t)}`);
+  }
+  if (r0.skipped.length) out.push(``, `⚠️ بلا بيانات كافية: ${r0.skipped.join(", ")}`);
+  out.push(``,
+    `<i>القواعد مطابقة للبوت الحي: صفقة واحدة مفتوحة لكل زوج، الدخول عند افتتاح الشمعة التالية، التعادل يُسترد. لا يشمل فلتر الأخبار ولا فيتو AI (كلاهما يحذف إشارات فقط)، والمسح الحي كل بضع دقائق يرسل عدداً أقل.</i>`,
+    `<i>±: هامش الخطأ 95% — كلما زادت الصفقات صار الحكم أدق.</i>`);
+  return out.join("\n");
+}
+
 let autoScanRunning = false;
 let autoManualRunning = false;
 
@@ -1392,9 +1439,9 @@ const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, st
 };
 /** Presets decided by the learned weighting model (hayo/weights-model.ts). */
 const CONVERGENCE_MODEL: Partial<Record<ConvergencePreset, string>> = { fast: "fast", scalp: "scalp" };
-/** Liquidity trap: weights-model agreement needed, and its 2019 test hit rate (10 bars, 1m). */
-const TRAP_MIN_P = 0.53;
-const TRAP_OOS = 55.8;
+/** Liquidity trap: weights-model agreement needed, and its test hit rates (10 bars, 1m) — see hayo/signal-policy.ts. */
+const TRAP_MIN_P = TRAP_POLICY[WEIGHTS_MIN_GRADE].minP;
+const TRAP_OOS = TRAP_POLICY[WEIGHTS_MIN_GRADE].oos2019;
 /** Auto-signal binary mode: which weighting model serves each low timeframe. */
 const BINARY_MODEL_BY_TF: Record<string, string> = { "1m": "fast", "5m": "scalp" };
 const WEIGHTED_ASSETS = new Set(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD"]);
@@ -1720,17 +1767,17 @@ async function weightedSignal(
   // research, not on 5m): the reverse of a stretched Breaker-box entry candle,
   // sent when the weights model leans the same way (p ≥ TRAP_MIN_P).
   const trap = modelId === "fast" ? lastBarTrap(datas[0].candles) : null;
-  const trapP = trap ? (trap.dir === "BUY" ? v.p : 1 - v.p) : 0;
-  let mode: "weights" | "trap" = "weights";
-  let sigDir: "BUY" | "SELL";
-  if (v.dir !== "HOLD") sigDir = v.dir;
-  else if (trap && trapP >= TRAP_MIN_P) { mode = "trap"; sigDir = trap.dir; }
-  else {
+  const trapP = trap ? trapAgreement(v.p, trap.dir) : 0;
+  // Minimum grade (WEIGHTS_MIN_GRADE, default A) — shared with /backtest.
+  const decision = decideSignal(v, trap);
+  if (!decision) {
     const trapNote = trap ? ` — 🪤 فخ ${trap.dir === "BUY" ? "شراء" : "بيع"} لكن موافقة النموذج ${(trapP * 100).toFixed(1)}% أقل من ${TRAP_MIN_P * 100}%` : "";
-    summary.lines.push(`➖ ${label}: ⚖️ احتمال الصعود ${pTxt} — لا أفضلية كافية${trapNote}${opts.icons ? ` (${opts.icons})` : ""}`);
+    const why = v.grade !== "-" ? `درجة ${v.grade} (المطلوب ${WEIGHTS_MIN_GRADE})` : "لا أفضلية كافية";
+    summary.lines.push(`➖ ${label}: ⚖️ احتمال الصعود ${pTxt} — ${why}${trapNote}${opts.icons ? ` (${opts.icons})` : ""}`);
     return none;
   }
-  const isTrap = mode === "trap";
+  const sigDir = decision.dir;
+  const isTrap = decision.mode === "trap";
   const title = isTrap ? "🪤 فخ السيولة + أوزان" : opts.title;
   const lowData = datas[0];
   const topKey = tfKeys[tfKeys.length - 1];
@@ -1787,7 +1834,7 @@ async function weightedSignal(
       `<b>━━ 🪤 فخ السيولة ━━</b>`,
       `شمعة دخول صندوق Breaker ${trap.dir === "SELL" ? "صاعد" : "هابط"} (<code>${lowData.fmt(trap.boxBot)}</code>–<code>${lowData.fmt(trap.boxTop)}</code>، جودة ${trap.boxScore.toFixed(0)}) جاءت ممتدة جداً: Value Chart <b>${trap.vc.toFixed(1)}</b> (الحد ±8)`,
       `← هذه شمعة المتأخرين (سيولة)؛ الإشارة عكسها: <b>${trap.dir === "BUY" ? "شراء" : "بيع"}</b>. موافقة نموذج الأوزان: <b>${(trapP * 100).toFixed(1)}%</b>`,
-      isTrap ? `📈 دقة "فخ + موافقة النموذج ≥ 53%" في الاختبار: 55.7% (2018) / <b>${TRAP_OOS}%</b> (2019) على 10 شموع` : (trap.dir === sigDir ? `✅ الفخ يؤكد إشارة الأوزان` : `⚠️ الفخ عكس إشارة الأوزان — القرار للأوزان`),
+      isTrap ? `📈 دقة "فخ + موافقة النموذج ≥ ${TRAP_MIN_P * 100}%" في الاختبار: ${TRAP_POLICY[WEIGHTS_MIN_GRADE].oos2018}% (2018) / <b>${TRAP_OOS}%</b> (2019) على 10 شموع` : (trap.dir === sigDir ? `✅ الفخ يؤكد إشارة الأوزان` : `⚠️ الفخ عكس إشارة الأوزان — القرار للأوزان`),
       ``,
     ] : []),
     `<b>━━ ⚖️ قرار النموذج ━━</b>`,
@@ -2033,7 +2080,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
           `الأوامر المتاحة:\n` +
           `• /scan — تحليل سوق فوري\n` +
           `• /auto — إعدادات الإشارات التلقائية\n` +
-          `• /signals — آخر الإشارات\n\n` +
+          `• /signals — آخر الإشارات\n` +
+          `• /backtest — اختبار الإشارات على آخر 14 يوماً (مثال: /backtest 30 EURUSD)\n\n` +
           `اختر زوجاً للتحليل:`,
           { parse_mode: "Markdown", reply_markup: pairsKeyboard() }
         );
@@ -2059,6 +2107,42 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         await bot.sendMessage(msg.chat.id, "🏠 *القائمة الرئيسية*\n\nاختر القسم:", { parse_mode: "Markdown", reply_markup: mainMenuKeyboard() });
       }
     } catch (e: any) { console.warn("[TelegramBot] /menu error:", e?.message); }
+  });
+
+  // /backtest [days] [fast|scalp] [PAIR ...] — replay the live binary signals on recent data
+  bot.onText(/^\/backtest\b(.*)$/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    if (!isOwner(chatId)) return;
+    if (backtestRunning) { try { await bot.sendMessage(chatId, "⏳ اختبار آخر قيد التشغيل — انتظر انتهاءه."); } catch {} return; }
+    backtestRunning = true;
+    try {
+      const args = (match?.[1] ?? "").trim().split(/\s+/).filter(Boolean);
+      let days = 14, modelId = "fast";
+      const pairCodes: string[] = [];
+      for (const a of args) {
+        if (/^\d+$/.test(a)) days = Math.max(1, Math.min(60, Number(a)));
+        else if (/^(fast|scalp)$/i.test(a)) modelId = a.toLowerCase();
+        else { const c = a.toUpperCase().replace("/", ""); if (WEIGHTED_ASSETS.has(c)) pairCodes.push(c); }
+      }
+      const codes = pairCodes.length ? pairCodes : [...WEIGHTED_ASSETS];
+      const pairs = codes.map(code => ({ code, symbol: PAIRS[code].tdSymbol }));
+      const head = `🧪 اختبار آخر ${days} يوماً — نموذج ${modelId} — ${pairs.length} زوج`;
+      const status = await bot.sendMessage(chatId, `${head}\n⏳ تحميل البيانات التاريخية من Dukascopy…`);
+      let lastEdit = 0;
+      const results = await runRecentBacktest({
+        pairs, modelId, days, minGrades: WEIGHTS_MIN_GRADE === "A" ? ["A", "B"] : ["B", "A"],
+        onProgress: async (done, total, pair) => {
+          if (Date.now() - lastEdit < 4000) return;
+          lastEdit = Date.now();
+          try { await bot.editMessageText(`${head}\n⏳ ${done}/${total} — ${PAIRS[pair]?.label ?? pair}…`, { chat_id: chatId, message_id: status.message_id }); } catch {}
+        },
+      });
+      console.log(`[Backtest] ${modelId} ${days}d: ` + results.map(r => `${r.minGrade} n=${r.total.n} win=${winRate(r.total)?.toFixed(1)}%`).join(" | "));
+      await deliverLong(bot, chatId, backtestReport(results), { editMessageId: status.message_id });
+    } catch (e: any) {
+      console.warn("[Backtest] error:", e?.message);
+      try { await bot.sendMessage(chatId, `❌ فشل الاختبار: ${e?.message ?? e}`); } catch {}
+    } finally { backtestRunning = false; }
   });
 
   // ── Callback Query ─────────────────────────────────────────────
