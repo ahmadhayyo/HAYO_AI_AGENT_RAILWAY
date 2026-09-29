@@ -7,7 +7,7 @@ import { router, publicProcedure, protectedProcedure, adminProcedure, tradingPro
 import { reverseEngineerRouter } from "./reverse-engineer-router";
 import { aiAgentRouter } from "./ai-agent-router";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
-import { fetchFromOanda, fetchFromYahoo, fetchRealtimePrice, dropFormingCandle } from "./market-data";
+import { fetchFromOanda, fetchFromYahoo, fetchFromBinance, fetchFromDukascopy, firstUsable, fetchRealtimePrice, dropFormingCandle } from "./market-data";
 import {
   calcSMA, calcEMA, calcRSI, calcMACD, calcBB, calcATR, calcStochastic,
   calcWilliamsR, calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
@@ -23,8 +23,12 @@ const COST_WARN_PCT = 12;
 // ─── Market data provider chain: OANDA → Yahoo → TwelveData ──────────────
 // OANDA/Yahoo fallbacks live in ./market-data (shared with the Telegram bot).
 // This keeps the trading engine independent of TwelveData credits.
-async function fetchFromTwelveData(url: string): Promise<any> {
-  for (let attempt = 0; attempt < 8; attempt++) {
+async function fetchFromTwelveData(url: string, fast = false): Promise<any> {
+  // fast: one quick try per key with no back-off sleeps, so an exhausted or
+  // rate-limited TwelveData costs ~1s instead of a minute before the fallback.
+  const maxAttempts = fast ? 2 : 8;
+  const pause = (ms: number) => (fast ? Promise.resolve() : new Promise(r => setTimeout(r, ms)));
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const apiKey = getTwelveDataKey();
     if (!apiKey) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا توجد مفاتيح TwelveData متاحة" });
     // timezone=UTC: candle datetimes are then unambiguous (used for pivots and
@@ -34,7 +38,7 @@ async function fetchFromTwelveData(url: string): Promise<any> {
       const res = await fetch(fullUrl, { signal: AbortSignal.timeout(12000) });
       if (res.status === 429) {
         rotateToNextKey();
-        await new Promise(r => setTimeout(r, 8000));
+        await pause(8000);
         continue;
       }
       if (!res.ok) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `TwelveData HTTP ${res.status}` });
@@ -43,19 +47,26 @@ async function fetchFromTwelveData(url: string): Promise<any> {
         const isDailyDone = await checkAndMarkIfDailyExhausted(apiKey);
         if (!isDailyDone) {
           rotateToNextKey();
-          await new Promise(r => setTimeout(r, 8000));
+          await pause(8000);
         }
         continue;
       }
       return data;
     } catch (err: any) {
       if (err instanceof TRPCError) throw err;
-      if (attempt < 7) { await new Promise(r => setTimeout(r, 3000)); continue; }
+      if (attempt < maxAttempts - 1) { await pause(3000); continue; }
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "فشل الاتصال بـ TwelveData" });
     }
   }
   throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "نفد رصيد جميع مفاتيح TwelveData اليوم — يتجدد غداً" });
 }
+
+const LIVE_SYMBOL: Record<string, string> = {
+  EURUSD: "EUR/USD", USDJPY: "USD/JPY", GBPUSD: "GBP/USD", GBPJPY: "GBP/JPY", USDCHF: "USD/CHF", AUDUSD: "AUD/USD",
+  NZDUSD: "NZD/USD", USDCAD: "USD/CAD", EURGBP: "EUR/GBP", EURJPY: "EUR/JPY", EURCHF: "EUR/CHF", AUDCAD: "AUD/CAD",
+  XAUUSD: "XAU/USD", XAGUSD: "XAG/USD", BTCUSD: "BTC/USD", ETHUSD: "ETH/USD", USOIL: "CL", US30: "DJIA",
+};
+const livePriceCache = new Map<string, { price: number | null; source: string | null; at: number }>();
 
 async function fetchTwelveData(url: string, opts: { includeForming?: boolean } = {}): Promise<any> {
   // Parse the TwelveData-style URL so the fallbacks can reuse symbol/interval/size.
@@ -71,12 +82,23 @@ async function fetchTwelveData(url: string, opts: { includeForming?: boolean } =
   // The live chart (getCandles) opts out so it still shows the developing bar.
   const closedOnly = (d: any) => (!opts.includeForming && d && Array.isArray(d.values) ? { ...d, values: dropFormingCandle(d.values, interval) } : d);
 
-  // 1) OANDA — broker-grade, only if OANDA_API_TOKEN is configured
-  try { const o = await fetchFromOanda(symbol, interval, outputsize); if (o) return closedOnly(o); } catch { /* try next */ }
-  // 2) Yahoo Finance — keyless universal fallback (covers crypto + indices too)
-  try { const y = await fetchFromYahoo(symbol, interval, outputsize); if (y) return closedOnly(y); } catch { /* try next */ }
-  // 3) TwelveData — original key-rotation path
-  return closedOnly(await fetchFromTwelveData(url));
+  // Providers in order; the first whose candles are FRESH and non-flat wins
+  // (a frozen feed would make the "current price" and every indicator lag the
+  // live chart). If none is usable, the least-bad one comes back tagged with
+  // `quality.usable=false` and the analysis refuses to signal on it.
+  const best = await firstUsable(symbol, interval, [
+    () => fetchFromOanda(symbol, interval, outputsize),            // broker-grade (OANDA_API_TOKEN)
+    () => fetchFromBinance(symbol, interval, outputsize),          // crypto
+    () => fetchFromDukascopy(symbol, interval, outputsize),        // FX/metals, keyless ECN feed
+    async () => {                                                   // TwelveData, fast (no back-off)
+      const td = await fetchFromTwelveData(url, true);
+      return td && td.status !== "error" && Array.isArray(td.values) && td.values.length
+        ? { status: "ok" as const, values: td.values, meta: { source: "twelvedata" } } : null;
+    },
+    () => fetchFromYahoo(symbol, interval, outputsize),            // keyless last resort
+  ]);
+  if (best) return closedOnly(best);
+  throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لا توجد بيانات سوق متاحة حالياً (OANDA/Binance/Dukascopy/TwelveData/Yahoo)" });
 }
 
 import {
@@ -1091,6 +1113,23 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
           { pair: input.pair, direction: input.direction, confidence: input.confidence, stopLoss: input.stopLoss, takeProfit: input.takeProfit },
           input.riskPercent
         );
+      }),
+
+    // Live price from the SAME feed chain the analysis used for its "current
+    // price" — polled by the page to show drift since the analysis moment.
+    // Cached 3 s per symbol; never spends TwelveData credits.
+    livePrice: tradingProcedure
+      .input(z.object({
+        pair: z.enum(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "USOIL", "US30"]),
+      }))
+      .query(async ({ input }) => {
+        const symbol = LIVE_SYMBOL[input.pair];
+        const hit = livePriceCache.get(symbol);
+        if (hit && Date.now() - hit.at < 3000) return hit;
+        const rt = await fetchRealtimePrice(symbol, { skipTwelveData: true });
+        const out = { price: rt?.price ?? null, source: rt?.source ?? null, at: Date.now() };
+        if (rt) livePriceCache.set(symbol, out);
+        return out;
       }),
 
     getCandles: tradingProcedure
@@ -3396,6 +3435,7 @@ const root = document.getElementById('root');`;
             if (data.status === "error" || !data.values || !Array.isArray(data.values)) {
               throw new Error(`${pair}: ${data.message || "فشل"}`);
             }
+            if (data.quality && !data.quality.usable) throw new Error(`${pair}: بيانات غير صالحة (${data.quality.note})`);
             const candles = [...data.values].reverse() as any[];
             const closes = candles.map((c: any) => parseFloat(c.close));
             const highs  = candles.map((c: any) => parseFloat(c.high));
@@ -3808,6 +3848,7 @@ ${scanSummary}
               // to OANDA/Yahoo.
               const data = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${tf}&outputsize=250&apikey=__API_KEY__`);
               if (data.status === "error" || !data.values) continue;
+              if (data.quality && !data.quality.usable) continue; // frozen/flat feed — no signal
 
               const candles = [...data.values].reverse() as any[];
               const closes = candles.map((c: any) => parseFloat(c.close));
@@ -4235,6 +4276,9 @@ ${scanSummary}
 
         // Parse candles (TwelveData returns newest first, reverse to oldest-first)
         const candles = [...tdData.values].reverse() as Array<{ open: string; high: string; low: string; close: string; datetime: string }>;
+        const dataSource: string = tdData.meta?.source ?? "twelvedata";
+        const dataQuality: { flatShare: number; staleMin: number; usable: boolean; note: string } | null = tdData.quality ?? null;
+        const lastCandleTime = candles[candles.length - 1]?.datetime ?? "";
         const closes  = candles.map(c => parseFloat(c.close));
         const highs   = candles.map(c => parseFloat(c.high));
         const lows    = candles.map(c => parseFloat(c.low));
@@ -4340,6 +4384,13 @@ ${scanSummary}
             reasons.unshift(`⚠️ تكلفة السبريد ≈ ${costPct.toFixed(0)}% من وقف الخسارة — مرتفعة`);
           }
 
+          // 5.5) Data-quality gate: never signal on a frozen or degenerate feed.
+          if (dataQuality && !dataQuality.usable) {
+            direction = "HOLD";
+            confidence = Math.min(confidence, 10);
+            reasons.unshift(`⛔ جودة البيانات (${dataSource}): ${dataQuality.note} — لا إشارة حتى تتوفر بيانات حية`);
+          }
+
           // 6) LIVE news gate overrides
           if (newsRisk.dangerZone) {
             direction = "HOLD";
@@ -4355,6 +4406,7 @@ ${scanSummary}
         const marketContext = `═══════════════════════════════
 تحليل زوج ${input.pair} — الإطار الزمني: ${input.timeframe}
 السعر الحالي: ${fmt(currentPrice)} (المصدر: ${priceSource})
+مصدر الشموع: ${dataSource} — آخر شمعة مغلقة: ${lastCandleTime} UTC — الجودة: ${dataQuality?.note ?? "غير مقيّمة"}${dataQuality && !dataQuality.usable ? "\n⛔ البيانات غير حية/مشوّهة: يجب أن يكون القرار HOLD" : ""}
 ═══════════════════════════════
 
 📊 المؤشرات التقنية:
@@ -4468,6 +4520,17 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
           pair: input.pair,
           timeframe: input.timeframe,
           currentPrice,
+          priceSource,
+          analyzedAt: Date.now(),
+          // The exact closed candles the analysis ran on (for the page's
+          // "analysis chart": what you see is precisely what was analysed).
+          candles: candles.slice(-150).map(c => ({
+            time: Math.floor(toUtcMs(String(c.datetime)) / 1000),
+            open: parseFloat(c.open), high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close),
+          })).filter(c => isFinite(c.time) && isFinite(c.open) && isFinite(c.close)),
+          dataSource,
+          dataQuality,
+          lastCandleTime,
           indicators: { rsi, sma20, sma50, sma200, macd, bb, atr, stoch, williamsR, pivots, adx },
           strategySignals,
           filterResults,
@@ -4543,6 +4606,7 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
 
             const analyzeFrame = (data: any) => {
               if (data.status === "error" || !data.values) return null;
+              if (data.quality && !data.quality.usable) return null; // frozen/flat feed
               const candles = [...data.values].reverse() as any[];
               const closes = candles.map((c: any) => parseFloat(c.close));
               const highs = candles.map((c: any) => parseFloat(c.high));

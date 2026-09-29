@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
+import { createChart, CandlestickSeries, LineStyle, type IChartApi } from "lightweight-charts";
 
 // ─── Types ────────────────────────────────────────────────────────────
 interface AnalysisResult {
@@ -74,6 +75,12 @@ interface TradingData {
   pair: string;
   timeframe: string;
   currentPrice: number;
+  priceSource?: string;
+  dataSource?: string;
+  dataQuality?: { flatShare: number; staleMin: number; usable: boolean; note: string } | null;
+  lastCandleTime?: string;
+  analyzedAt?: number;
+  candles?: Array<{ time: number; open: number; high: number; low: number; close: number }>;
   indicators: {
     rsi: number;
     sma20: number;
@@ -1033,6 +1040,11 @@ function IndicatorsPanel({ data }: { data: TradingData }) {
 
   const items = [
     { label: "السعر الحالي", value: currentPrice.toFixed(decimals), highlight: true },
+    ...(data.dataSource ? [{
+      label: "مصدر البيانات",
+      value: `${data.dataSource}${data.lastCandleTime ? ` · ${String(data.lastCandleTime).slice(11, 16)} UTC` : ""}${data.dataQuality ? (data.dataQuality.usable ? " ✅" : ` ⛔ ${data.dataQuality.note}`) : ""}`,
+      color: data.dataQuality && !data.dataQuality.usable ? "text-red-400" : "text-muted-foreground",
+    }] : []),
     { label: "RSI (14)", value: `${indicators.rsi.toFixed(1)} — ${rsiLabel}`, color: rsiColor },
     { label: "SMA 20",   value: indicators.sma20.toFixed(decimals), color: currentPrice > indicators.sma20 ? "text-emerald-400" : "text-red-400" },
     { label: "SMA 50",   value: indicators.sma50.toFixed(decimals), color: currentPrice > indicators.sma50 ? "text-emerald-400" : "text-red-400" },
@@ -1064,6 +1076,67 @@ function IndicatorsPanel({ data }: { data: TradingData }) {
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── Analysis-moment chart + live price sync ──────────────────────────
+const pairDecimals = (pair: string) => pair === "BTCUSD" || pair === "ETHUSD" || pair === "US30" ? 1 : pair === "XAUUSD" ? 2 : pair === "XAGUSD" || pair === "USOIL" ? 3 : pair.includes("JPY") ? 3 : 5;
+const pipSize = (pair: string) => pair.includes("JPY") ? 0.01 : pair === "XAUUSD" ? 0.1 : pair === "XAGUSD" || pair === "USOIL" ? 0.01 : pair === "BTCUSD" || pair === "ETHUSD" || pair === "US30" ? 1 : 0.0001;
+
+/**
+ * Draws the EXACT closed candles the analysis ran on (same feed, same moment)
+ * with a line at the analysis price — so the chart and the numbers can never
+ * disagree. TradingView stays one click away for live browsing.
+ */
+function AnalysisChart({ data }: { data: TradingData }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !data.candles?.length) return;
+    const dec = pairDecimals(data.pair);
+    let chart: IChartApi | null = createChart(el, {
+      autoSize: true,
+      layout: { background: { color: "#131722" }, textColor: "#d1d4dc" },
+      grid: { vertLines: { color: "#1e2230" }, horzLines: { color: "#1e2230" } },
+      timeScale: { timeVisible: true, secondsVisible: false },
+      rightPriceScale: { borderColor: "#2a2e39" },
+    });
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: "#26a69a", downColor: "#ef5350", borderVisible: false, wickUpColor: "#26a69a", wickDownColor: "#ef5350",
+      priceFormat: { type: "price", precision: dec, minMove: Math.pow(10, -dec) },
+    });
+    series.setData(data.candles.map(c => ({ ...c, time: c.time as any })));
+    series.createPriceLine({ price: data.currentPrice, color: "#f5c542", lineWidth: 2, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "سعر التحليل" });
+    chart.timeScale().fitContent();
+    return () => { chart?.remove(); chart = null; };
+  }, [data]);
+  if (!data.candles?.length) return <div className="p-6 text-center text-sm text-muted-foreground">لا توجد شموع لعرضها</div>;
+  return <div ref={ref} className="w-full h-[380px] lg:h-full min-h-[380px]" />;
+}
+
+/** Price at the analysis moment vs. the live price NOW (same feed), with drift in pips. */
+function LivePriceSync({ data }: { data: TradingData }) {
+  const q = trpc.tradingAnalysis.livePrice.useQuery({ pair: data.pair as any }, { refetchInterval: 5000, refetchOnWindowFocus: true });
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick(x => x + 1), 1000); return () => clearInterval(t); }, []);
+  const dec = pairDecimals(data.pair);
+  const live = q.data?.price ?? null;
+  const ageSec = data.analyzedAt ? Math.max(0, Math.round((Date.now() - data.analyzedAt) / 1000)) : null;
+  const drift = live !== null ? live - data.currentPrice : null;
+  const pips = drift !== null ? drift / pipSize(data.pair) : null;
+  const atr = data.indicators?.atr ?? 0;
+  const moved = drift !== null && atr > 0 && Math.abs(drift) > 0.5 * atr;
+  const age = ageSec === null ? "" : ageSec < 60 ? `${ageSec} ث` : `${Math.floor(ageSec / 60)} د ${ageSec % 60} ث`;
+  return (
+    <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1.5 text-xs border-b border-border ${moved ? "bg-red-500/10" : "bg-emerald-500/5"}`}>
+      <span>🎯 سعر التحليل: <b className="font-mono">{data.currentPrice.toFixed(dec)}</b>{age && <span className="text-muted-foreground"> (منذ {age})</span>}</span>
+      <span>📡 الآن: <b className="font-mono">{live !== null ? live.toFixed(dec) : "…"}</b>{q.data?.source && <span className="text-muted-foreground"> ({q.data.source})</span>}</span>
+      {pips !== null && (
+        <span className={moved ? "text-red-400 font-bold" : "text-emerald-400"}>
+          فرق: {pips >= 0 ? "+" : ""}{pips.toFixed(1)} نقطة {moved ? "— ⚠️ السعر تحرك، أعد التحليل" : "✅ متطابق"}
+        </span>
+      )}
     </div>
   );
 }
@@ -1293,6 +1366,7 @@ export default function TradingAnalysis() {
   const [selectedTf, setSelectedTf] = useState("15min");
   const [hasRun, setHasRun] = useState(false);
   const [tradingData, setTradingData] = useState<TradingData | null>(null);
+  const [chartMode, setChartMode] = useState<"tv" | "analysis">("tv");
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const currentPair = PAIRS.find(p => p.id === selectedPair)!;
   const currentTf   = TIMEFRAMES.find(t => t.id === selectedTf)!;
@@ -1368,6 +1442,7 @@ export default function TradingAnalysis() {
   const analyzeMutation = trpc.tradingAnalysis.analyzeMarket.useMutation({
     onSuccess: (data: any) => {
       setTradingData(data as unknown as TradingData);
+      setChartMode("analysis");
       const ok = (data as unknown as TradingData).results.filter((r: AnalysisResult) => r.available && !r.error).length;
       toast.success(`اكتمل التحليل! ${ok}/3 نماذج أجابت`);
     },
@@ -1570,16 +1645,27 @@ export default function TradingAnalysis() {
               <span className="font-bold text-sm">{currentPair.label}</span>
               <span className="text-xs text-muted-foreground">{currentPair.desc}</span>
               <div className="flex-1" />
+              {tradingData && (
+                <div className="flex text-xs rounded-lg overflow-hidden border border-border">
+                  <button onClick={() => setChartMode("analysis")} className={`px-2 py-0.5 ${chartMode === "analysis" ? "bg-primary text-primary-foreground" : "bg-secondary"}`}>شارت التحليل</button>
+                  <button onClick={() => setChartMode("tv")} className={`px-2 py-0.5 ${chartMode === "tv" ? "bg-primary text-primary-foreground" : "bg-secondary"}`}>TradingView</button>
+                </div>
+              )}
               <span className="text-xs bg-secondary px-2 py-0.5 rounded-full font-bold">{currentTf.label}</span>
             </div>
-            <iframe
-              ref={iframeRef}
-              src={chartUrl}
-              className="w-full h-[380px] lg:h-full border-0"
-              allowTransparency={true}
-              allow="fullscreen"
-              title={`${currentPair.label} Chart`}
-            />
+            {tradingData && !analyzeMutation.isPending && <LivePriceSync data={tradingData} />}
+            {tradingData && chartMode === "analysis" && !analyzeMutation.isPending ? (
+              <AnalysisChart data={tradingData} />
+            ) : (
+              <iframe
+                ref={iframeRef}
+                src={chartUrl}
+                className="w-full h-[380px] lg:h-full border-0"
+                allowTransparency={true}
+                allow="fullscreen"
+                title={`${currentPair.label} Chart`}
+              />
+            )}
           </div>
 
           {/* Right Panel */}

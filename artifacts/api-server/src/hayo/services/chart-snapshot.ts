@@ -148,9 +148,12 @@ export async function renderChartSnapshot(input: SnapshotInput): Promise<Buffer 
       const L = LightweightCharts;
       const fmt = v => v.toFixed(D.decimals);
       document.getElementById("hdr").textContent = D.title + "  ·  " + D.stamp + "  ·  last close " + fmt(D.last.close) + "  (closed candles)";
+      // Legend swatches are drawn with CSS (box-drawing glyphs are missing from
+      // the server's fonts and rendered as empty boxes).
+      const sw = (color, dashed) => '<i style="display:inline-block;width:18px;height:0;border-top:3px ' + (dashed ? 'dotted' : 'solid') + ' ' + color + ';vertical-align:middle;margin-right:4px"></i>';
       document.getElementById("leg").innerHTML =
-        '<span style="color:#ff9800">━ SMA20</span><span style="color:#2962ff">━ SMA50</span><span style="color:#ab47bc">━ SMA200</span>' +
-        '<span style="color:#787b86">┅ Bollinger(20,2)</span>' + D.levels.map(l => '<span style="color:' + l.color + '">— ' + l.label + '</span>').join("");
+        '<span style="color:#ff9800">' + sw("#ff9800") + 'SMA20</span><span style="color:#2962ff">' + sw("#2962ff") + 'SMA50</span><span style="color:#ab47bc">' + sw("#ab47bc") + 'SMA200</span>' +
+        '<span style="color:#9598a1">' + sw("#9598a1", true) + 'Bollinger(20,2)</span>' + D.levels.map(l => '<span style="color:' + l.color + '">' + sw(l.color, true) + l.label + '</span>').join("");
       const chart = L.createChart(document.getElementById("c"), {
         width: 1280, height: 820,
         layout: { background: { type: "solid", color: "#131722" }, textColor: "#d1d4dc", panes: { separatorColor: "#2a2e39" } },

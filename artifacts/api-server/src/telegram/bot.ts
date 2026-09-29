@@ -9,7 +9,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { callProvider, callProviderVision, isProviderAvailable, PROVIDER_CONFIGS, type AIProvider } from "../hayo/providers";
 import { renderChartSnapshot } from "../hayo/services/chart-snapshot";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
-import { fetchOhlcFallback, dropFormingCandle } from "../hayo/market-data";
+import { fetchOhlcFallback, dropFormingCandle, assessData, fetchRealtimePrice } from "../hayo/market-data";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
   calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
@@ -283,9 +283,52 @@ interface CacheEntry { data: any; ts: number }
 const marketCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 3 * 60 * 1000; // 3-minute cache
 
-async function fetchMarket(pair: string, tfCfg: TfConfig) {
+/**
+ * useTwelveData: manual analyses (a person is waiting) try TwelveData first —
+ * a fast single attempt per key. Background scans never touch it: scanning 18
+ * pairs × 3 TFs every few minutes used up the daily TwelveData credits within
+ * minutes, which is why every request had been falling back to Yahoo.
+ */
+/**
+ * Live quote AT THE MOMENT of analysis (5 s cache per symbol), attached to every
+ * fetchMarket result — the indicators stay on closed candles, but the price
+ * shown, the entry and the ATR levels are anchored to the live market, so the
+ * message matches the chart at the second it was produced. A quote that
+ * disagrees with the candles by > 3 ATR (feeds out of sync) is ignored.
+ */
+const liveCache = new Map<string, { price: number; source: string; at: number }>();
+async function withLivePrice<T extends { price: number; ATR: number }>(symbol: string, d: T): Promise<T & { livePrice: number | null; liveSource: string | null; liveAt: number }> {
+  let q = liveCache.get(symbol);
+  if (!q || Date.now() - q.at > 5000) {
+    try {
+      const rt = await fetchRealtimePrice(symbol, { skipTwelveData: true });
+      if (rt) { q = { price: rt.price, source: rt.source, at: Date.now() }; liveCache.set(symbol, q); }
+    } catch { /* no live quote */ }
+  }
+  const ok = !!q && Date.now() - q.at < 60_000 && isFinite(q.price) && (!(d.ATR > 0) || Math.abs(q.price - d.price) <= 3 * d.ATR);
+  return { ...d, livePrice: ok ? q!.price : null, liveSource: ok ? q!.source : null, liveAt: ok ? q!.at : Date.now() };
+}
+
+/** Price to trade from: the live quote when available, else the last closed candle. */
+function tradePrice(d: any): number { return typeof d.livePrice === "number" && isFinite(d.livePrice) ? d.livePrice : d.price; }
+
+/** "💰 price" line: live quote with its exact time, plus the last closed candle. */
+function priceLine(d: any): string {
+  const t = (ms: number) => new Date(ms).toISOString().slice(11, 19);
+  const closeAt = d.datetime ? String(d.datetime).slice(11, 16) : "";
+  return typeof d.livePrice === "number"
+    ? `💰 <b>${d.fmt(d.livePrice)}</b> حي (${escHtml(d.liveSource || "")}) ⏱ <i>${t(d.liveAt)} UTC</i>\n🕯 آخر شمعة مغلقة <code>${d.fmt(d.price)}</code> <i>(${closeAt})</i>`
+    : `💰 <b>${d.fmt(d.price)}</b> <i>إغلاق شمعة ${closeAt} UTC — لا سعر حي متاح</i>`;
+}
+
+async function fetchMarket(pair: string, tfCfg: TfConfig, opts: { useTwelveData?: boolean } = {}) {
   const p = PAIRS[pair];
-  const cacheKey = `${pair}:${tfCfg.interval}`;
+  return withLivePrice(p.tdSymbol, await fetchMarketCandles(pair, tfCfg, opts));
+}
+
+async function fetchMarketCandles(pair: string, tfCfg: TfConfig, opts: { useTwelveData?: boolean } = {}) {
+  const p = PAIRS[pair];
+  const cacheKey = `${pair}:${tfCfg.interval}:${opts.useTwelveData ? "td" : "fb"}`;
 
   const cached = marketCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
@@ -293,35 +336,37 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
     return cached.data;
   }
 
-  // Same provider order as the web engine: OANDA (broker-grade, if configured)
-  // → Yahoo (keyless, fast) → TwelveData. TwelveData went first before; with
-  // exhausted/rate-limited keys its retries (8s back-offs) cost ~60s per fetch,
-  // so one analysis took minutes and a convergence scan close to an hour.
   let json: any = null;
   let source = "";
-  try {
-    const fb = await fetchOhlcFallback(p.tdSymbol, tfCfg.interval, tfCfg.outputsize);
-    if (fb) { json = fb; source = fb.meta.source; }
-  } catch { /* try TwelveData */ }
+  const tryTwelveData = async () => {
+    let apiKey = getTwelveDataKey();
+    for (let attempt = 0; apiKey && attempt < 2; attempt++) {
+      const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(p.tdSymbol)}&interval=${tfCfg.interval}&outputsize=${tfCfg.outputsize}&timezone=UTC&apikey=${apiKey}`;
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+        if (res.status === 429) { rotateToNextKey(); apiKey = getTwelveDataKey(); continue; }
+        if (!res.ok) return;
+        const j = await res.json() as any;
+        if (j.status === "error" && isRateLimitError(j)) {
+          const isDailyDone = await checkAndMarkIfDailyExhausted(apiKey);
+          if (!isDailyDone) rotateToNextKey();
+          apiKey = getTwelveDataKey();
+          continue;
+        }
+        if (j.status !== "error" && Array.isArray(j.values) && j.values.length) { json = j; source = "twelvedata"; }
+        return;
+      } catch { return; }
+    }
+  };
 
-  let apiKey = json ? "" : getTwelveDataKey();
-  for (let attempt = 0; apiKey && attempt < 3; attempt++) {
-    const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(p.tdSymbol)}&interval=${tfCfg.interval}&outputsize=${tfCfg.outputsize}&timezone=UTC&apikey=${apiKey}`;
+  // Provider order: [TwelveData — manual only] → OANDA → Binance (crypto) → Yahoo.
+  // A frozen/flat TwelveData series is replaced by a fresh fallback when one exists.
+  if (opts.useTwelveData) await tryTwelveData();
+  if (!json || !assessData(p.tdSymbol, json.values, tfCfg.interval).usable) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (res.status === 429) { rotateToNextKey(); apiKey = getTwelveDataKey(); continue; }
-      if (!res.ok) break;
-      json = await res.json() as any;
-      if (json.status === "error" && isRateLimitError(json)) {
-        const isDailyDone = await checkAndMarkIfDailyExhausted(apiKey);
-        if (!isDailyDone) rotateToNextKey();
-        apiKey = getTwelveDataKey();
-        json = null;
-        continue;
-      }
-      source = "twelvedata";
-      break;
-    } catch { break; }
+      const fb = await fetchOhlcFallback(p.tdSymbol, tfCfg.interval, tfCfg.outputsize);
+      if (fb && (!json || fb.quality.usable)) { json = fb; source = fb.meta.source; }
+    } catch { /* none */ }
   }
 
   if (!json || json.status === "error" || !json.values || !Array.isArray(json.values)) {
@@ -329,7 +374,10 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   }
 
   // Closed candles only — same rule as the web engine, so both agree.
-  const rawCandles = [...dropFormingCandle(json.values, tfCfg.interval)].reverse();
+  const closedValues = dropFormingCandle(json.values, tfCfg.interval);
+  const quality = assessData(p.tdSymbol, closedValues, tfCfg.interval);
+  const flatShare = quality.flatShare;
+  const rawCandles = [...closedValues].reverse();
   if (rawCandles.length < 20) throw new Error("بيانات غير كافية من مزود البيانات");
 
   const closes = rawCandles.map((c: any) => parseFloat(c.close));
@@ -361,6 +409,11 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
     STOCH, WILLR, PIVOTS, ADX,
     strategies, filters,
     datetime: rawCandles[rawCandles.length - 1].datetime,
+    // Where the candles came from and whether they are usable (see flatCandleShare).
+    dataSource: source || "?",
+    flatShare,
+    poorData: !quality.usable,
+    qualityNote: quality.note,
     // Raw closed candles (epoch seconds) — used to draw the chart snapshot the
     // vision models read, so image and indicators come from identical data.
     candles: rawCandles.map((c: any, i: number) => ({
@@ -474,7 +527,9 @@ export async function runAI(pair: string, tf: string, d: Awaited<ReturnType<type
     : "";
 
   const ctx = `تحليل زوج ${pair} — الإطار الزمني: ${tf}
-السعر الحالي: ${d.fmt(d.price)}
+السعر الحي لحظة التحليل: ${typeof (d as any).livePrice === "number" ? `${d.fmt((d as any).livePrice)} (${(d as any).liveSource}, ${new Date((d as any).liveAt).toISOString().slice(11, 19)} UTC)` : "غير متاح"}
+إغلاق آخر شمعة: ${d.fmt(d.price)}
+مصدر البيانات: ${(d as any).dataSource} — آخر شمعة مغلقة ${d.datetime} UTC${(d as any).poorData ? ` — ⚠️ بيانات غير صالحة: ${(d as any).qualityNote}، المؤشرات لا تمثل السوق الحي → الجواب HOLD` : ""}
 
 📊 المؤشرات التقنية:
 • RSI(14): ${d.RSI.toFixed(1)} ${d.RSI<30?"(ذروة بيع ⚠️)":d.RSI>70?"(ذروة شراء ⚠️)":"(محايد)"}
@@ -574,7 +629,8 @@ function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fe
   return [
     ...(header ? [header] : []),
     `${p.flag} <b>${p.label}</b> | <code>${tf}</code>`,
-    `💰 <b>${d.fmt(d.price)}</b>  <i>${d.datetime.slice(11,16)} UTC</i>`,
+    priceLine(d),
+    dataLine(d),
     ``,
     `<b>━━ 📊 المؤشرات ━━</b>`,
     `RSI <code>${d.RSI.toFixed(1)}</code> ${d.RSI<30?"🔴 ذروة بيع":d.RSI>70?"🟢 ذروة شراء":"⚪ محايد"}`,
@@ -636,6 +692,14 @@ async function deliverLong(
       await bot.sendMessage(chatId, parts[i], extra);
     }
   }
+}
+
+/** One line describing where the candles came from and whether they are usable. */
+function dataLine(d: any): string {
+  const src = d.dataSource || "?";
+  return d.poorData
+    ? `📡 البيانات: <code>${src}</code> ⚠️ <b>غير صالحة</b> (${escHtml(d.qualityNote ?? "")}) — لا يُعتمد عليها`
+    : `📡 البيانات: <code>${src}</code> ✅`;
 }
 
 /** AI text is untrusted: escape it before embedding in Telegram HTML. */
@@ -747,29 +811,31 @@ export function computeRecommendation(
   if (COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
   if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
+  if ((d as any).poorData) blockers.push(`بيانات السوق غير صالحة (${(d as any).qualityNote} — ${(d as any).dataSource}) — لا توصية على بيانات غير حية`);
   if (blockers.length) dir = "HOLD";
 
   // ── Levels: AI levels only if they are sane, otherwise ATR-based ──
   let entry = NaN, sl = NaN, tp = NaN, rr = NaN, levelsFrom: "AI" | "ATR" | "" = "";
   if (dir !== "HOLD") {
-    const atr = d.ATR || d.price * 0.001;
+    const px = tradePrice(d); // live quote at the analysis moment (else last close)
+    const atr = d.ATR || px * 0.001;
     const isBuy = dir === "BUY";
     const candidates = aiResults
       .filter((r: any) => r.signal === dir)
       .sort((a: any, b: any) => b.confidence - a.confidence);
     for (const r of candidates) {
       const e = firstNumber(r.entry), s0 = firstNumber(r.sl), t0 = firstNumber(r.tp);
-      const e1 = isFinite(e) ? e : d.price;
+      const e1 = isFinite(e) ? e : px;
       if (!isFinite(s0) || !isFinite(t0)) continue;
       const risk = isBuy ? e1 - s0 : s0 - e1, reward = isBuy ? t0 - e1 : e1 - t0;
-      if (risk >= 0.5 * atr && reward / risk >= MIN_RR && Math.abs(e1 - d.price) <= atr) {
+      if (risk >= 0.5 * atr && reward / risk >= MIN_RR && Math.abs(e1 - px) <= atr) {
         entry = e1; sl = s0; tp = t0; rr = reward / risk; levelsFrom = "AI"; break;
       }
     }
     if (!levelsFrom) {
-      entry = d.price;
-      sl = isBuy ? d.price - 1.5 * atr : d.price + 1.5 * atr;
-      tp = isBuy ? d.price + 2.5 * atr : d.price - 2.5 * atr;
+      entry = px;
+      sl = isBuy ? px - 1.5 * atr : px + 1.5 * atr;
+      tp = isBuy ? px + 2.5 * atr : px - 2.5 * atr;
       rr = 2.5 / 1.5; levelsFrom = "ATR";
     }
   }
@@ -888,7 +954,8 @@ function buildAIMsg(
   return [
     isAutoSignal ? `🔔 <b>إشارة تلقائية!</b>` : "",
     `${p.flag} <b>تحليل AI كامل — ${p.label}</b> | <code>${tf}</code>`,
-    `💰 <b>${d.fmt(d.price)}</b>  <i>${d.datetime.slice(11,16)} UTC</i>`,
+    priceLine(d),
+    dataLine(d),
     ``,
     `<b>━━ 📊 المؤشرات ━━</b>`,
     `RSI <code>${d.RSI.toFixed(1)}</code> ${d.RSI<30?"🔴 ذروة بيع":d.RSI>70?"🟢 ذروة شراء":"⚪"} | MACD ${d.MACD.macd>d.MACD.signal?"✅ صاعد":"❌ هابط"}`,
@@ -968,6 +1035,10 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
           await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
           const d = await fetchMarket(pair, TIMEFRAMES[tf]);
           summary.checked++;
+          if ((d as any).poorData) {
+            summary.lines.push(`⚠️ ${label}: بيانات غير صالحة من ${(d as any).dataSource} (${(d as any).qualityNote}) — تم التخطي`);
+            continue;
+          }
           const cons = calcConsensus(d.strategies);
           if (cons.direction === "NEUTRAL" || cons.pct < minConsensus) {
             summary.lines.push(`➖ ${label}: توافق فني غير كافٍ (${cons.buys}🟢 ${cons.sells}🔴)`);
@@ -1229,6 +1300,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
       for (const { key, cfg } of tfs) {
         await new Promise(r => setTimeout(r, 2000)); // gentle pacing (Yahoo/OANDA first; TwelveData only as fallback)
         const d = await fetchMarket(pair, cfg);
+        if ((d as any).poorData) throw new Error(`POOR_DATA ${cfg.interval} (${(d as any).dataSource})`);
         const cons = calcConsensus(d.strategies);
         results.push({ tf: key, direction: cons.direction, pct: cons.pct, data: d });
       }
@@ -1315,7 +1387,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
         `🎯🎯🎯 <b>تطابق كامل!</b> 🎯🎯🎯`,
         ``,
         `${p.flag} <b>${p.label}</b> — ${convergenceDir === "BUY" ? "🟢 شراء قوية" : "🔴 بيع قوي"}`,
-        `💰 السعر: <b>${d15.fmt(d15.price)}</b>  <i>${d15.datetime.slice(11, 16)} UTC</i>`,
+        priceLine(d15),
         ``,
         `<b>━━ 📊 تطابق 3 فريمات ━━</b>`,
         tfDetails,
@@ -1360,7 +1432,9 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
       ]] } });
 
     } catch (err: any) {
-      summary.lines.push(`⚠️ ${plabel}: خطأ في البيانات`);
+      summary.lines.push(String(err?.message || "").startsWith("POOR_DATA")
+        ? `⚠️ ${plabel}: بيانات منخفضة الجودة على ${String(err.message).split(" ")[1]} — تم التخطي`
+        : `⚠️ ${plabel}: خطأ في البيانات`);
       console.error(`[Convergence] ${pair} error:`, err.message);
     }
   }
@@ -2117,7 +2191,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       const loadMsgId = loadingMsg.message_id;
 
       try {
-        const marketData = await fetchMarket(pair, TIMEFRAMES[tf]);
+        const marketData = await fetchMarket(pair, TIMEFRAMES[tf], { useTwelveData: true });
         if (type === "quick") {
           const news = await fetchEconomicNews(pair);
           await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, [], news), "tg-manual-tech");
