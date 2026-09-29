@@ -96,6 +96,13 @@ app.use(
       const user = await authenticateRequest(req);
       return { req, res, user };
     },
+    // Surface the real cause of 500s in the logs (pino-http only records the status).
+    onError: ({ path, error }) => {
+      if (error.code === "INTERNAL_SERVER_ERROR") {
+        const cause: any = (error as any).cause;
+        logger.error(`[tRPC] ${path ?? "?"} failed: ${error.message}${cause?.message && cause.message !== error.message ? ` | cause: ${cause.message}` : ""}`);
+      }
+    },
   }) as unknown as RequestHandler,
 );
 
