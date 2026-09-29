@@ -9,13 +9,15 @@
  *   <DATA_DIR>/<INSTRUMENT>/<YEAR>/oanda-<INSTRUMENT>-<YEAR>-<M>.csv (time,close,high,low,open,volume)
  *
  * Usage:
- *   node --experimental-strip-types --no-warnings scripts/train-weights.ts <DATA_DIR> <modelId> <lowMin,midMin,highMin> <H> [trainYear=2018] [testYear=2019]
- * e.g. scripts/train-weights.ts ~/oanda fast 1,5,15 10
+ *   pnpm train-weights <DATA_DIR> <modelId> <lowMin,midMin,highMin> <H> [trainYear=2018] [testYear=2019]
+ * e.g. pnpm train-weights ~/oanda fast 1,5,15 10
+ * Env: FEATURES=base | poc | poc-low (default: POC features on the low TF only);
+ *      L2=<regularisation, default 0.001>; DRY=1 reports without writing the JSON.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { tfFeatureSeries, FEATURE_NAMES, type OhlcBar } from "../src/hayo/weights-model.ts";
+import { tfFeatureSeries, ALL_FEATURES, FEATURE_NAMES, type FeatureName, type OhlcBar } from "../src/hayo/weights-model";
 
 type Bar = OhlcBar & { t: number };
 const [dataDir, modelId, tfArg, hArg, trainY = "2018", testY = "2019"] = process.argv.slice(2);
@@ -25,6 +27,17 @@ if (!dataDir || !modelId || !tfArg || !hArg) {
 }
 const TFS = tfArg.split(",").map(Number);
 const H = Number(hArg);
+// Feature set per timeframe [low, mid, high]. FEATURES=base → 11 trend/momentum
+// features everywhere; poc → + POC/value-area on every TF; poc-low (default) →
+// POC/value-area on the LOW timeframe only (on higher TFs it memorised the
+// training year's drift and failed out-of-sample).
+const BASE = [...FEATURE_NAMES];
+const FSET = process.env.FEATURES ?? "poc-low";
+const FEATS: FeatureName[][] = FSET === "base" ? [BASE, BASE, BASE]
+  : FSET === "poc" ? [[...ALL_FEATURES], [...ALL_FEATURES], [...ALL_FEATURES]]
+  : [[...ALL_FEATURES], BASE, BASE];
+const FIDX = FEATS.map(fs => fs.map(f => ALL_FEATURES.indexOf(f)));
+const L2 = Number(process.env.L2 ?? 1e-3);
 const INSTS = ["EUR_USD", "GBP_USD", "AUD_USD", "USD_CAD", "EUR_JPY", "XAU_USD"];
 const TF_KEY: Record<number, string> = { 1: "1m", 5: "5m", 15: "15m", 30: "30m", 60: "1h", 240: "4h", 1440: "1d" };
 
@@ -38,12 +51,13 @@ function load(inst: string, year: number, tfMin: number): Bar[] {
     const lines = fs.readFileSync(path.join(dir, f), "utf8").split("\n");
     for (let i = 1; i < lines.length; i++) {
       if (!lines[i]) continue;
-      const [ts, c, h, l, o] = lines[i].split(",");
+      const [ts, c, h, l, o, vol] = lines[i].split(",");
       const t = Date.parse(ts.replace(" ", "T") + "Z");
       if (!Number.isFinite(t)) continue;
       const k = Math.floor(t / step) * step;
-      if (!cur || cur.t !== k) { if (cur) out.push(cur); cur = { t: k, open: +o, high: +h, low: +l, close: +c }; }
-      else { cur.high = Math.max(cur.high, +h); cur.low = Math.min(cur.low, +l); cur.close = +c; }
+      const v = Number(vol) || 0;
+      if (!cur || cur.t !== k) { if (cur) out.push(cur); cur = { t: k, open: +o, high: +h, low: +l, close: +c, volume: v }; }
+      else { cur.high = Math.max(cur.high, +h); cur.low = Math.min(cur.low, +l); cur.close = +c; cur.volume = (cur.volume ?? 0) + v; }
     }
   }
   if (cur) out.push(cur);
@@ -68,7 +82,7 @@ function build(year: number): Sample[] {
         if (B[ptr[k]].t + ms > closeT) { ok = false; break; }   // no CLOSED bar yet
         const f = feats[k][ptr[k]];
         if (!f || f.length === 0) { ok = false; break; }
-        row.push(...f);
+        row.push(...FIDX[k].map(j => f[j]));
       }
       if (!ok || i % 3 !== 0) continue;                          // thin out overlapping labels
       if (low[i + H].t - low[i + 1].t > (H + 5) * lowMs) continue; // horizon spans a market gap
@@ -80,7 +94,12 @@ function build(year: number): Sample[] {
   return S;
 }
 
-function fit(S: Sample[], l2 = 1e-3, iters = 300, lr = 0.5) {
+/**
+ * L2 logistic regression by gradient descent with BACKTRACKING: a step that
+ * raises the loss is undone and the learning rate halved. (Correlated inputs
+ * such as POC distance vs. EMA extension make a fixed step diverge.)
+ */
+function fit(S: Sample[], l2 = 1e-3, iters = 400, lr0 = 0.5) {
   const d = S[0].x.length;
   const mu = new Array(d).fill(0), sd = new Array(d).fill(0);
   for (const s of S) s.x.forEach((v, j) => (mu[j] += v));
@@ -88,26 +107,39 @@ function fit(S: Sample[], l2 = 1e-3, iters = 300, lr = 0.5) {
   for (const s of S) s.x.forEach((v, j) => (sd[j] += (v - mu[j]) ** 2));
   sd.forEach((_, j) => (sd[j] = Math.sqrt(sd[j] / S.length) || 1));
   const X = S.map(s => s.x.map((v, j) => (v - mu[j]) / sd[j]));
-  const w = new Array(d).fill(0); let b = 0;
-  for (let it = 0; it < iters; it++) {
-    const g = new Array(d).fill(0); let gb = 0;
+  const lossGrad = (w: number[], b: number, withGrad: boolean) => {
+    let loss = 0; const g = new Array(d).fill(0); let gb = 0;
     for (let n = 0; n < X.length; n++) {
       let z = b; for (let j = 0; j < d; j++) z += w[j] * X[n][j];
-      const e = 1 / (1 + Math.exp(-z)) - S[n].y;
-      for (let j = 0; j < d; j++) g[j] += e * X[n][j];
-      gb += e;
+      const p = 1 / (1 + Math.exp(-z)), y = S[n].y;
+      loss -= y ? Math.log(Math.max(p, 1e-12)) : Math.log(Math.max(1 - p, 1e-12));
+      if (withGrad) { const e = p - y; for (let j = 0; j < d; j++) g[j] += e * X[n][j]; gb += e; }
     }
-    for (let j = 0; j < d; j++) w[j] -= lr * (g[j] / X.length + l2 * w[j]);
-    b -= lr * gb / X.length;
+    let reg = 0; for (let j = 0; j < d; j++) reg += w[j] * w[j];
+    return { loss: loss / X.length + 0.5 * l2 * reg, g: g.map((v, j) => v / X.length + l2 * w[j]), gb: gb / X.length };
+  };
+  let w = new Array(d).fill(0), b = 0, lr = lr0;
+  let cur = lossGrad(w, b, true);
+  for (let it = 0; it < iters && lr > 1e-6; it++) {
+    const w2 = w.map((v, j) => v - lr * cur.g[j]), b2 = b - lr * cur.gb;
+    const nxt = lossGrad(w2, b2, true);
+    if (nxt.loss <= cur.loss) { w = w2; b = b2; cur = nxt; lr = Math.min(lr * 1.1, 4); }
+    else lr *= 0.5;
   }
+  console.log(`  train loss ${cur.loss.toFixed(6)} (log2 baseline ${Math.log(2).toFixed(6)})`);
   return { w, b, mu, sd };
 }
 
 const train = build(Number(trainY)), test = build(Number(testY));
-const m = fit(train);
+const m = fit(train, L2);
 const prob = (x: number[]) => { let z = m.b; x.forEach((v, j) => (z += m.w[j] * (v - m.mu[j]) / m.sd[j])); return 1 / (1 + Math.exp(-z)); };
 const oos: Record<string, { n: number; winRate: number }> = {};
 console.log(`${modelId}: TFs ${TFS.join("/")}m H=${H} — train ${trainY} n=${train.length}, test ${testY} n=${test.length}`);
+{
+  let n = 0, win = 0;
+  for (const s of train) { const p = prob(s.x); const dir = p >= 0.56 ? 1 : p <= 0.44 ? -1 : 0; if (!dir) continue; n++; if (dir > 0 ? s.y === 1 : s.y === 0) win++; }
+  console.log(`  in-sample p≥0.56: n=${n} win=${n ? (win / n * 100).toFixed(1) : 0}%`);
+}
 for (const th of [0.54, 0.56, 0.58]) {
   let n = 0, win = 0;
   const per: Record<string, [number, number]> = {};
@@ -122,16 +154,17 @@ for (const th of [0.54, 0.56, 0.58]) {
   console.log(`  OOS p≥${th}: n=${n} win=${oos[th.toFixed(2)].winRate}%  | ` +
     Object.entries(per).map(([k, [a, b]]) => `${k} ${(b / a * 100).toFixed(1)}%`).join(" "));
 }
-const names = ["low", "mid", "high"].flatMap(t => FEATURE_NAMES.map(f => `${t}.${f}`));
+const names = ["low", "mid", "high"].flatMap((t, k) => FEATS[k].map(f => `${t}.${f}`));
 console.log("  strongest weights:", names.map((nm, j) => [nm, m.w[j]] as const).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 8).map(([nm, v]) => `${nm}=${v.toFixed(3)}`).join(" "));
 
 const out = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/hayo/weights-model.json");
 const all = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, "utf8")) : {};
 const r6 = (v: number) => Math.round(v * 1e6) / 1e6;
 all[modelId] = {
-  id: modelId, tfs: TFS.map(t => TF_KEY[t] ?? `${t}m`), horizon: H,
+  id: modelId, tfs: TFS.map(t => TF_KEY[t] ?? `${t}m`), horizon: H, features: FEATS,
   trainedOn: `OANDA 1m ${trainY} (${INSTS.join(", ")})`, validatedOn: `${testY} out-of-sample`,
   w: m.w.map(r6), b: r6(m.b), mu: m.mu.map(r6), sd: m.sd.map(r6), oos,
 };
+if (process.env.DRY) { console.log("  (DRY — JSON not written)"); process.exit(0); }
 fs.writeFileSync(out, JSON.stringify(all, null, 1) + "\n");
 console.log(`  → wrote ${modelId} to ${out}`);

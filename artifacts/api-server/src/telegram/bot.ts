@@ -409,6 +409,7 @@ async function fetchMarketCandles(pair: string, tfCfg: TfConfig, opts: { useTwel
   const highs  = rawCandles.map((c: any) => parseFloat(c.high));
   const lows   = rawCandles.map((c: any) => parseFloat(c.low));
   const opens  = rawCandles.map((c: any) => parseFloat(c.open));
+  const volumes = rawCandles.map((c: any) => parseFloat(c.volume ?? "0") || 0);
 
   const price  = closes[closes.length - 1];
   const dec    = p.decimals;
@@ -426,7 +427,7 @@ async function fetchMarketCandles(pair: string, tfCfg: TfConfig, opts: { useTwel
   const WILLR  = calcWilliamsR(closes, highs, lows);
   const PIVOTS = calcPivotPoints(highs, lows, closes, rawCandles.map((c: any) => c.datetime));
   const ADX    = calcADX(highs, lows, closes);
-  const strategies = calcStrategies(closes, highs, lows, SMA20, SMA50, SMA200, RSI, MACD, BB, ATR, STOCH, WILLR, ADX, PIVOTS, opens);
+  const strategies = calcStrategies(closes, highs, lows, SMA20, SMA50, SMA200, RSI, MACD, BB, ATR, STOCH, WILLR, ADX, PIVOTS, opens, volumes);
   const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes, { highs, lows, market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
   const marketResult = {
@@ -443,7 +444,7 @@ async function fetchMarketCandles(pair: string, tfCfg: TfConfig, opts: { useTwel
     // vision models read, so image and indicators come from identical data.
     candles: rawCandles.map((c: any, i: number) => ({
       time: Math.floor(toUtcMs(String(c.datetime)) / 1000),
-      open: opens[i], high: highs[i], low: lows[i], close: closes[i],
+      open: opens[i], high: highs[i], low: lows[i], close: closes[i], volume: volumes[i],
     })),
   };
 
@@ -954,13 +955,67 @@ function buildRecommendation(
   return out;
 }
 
-/** Clock time in the owner's zone (HAYO_TZ, default Asia/Damascus) + UTC. */
+/** Clock time in the owner's zone (HAYO_TZ, default Asia/Damascus) as "23:13:07 (UTC+3)". */
 const OWNER_TZ = process.env.HAYO_TZ || "Asia/Damascus";
 function localAndUtc(ms: number): string {
-  let local = "";
-  try { local = new Intl.DateTimeFormat("en-GB", { timeZone: OWNER_TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(ms)); } catch { /* bad tz */ }
-  const utc = new Date(ms).toISOString().slice(11, 19);
-  return local ? `${local} بتوقيتك (${utc} UTC)` : `${utc} UTC`;
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone: OWNER_TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "shortOffset" }).formatToParts(new Date(ms));
+    const get = (t: string) => parts.find(x => x.type === t)?.value ?? "";
+    const off = get("timeZoneName").replace("GMT", "UTC");
+    return `${get("hour")}:${get("minute")}:${get("second")} (${off === "UTC" ? "UTC+0" : off})`;
+  } catch {
+    return `${new Date(ms).toISOString().slice(11, 19)} (UTC)`;
+  }
+}
+
+// ─── Compact signal messages ──────────────────────────────────────────
+// Automatic signals are sent SHORT (what to do, at what price, how strong);
+// the full analysis + chart stay one tap away behind "📋 التحليل الكامل".
+interface CompactSignal {
+  title: string; pair: string; tf: string; dir: "BUY" | "SELL";
+  entry: number; fmt: (n: number) => string; strengthPct: number; strengthNote?: string; at: number;
+  binary?: { candles: number; tfMin: number };
+  forex?: { sl: number };
+}
+function compactSignalText(o: CompactSignal): string {
+  const p = PAIRS[o.pair];
+  const lines = [
+    `<b>${o.title}</b>`,
+    `${p.flag} <b>${p.label}</b> | <code>${o.tf}</code>`,
+    o.binary ? (o.dir === "BUY" ? `🟢 <b>شراء — CALL</b>` : `🔴 <b>بيع — PUT</b>`) : (o.dir === "BUY" ? `🟢 <b>شراء</b>` : `🔴 <b>بيع</b>`),
+    `💵 الدخول: <code>${o.fmt(o.entry)}</code>`,
+  ];
+  if (o.binary) {
+    lines.push(`⌛ المدة: <b>${o.binary.candles} شموع</b> (${o.binary.candles * o.binary.tfMin} دقيقة)`);
+  } else if (o.forex && isFinite(o.forex.sl)) {
+    const r = Math.abs(o.entry - o.forex.sl), s = o.dir === "BUY" ? 1 : -1;
+    lines.push(`🛑 وقف الخسارة: <code>${o.fmt(o.forex.sl)}</code>`);
+    lines.push(`🎯 الهدف 1: <code>${o.fmt(o.entry + s * r)}</code>`);
+    lines.push(`🎯 الهدف 2: <code>${o.fmt(o.entry + s * 2 * r)}</code>`);
+    lines.push(`🎯 الهدف 3: <code>${o.fmt(o.entry + s * 3 * r)}</code>`);
+  }
+  lines.push(`💪 قوة الإشارة: <b>${o.strengthPct}%</b>${o.strengthNote ? ` <i>${o.strengthNote}</i>` : ""}`);
+  lines.push(`⏱ ${localAndUtc(o.at)}`);
+  return lines.join("\n");
+}
+const detailStore = new Map<string, { text: string; chart: Buffer | null; caption: string }>();
+let detailSeq = 0;
+function storeDetails(text: string, chart: Buffer | null, caption: string): string {
+  const id = `${Date.now().toString(36)}${(++detailSeq).toString(36)}`;
+  detailStore.set(id, { text, chart, caption });
+  while (detailStore.size > 40) detailStore.delete(detailStore.keys().next().value as string);
+  return id;
+}
+/** Send the short signal with a button that reveals the full analysis. */
+async function sendCompactSignal(bot: TelegramBot, chatId: number, o: CompactSignal, fullText: string, chart: Buffer | null, caption: string): Promise<void> {
+  const id = storeDetails(fullText, chart, caption);
+  await bot.sendMessage(chatId, compactSignalText(o), {
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: [[
+      { text: "📋 التحليل الكامل", callback_data: `full:${id}` },
+      { text: "🔄 إعادة تحليل", callback_data: `pair:${o.pair}` },
+    ]] },
+  });
 }
 
 /** Binary-options execution block: direction, entry price/time, expiry, win condition. */
@@ -1159,8 +1214,26 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         }
         try {
           await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
+          if (autoConfig.binary) {
+            // Binary options run on the validated weighting model (1m / 5m).
+            const modelId = BINARY_MODEL_BY_TF[tf];
+            if (!modelId || !WEIGHT_MODELS[modelId]) {
+              summary.lines.push(`➖ ${label}: الخيارات الثنائية تعمل بنظام الأوزان على فريم 1م و5م فقط`);
+              continue;
+            }
+            if (!WEIGHTED_ASSETS.has(pair)) {
+              summary.lines.push(`➖ ${label}: ⚖️ نموذج الأوزان مدرَّب على العملات والذهب فقط`);
+              continue;
+            }
+            const datas: any[] = [];
+            for (const k of WEIGHT_MODELS[modelId].tfs) { datas.push(await fetchMarket(pair, TIMEFRAMES[k])); await new Promise(r => setTimeout(r, 500)); }
+            summary.checked++;
+            const r = await weightedSignal(bot, ownerChatId, pair, modelId, datas, WEIGHT_MODELS[modelId].tfs,
+              { useAI, summary, title: "🎰 خيار ثنائي — نظام الأوزان", expiryOverride: autoConfig.binaryExpiry || undefined });
+            if (r.sent) binaryBusyUntil.set(key, Date.now() + r.expiryMs);
+            continue;
+          }
           const d = await fetchMarket(pair, TIMEFRAMES[tf]);
-          if (autoConfig.binary) (d as any).binary = { expiry: autoConfig.binaryExpiry, tfMin };
           summary.checked++;
           if ((d as any).poorData) {
             summary.lines.push(`⚠️ ${label}: بيانات غير صالحة من ${(d as any).dataSource} (${(d as any).qualityNote}) — تم التخطي`);
@@ -1201,11 +1274,11 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
           summary.sent++;
           summary.lines.push(`🚨 ${label}: ${rec.dir === "BUY" ? "🟢 شراء" : "🔴 بيع"} — أُرسلت إشارة`);
           console.log(`[AutoScan] 🚨 Signal: ${key} ${rec.dir} (tech ${cons.pct}%)`);
-          await sendChartPhoto(bot, ownerChatId, chart, `📸 ${PAIRS[pair].label} | ${tf} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
-          await deliverLong(bot, ownerChatId, msg, { replyMarkup: { inline_keyboard: [[
-            { text: "🔄 إعادة تحليل هذا الزوج", callback_data: `pair:${pair}` },
-            { text: "🏠 القائمة الرئيسية", callback_data: "back:pairs" },
-          ]] } });
+          await sendCompactSignal(bot, ownerChatId, {
+            title: `📈 إشارة تلقائية${useAI ? " — AI" : " — فني"}`, pair, tf, dir: rec.dir as "BUY" | "SELL",
+            entry: rec.entry, fmt: d.fmt, strengthPct: rec.conf, at: typeof (d as any).liveAt === "number" ? (d as any).liveAt : Date.now(),
+            forex: { sl: rec.sl },
+          }, msg, chart, `📸 ${PAIRS[pair].label} | ${tf} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
         } catch (err: any) {
           summary.lines.push(`⚠️ ${label}: خطأ في البيانات`);
           console.error(`[AutoScan] ${key} error:`, err.message);
@@ -1289,6 +1362,8 @@ const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, st
 };
 /** Presets decided by the learned weighting model (hayo/weights-model.ts). */
 const CONVERGENCE_MODEL: Partial<Record<ConvergencePreset, string>> = { fast: "fast", scalp: "scalp" };
+/** Auto-signal binary mode: which weighting model serves each low timeframe. */
+const BINARY_MODEL_BY_TF: Record<string, string> = { "1m": "fast", "5m": "scalp" };
 const WEIGHTED_ASSETS = new Set(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD"]);
 let convergenceTimer: NodeJS.Timeout | null = null;
 const convergenceCooldown = new Map<string, number>();
@@ -1564,11 +1639,11 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
         `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
       ].join("\n");
 
-      await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
-      await deliverLong(bot, ownerChatId, msg, { replyMarkup: { inline_keyboard: [[
-        { text: "🔄 إعادة تحليل", callback_data: `pair:${pair}` },
-        { text: "🏠 القائمة", callback_data: "back:pairs" },
-      ]] } });
+      await sendCompactSignal(bot, ownerChatId, {
+        title: `🎯 تطابق 3 فريمات${useAI ? " + AI" : ""}`, pair, tf: tfs.map(t => t.key).join("/"), dir: convergenceDir,
+        entry: rec.entry, fmt: d15.fmt, strengthPct: rec.conf, at: typeof d15.liveAt === "number" ? d15.liveAt : Date.now(),
+        forex: { sl: rec.sl },
+      }, msg, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
 
     } catch (err: any) {
       summary.lines.push(String(err?.message || "").startsWith("POOR_DATA")
@@ -1583,81 +1658,86 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
 }
 
 /**
- * Weighted convergence: the learned model reads 11 trend/momentum/extension
- * measures on each of the 3 timeframes and outputs P(up after H bars).
- * Signal only at grade B (p≥0.56 / ≤0.44) or A (≥0.58 / ≤0.42) — the levels
- * that were profitable out-of-sample. AI (if on) can only VETO with a
- * majority for the opposite side; news/data gates still apply.
+ * Weighted signal: the learned model reads trend / momentum / extension / POC
+ * measures on 3 timeframes and outputs P(up after H bars). Signal only at
+ * grade B (p≥0.56 / ≤0.44) or A (≥0.58 / ≤0.42) — the levels that were
+ * profitable out-of-sample. AI (if on) can only VETO with a majority for the
+ * opposite side; news/data gates still apply. Shared by the convergence
+ * scanner and the auto-signals binary mode.
  */
-async function weightedConvergence(
+async function weightedSignal(
   bot: TelegramBot, ownerChatId: number, pair: string, modelId: string,
-  results: { tf: string; direction: "BUY" | "SELL" | "NEUTRAL"; pct: number; data: any }[],
-  tfs: { key: string; cfg: TfConfig }[], icons: string, useAI: boolean, summary: ScanSummary, coolKey: string,
-): Promise<void> {
+  datas: any[], tfKeys: string[],
+  opts: { useAI: boolean; summary: ScanSummary; title: string; expiryOverride?: number; icons?: string },
+): Promise<{ sent: boolean; expiryMs: number }> {
+  const none = { sent: false, expiryMs: 0 };
   const p = PAIRS[pair];
-  const model = WEIGHT_MODELS[modelId];
+  const label = `${p.label} ${tfKeys[0]}`;
+  const summary = opts.summary;
   // Trained on FX + gold only — crypto, oil and indices behave differently.
   if (!WEIGHTED_ASSETS.has(pair)) {
-    summary.lines.push(`➖ ${p.label}: ⚖️ نموذج الأوزان مدرَّب على العملات والذهب فقط — تم التخطي`);
-    return;
+    summary.lines.push(`➖ ${label}: ⚖️ نموذج الأوزان مدرَّب على العملات والذهب فقط — تم التخطي`);
+    return none;
   }
-  const v = weightedVerdict(modelId, results.map(r => r.data.candles));
-  if (!v) { summary.lines.push(`⚠️ ${p.label}: شموع غير كافية لنموذج الأوزان`); return; }
+  if (datas.some(d => d.poorData)) { summary.lines.push(`⚠️ ${label}: بيانات غير صالحة — تم التخطي`); return none; }
+  const v = weightedVerdict(modelId, datas.map(d => d.candles));
+  if (!v) { summary.lines.push(`⚠️ ${label}: شموع غير كافية لنموذج الأوزان`); return none; }
   const pTxt = `${(v.p * 100).toFixed(1)}%`;
   if (v.dir === "HOLD") {
-    summary.lines.push(`➖ ${p.label}: ⚖️ احتمال الصعود ${pTxt} — لا أفضلية كافية (${icons})`);
-    return;
+    summary.lines.push(`➖ ${label}: ⚖️ احتمال الصعود ${pTxt} — لا أفضلية كافية${opts.icons ? ` (${opts.icons})` : ""}`);
+    return none;
   }
-  const lowData = results[0].data;
-  const topTf = tfs[tfs.length - 1];
-  const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, topTf.key, results[2].data), computeHtfBias(pair, topTf.key)]);
+  const lowData = datas[0];
+  const topKey = tfKeys[tfKeys.length - 1];
+  const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tfKeys[0], lowData), computeHtfBias(pair, topKey)]);
 
-  // Hard gates: live news danger zone and bad data.
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
-  if (danger) { summary.lines.push(`⛔ ${p.label}: ⚖️ ${v.dir === "BUY" ? "شراء" : "بيع"} لكن خبر عالي التأثير ${danger.currency} خلال 15 دقيقة`); return; }
-  if (results.some(r => r.data.poorData)) { summary.lines.push(`⚠️ ${p.label}: بيانات غير صالحة — تم التخطي`); return; }
+  if (danger) { summary.lines.push(`⛔ ${label}: ⚖️ ${v.dir === "BUY" ? "شراء" : "بيع"} لكن خبر عالي التأثير ${danger.currency} خلال 15 دقيقة`); return none; }
 
-  // AI: advisory + veto (majority of ≥2 answering models for the OPPOSITE side).
   let aiResults: any[] = [];
   let ai = aiConsensus([]);
-  if (useAI) {
-    aiResults = await runAI(pair, `${tfs[0].key} (أوزان ${tfs.map(t => t.key).join(" + ")})`, lowData, news, chart, htfBias);
+  if (opts.useAI) {
+    aiResults = await runAI(pair, `${tfKeys[0]} (أوزان ${tfKeys.join(" + ")})`, lowData, news, chart, htfBias);
     ai = aiConsensus(aiResults);
     const opposite = v.dir === "BUY" ? "SELL" : "BUY";
     if (ai.answered >= MIN_AI_ANSWERS && ai.label === opposite) {
-      summary.lines.push(`🤖 ${p.label}: ⚖️ ${v.dir === "BUY" ? "شراء" : "بيع"} (${pTxt}) لكن أغلبية AI ${opposite === "BUY" ? "شراء" : "بيع"} — تم الإلغاء`);
-      return;
+      summary.lines.push(`🤖 ${label}: ⚖️ ${v.dir === "BUY" ? "شراء" : "بيع"} (${pTxt}) لكن أغلبية AI ${opposite === "BUY" ? "شراء" : "بيع"} — تم الإلغاء`);
+      return none;
     }
   }
 
-  const tfMin = TF_MINUTES[tfs[0].key] ?? 1;
-  convergenceCooldown.set(coolKey, Date.now() - CONVERGENCE_COOLDOWN_MS + v.horizon * tfMin * 60_000);
+  const tfMin = TF_MINUTES[tfKeys[0]] ?? 1;
+  const candles = opts.expiryOverride && opts.expiryOverride > 0 ? opts.expiryOverride : v.horizon;
   summary.sent++;
-  summary.lines.push(`🚨 ${p.label}: ⚖️ ${v.dir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
+  summary.lines.push(`🚨 ${label}: ⚖️ ${v.dir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
 
   const entry = tradePrice(lowData);
+  const at = typeof lowData.liveAt === "number" ? lowData.liveAt : Date.now();
   const rec: Recommendation = {
     dir: v.dir, conf: v.edgePct, entry, sl: NaN, tp: NaN, rr: NaN, levelsFrom: "",
-    reasons: [], blockers: [], costPct: null, expiry: v.horizon, expiryFrom: "model",
+    reasons: [], blockers: [], costPct: null, expiry: candles, expiryFrom: candles === v.horizon ? "model" : "fixed",
   };
-  await journalRecommendation(pair, tfs[0].cfg.interval, rec, "tg-wgt");
+  await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, rec, "tg-wgt");
   const journalLine = await journalStatsLine("weights");
 
+  const dirProb = Math.round((v.dir === "BUY" ? v.p : 1 - v.p) * 1000) / 10;
   const pct = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
   const drivers = v.top.map(t => `• <code>${t.tf}</code> ${t.reading} <i>(${t.label})</i> <code>${pct(t.contribution)}</code>`).join("\n");
-  const tfLines = results.map(r => `<code>${r.tf.padEnd(4)}</code> ${r.direction === "BUY" ? "🟢" : r.direction === "SELL" ? "🔴" : "🟡"} استراتيجيات ${r.direction === "NEUTRAL" ? "محايدة" : `${r.pct}%`}`).join("\n");
-  const aiLine = useAI
+  const tfLines = datas.map((d, i) => {
+    const c = calcConsensus(d.strategies);
+    return `<code>${tfKeys[i].padEnd(4)}</code> ${c.direction === "BUY" ? "🟢" : c.direction === "SELL" ? "🔴" : "🟡"} استراتيجيات ${c.direction === "NEUTRAL" ? "محايدة" : `${c.pct}%`}`;
+  }).join("\n");
+  const aiLine = opts.useAI
     ? (ai.answered ? `🤖 AI (${ai.answered} نماذج): ${ai.buys}🟢 ${ai.sells}🔴 ${ai.holds}🟡 — ${ai.answered >= MIN_AI_ANSWERS ? "لا اعتراض" : "استشاري فقط (أقل من نموذجين)"}` : "🤖 AI: لم يستجب أي نموذج — القرار لنموذج الأوزان")
     : "";
-  const msg = [
-    `⚖️🎯 <b>إشارة تطابق — نظام الأوزان</b>`,
-    ``,
-    `${p.flag} <b>${p.label}</b> — ${v.dir === "BUY" ? "🟢 <b>شراء (CALL)</b>" : "🔴 <b>بيع (PUT)</b>"} | درجة <b>${v.grade}</b>`,
+  const full = [
+    `⚖️ <b>${opts.title} — التحليل الكامل</b>`,
+    `${p.flag} <b>${p.label}</b> — ${v.dir === "BUY" ? "🟢 شراء (CALL)" : "🔴 بيع (PUT)"} | درجة <b>${v.grade}</b>`,
     priceLine(lowData),
     dataLine(lowData),
     ``,
     `<b>━━ ⚖️ قرار النموذج ━━</b>`,
-    `احتمال الصعود بعد ${v.horizon} شموع (${tfs[0].key}): <b>${pTxt}</b>`,
+    `احتمال الصعود بعد ${v.horizon} شموع (${tfKeys[0]}): <b>${pTxt}</b>`,
     v.expectedWinRate !== null ? `📈 دقة هذه الدرجة في اختبار 2019 (بيانات لم يرها النموذج): <b>${v.expectedWinRate}%</b>` : "",
     `<b>أقوى العوامل:</b>`,
     drivers,
@@ -1668,17 +1748,27 @@ async function weightedConvergence(
     aiLine,
     ``,
     ...binaryLines(lowData, rec, tfMin),
-    `ℹ️ <i>إشارة اتجاه قصيرة المدى (${v.horizon * tfMin} دقيقة) — مصممة للخيارات الثنائية أو الدخول والخروج بالوقت. على هذه الفريمات السبريد في الفوركس يأكل معظم الربح.</i>`,
     journalLine,
     `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
   ].filter(l => l !== "").join("\n");
 
-  await sendChartPhoto(bot, ownerChatId, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي`);
-  await deliverLong(bot, ownerChatId, msg, { replyMarkup: { inline_keyboard: [[
-    { text: "🔄 إعادة تحليل", callback_data: `pair:${pair}` },
-    { text: "🏠 القائمة", callback_data: "back:pairs" },
-  ]] } });
-  console.log(`[Convergence] ⚖️ ${pair} ${v.dir} p=${v.p.toFixed(3)} grade ${v.grade} (${model.id})`);
+  await sendCompactSignal(bot, ownerChatId, {
+    title: opts.title, pair, tf: tfKeys[0], dir: v.dir, entry, fmt: lowData.fmt, at,
+    strengthPct: dirProb, strengthNote: `(درجة ${v.grade}${v.expectedWinRate !== null ? ` — دقة الاختبار ${v.expectedWinRate}%` : ""})`,
+    binary: { candles, tfMin },
+  }, full, chart, `📸 ${p.label} | ${tfKeys[0]} — الشارت الحي`);
+  console.log(`[Weights] ⚖️ ${pair} ${tfKeys[0]} ${v.dir} p=${v.p.toFixed(3)} grade ${v.grade} (${modelId})`);
+  return { sent: true, expiryMs: candles * tfMin * 60_000 };
+}
+
+async function weightedConvergence(
+  bot: TelegramBot, ownerChatId: number, pair: string, modelId: string,
+  results: { tf: string; direction: "BUY" | "SELL" | "NEUTRAL"; pct: number; data: any }[],
+  tfs: { key: string; cfg: TfConfig }[], icons: string, useAI: boolean, summary: ScanSummary, coolKey: string,
+): Promise<void> {
+  const r = await weightedSignal(bot, ownerChatId, pair, modelId, results.map(x => x.data), tfs.map(t => t.key),
+    { useAI, summary, title: "⚖️ تطابق — نظام الأوزان", icons });
+  if (r.sent) convergenceCooldown.set(coolKey, Date.now() - CONVERGENCE_COOLDOWN_MS + r.expiryMs);
 }
 
 function restartConvergenceScanner(bot: TelegramBot, ownerChatId: number) {
@@ -1937,6 +2027,15 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       } catch {
         await bot.sendMessage(chatId, text, { parse_mode: "Markdown", ...opts as any });
       }
+    }
+
+    // ═══ Full analysis behind a compact signal ═══════════════════
+    if (data.startsWith("full:")) {
+      const det = detailStore.get(data.slice(5));
+      if (!det) { await bot.sendMessage(chatId, "⌛ انتهت صلاحية تفاصيل هذه الإشارة (يُحفظ آخر 40 إشارة فقط)."); return; }
+      if (det.chart) await sendChartPhoto(bot, chatId, det.chart, det.caption);
+      await deliverLong(bot, chatId, det.text);
+      return;
     }
 
     // ═══ Bridge Menu Handlers ═══════════════════════════════════

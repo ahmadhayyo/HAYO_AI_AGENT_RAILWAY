@@ -3873,6 +3873,7 @@ ${scanSummary}
               const highs = candles.map((c: any) => parseFloat(c.high));
               const lows = candles.map((c: any) => parseFloat(c.low));
               const opens = candles.map((c: any) => parseFloat(c.open));
+              const volumes = candles.map((c: any) => parseFloat(c.volume ?? "0") || 0);
               const price = closes[closes.length - 1];
               if (tf === "15min") latestPrice = price;
 
@@ -3889,7 +3890,7 @@ ${scanSummary}
               const pivots = calcPivotPoints(highs, lows, closes, candles.map((c: any) => c.datetime));
               lastATR = atr;
 
-              const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adxVal, pivots, opens);
+              const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adxVal, pivots, opens, volumes);
               const filters = calcFilters(price, sma20, sma50, sma200, rsi, atr, closes, { highs, lows, market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
               const buys = strategies.filter(s => s.signal === "BUY").length;
@@ -4301,6 +4302,7 @@ ${scanSummary}
         const highs   = candles.map(c => parseFloat(c.high));
         const lows    = candles.map(c => parseFloat(c.low));
         const opens   = candles.map(c => parseFloat(c.open));
+        const volumes = candles.map(c => parseFloat((c as any).volume ?? "0") || 0);
         // Use a LIVE quote for the current price so it matches the live chart,
         // instead of the last closed candle (which lags a whole bar). Falls back
         // to the last close if no live quote is available.
@@ -4345,7 +4347,7 @@ ${scanSummary}
         const adx   = calcADX(highs, lows, closes);
 
         // Calculate strategies and filters
-        const strategySignals = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adx, pivots, opens);
+        const strategySignals = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adx, pivots, opens, volumes);
         const filterResults   = calcFilters(currentPrice, sma20, sma50, sma200, rsi, atr, closes, { highs, lows, market24x7: input.pair === "BTCUSD" || input.pair === "ETHUSD" });
 
         // Strategy consensus
@@ -4630,6 +4632,7 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
               const highs = candles.map((c: any) => parseFloat(c.high));
               const lows = candles.map((c: any) => parseFloat(c.low));
               const opens = candles.map((c: any) => parseFloat(c.open));
+              const volumes = candles.map((c: any) => parseFloat(c.volume ?? "0") || 0);
               const price = closes[closes.length - 1];
 
               const rsi = calcRSI(closes);
@@ -4643,7 +4646,7 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
               const adxVal = calcADX(highs, lows, closes);
               const pivotsVal = calcPivotPoints(highs, lows, closes, candles.map((c: any) => c.datetime));
 
-              const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, calcWilliamsR(closes, highs, lows), adxVal, pivotsVal, opens);
+              const strategies = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, calcWilliamsR(closes, highs, lows), adxVal, pivotsVal, opens, volumes);
               const buys = strategies.filter(s => s.signal === "BUY").length;
               const sells = strategies.filter(s => s.signal === "SELL").length;
               const dominant = buys > sells ? "BUY" : sells > buys ? "SELL" : "NEUTRAL";
