@@ -660,6 +660,7 @@ function calcStrategies(
 function calcFilters(
   price: number, sma20: number, sma50: number, sma200: number | null,
   rsi: number, atr: number, closes: number[],
+  opts: { market24x7?: boolean } = {},
 ): FilterResult[] {
   const filters: FilterResult[] = [];
 
@@ -696,8 +697,12 @@ function calcFilters(
       desc: `RSI = ${rsi.toFixed(1)} — ${buyOk && sellOk ? "يسمح بكلا الاتجاهين" : buyOk ? "✅ يدعم الشراء فقط" : "✅ يدعم البيع فقط"}` });
   }
 
-  // 4 — Session Filter (UTC)
-  {
+  // 4 — Session Filter (UTC) — FX sessions don't apply to 24/7 crypto markets
+  if (opts.market24x7) {
+    filters.push({ id: "session_filter", name: "فلتر الجلسة", emoji: "🕐",
+      passed: true, allowsBuy: true, allowsSell: true,
+      desc: "سوق يعمل 24/7 — فلتر جلسات الفوركس لا ينطبق" });
+  } else {
     const h = new Date().getUTCHours();
     const overlap  = h >= 13 && h < 16;
     const london   = h >= 8  && h < 16;

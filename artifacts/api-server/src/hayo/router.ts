@@ -4281,7 +4281,7 @@ ${scanSummary}
 
         // Calculate strategies and filters
         const strategySignals = calcStrategies(closes, highs, lows, sma20, sma50, sma200, rsi, macd, bb, atr, stoch, williamsR, adx, pivots, opens);
-        const filterResults   = calcFilters(currentPrice, sma20, sma50, sma200, rsi, atr, closes);
+        const filterResults   = calcFilters(currentPrice, sma20, sma50, sma200, rsi, atr, closes, { market24x7: input.pair === "BTCUSD" || input.pair === "ETHUSD" });
 
         // Strategy consensus
         const buySigs  = strategySignals.filter(s => s.signal === "BUY").length;

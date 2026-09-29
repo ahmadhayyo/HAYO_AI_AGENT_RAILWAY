@@ -11,7 +11,7 @@ import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, 
 import { fetchOhlcFallback, dropFormingCandle } from "../hayo/market-data";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
-  calcPivotPoints, calcADX, calcStrategies, calcFilters,
+  calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct,
   type StrategySignal, type FilterResult,
 } from "../hayo/market-analysis";
 
@@ -338,7 +338,7 @@ async function fetchMarket(pair: string, tfCfg: TfConfig) {
   const PIVOTS = calcPivotPoints(highs, lows, closes, rawCandles.map((c: any) => c.datetime));
   const ADX    = calcADX(highs, lows, closes);
   const strategies = calcStrategies(closes, highs, lows, SMA20, SMA50, SMA200, RSI, MACD, BB, ATR, STOCH, WILLR, ADX, PIVOTS, opens);
-  const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes);
+  const filters    = calcFilters(price, SMA20, SMA50, SMA200, RSI, ATR, closes, { market24x7: pair === "BTCUSD" || pair === "ETHUSD" });
 
   const marketResult = {
     price, fmt, RSI, SMA20, SMA50, SMA200, MACD, BB, ATR,
@@ -462,7 +462,7 @@ ${d.strategies.map(s=>`• ${s.emoji} ${s.name}: ${s.signal==="BUY"?"🟢 BUY":s
 🔍 الفلاتر (${d.filters.filter(f=>f.passed).length}/${d.filters.length} اجتازت):
 ${d.filters.map(f=>`• ${f.emoji} ${f.name}: ${f.passed?"✅":"⚠️"} — ${f.desc}`).join("\n")}${newsContext}`;
 
-  const sys = `أنت محلل أسواق مالية خبير متخصص في الفوركس والذهب. ستحصل على تحليل شامل يتضمن مؤشرات تقنية + إشارات من 7 استراتيجيات + نتائج 4 فلاتر تأكيد${news.length>0?" + أخبار اقتصادية":""}.
+  const sys = `أنت محلل أسواق مالية خبير متخصص في الفوركس والذهب والعملات الرقمية. ستحصل على تحليل شامل يتضمن مؤشرات تقنية + إشارات من ${d.strategies.length} استراتيجية + نتائج ${d.filters.length} فلاتر تأكيد${news.length>0?" + أخبار اقتصادية":""}.
 
 مهمتك: دمج جميع هذه المعطيات وإعطاء توصية نهائية متكاملة مع الالتزام بالقواعد التالية:
 1. توافق الاستراتيجيات (هل الأغلبية تشير لنفس الاتجاه؟)
@@ -470,6 +470,8 @@ ${d.filters.map(f=>`• ${f.emoji} ${f.name}: ${f.passed?"✅":"⚠️"} — ${f
 3. قوة الإشارة الإجمالية
 4. 🏛️ قاعدة حتمية: إذا كان السعر عند دعم متكرر → لا تُعطِ SELL. إذا كان عند مقاومة متكررة → لا تُعطِ BUY.
 ${news.some(e=>e.impact==="High")?"5. 📰 هناك أخبار عالية التأثير قريبة → ارفع مستوى المخاطرة وقلّل الثقة.":""}
+6. 📐 المستويات: رقم واحد لكل حقل (لا نطاقات ولا نص). في الشراء: الوقف < الدخول < الهدف، وفي البيع العكس. الوقف لا يقل عن 1×ATR (ATR = ${d.fmt(d.ATR)}) والعائد:المخاطرة 1.5 على الأقل؛ إن تعذّر ذلك فأجب HOLD.
+7. إذا كانت الإشارات متعارضة فالجواب الصحيح HOLD — لا تختر اتجاهاً لمجرد وجود أغلبية ضئيلة.
 
 يجب أن ترد فقط بتنسيق JSON صحيح:
 {"signal":"BUY"|"SELL"|"HOLD","confidence":0-100,"reasoning":"تحليل 3-4 جمل يذكر الاستراتيجيات والفلاتر والأخبار","entryZone":"مستوى الدخول","stopLoss":"وقف الخسارة","takeProfit":"جني الأرباح","risk":"LOW"|"MEDIUM"|"HIGH"}
@@ -537,59 +539,186 @@ function buildQuickMsg(pair: string, tf: string, d: Awaited<ReturnType<typeof fe
   ].join("\n");
 }
 
-// Deterministic FINAL recommendation — integrates strategies + trend filter +
-// AI consensus into one clear verdict with an explanation and concrete levels
-// (from the strongest matching AI result, or ATR-based when AI is off). This is
-// the "التوصية" the owner reads at the end of every signal.
-function buildRecommendation(
+// ─── AI consensus ─────────────────────────────────────────────────────
+// Every model that answered has a vote, INCLUDING "HOLD". A direction is only
+// the consensus when a strict majority of the answering models chose it —
+// previously HOLD votes were dropped, so 1 SELL + 3 HOLD was shown as
+// "consensus: SELL".
+export function aiConsensus(aiResults: any[]): { label: "BUY" | "SELL" | "HOLD" | "SPLIT"; votes: number; answered: number; avgConf: number; buys: number; sells: number; holds: number } {
+  const answered = aiResults.filter((r: any) => r.signal === "BUY" || r.signal === "SELL" || r.signal === "HOLD");
+  const buys = answered.filter((r: any) => r.signal === "BUY").length;
+  const sells = answered.filter((r: any) => r.signal === "SELL").length;
+  const holds = answered.length - buys - sells;
+  const n = answered.length;
+  const label: "BUY" | "SELL" | "HOLD" | "SPLIT" =
+    n === 0 ? "HOLD" : buys * 2 > n ? "BUY" : sells * 2 > n ? "SELL" : holds * 2 > n ? "HOLD" : "SPLIT";
+  const voters = label === "SPLIT" ? answered : answered.filter((r: any) => r.signal === label);
+  const avgConf = voters.length ? Math.round(voters.reduce((a: number, r: any) => a + r.confidence, 0) / voters.length) : 0;
+  return { label, votes: label === "SPLIT" ? 0 : voters.length, answered: n, avgConf, buys, sells, holds };
+}
+
+/** First number in an AI level string ("83910 - 83920" → 83910); NaN if none. */
+function firstNumber(v: unknown): number {
+  const m = String(v ?? "").replace(/,/g, "").match(/-?\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : NaN;
+}
+
+const MIN_RR = 1.5;          // minimum reward:risk for levels we publish
+const MIN_CONFIDENCE = 50;   // below this the verdict is "wait", not a trade
+
+interface Recommendation {
+  dir: "BUY" | "SELL" | "HOLD";
+  conf: number;
+  entry: number; sl: number; tp: number; rr: number;
+  levelsFrom: "AI" | "ATR" | "";
+  reasons: string[];
+  blockers: string[];
+  costPct: number | null;
+}
+
+// Deterministic FINAL recommendation — strategies + trend filter + AI majority,
+// then hard safety gates (AI majority, minimum confidence, spread cost, news),
+// then validated levels (correct side, R:R ≥ 1.5, else ATR-based).
+export function computeRecommendation(
+  pair: string,
   d: Awaited<ReturnType<typeof fetchMarket>>,
   aiResults: any[],
-): string[] {
+  news: NewsEvent[] = [],
+): Recommendation {
   const buys = d.strategies.filter((s: Sig) => s.signal === "BUY");
   const sells = d.strategies.filter((s: Sig) => s.signal === "SELL");
   let vote = 0;
   for (const s of d.strategies as Sig[]) { if (s.signal === "BUY") vote += s.strength / 100; else if (s.signal === "SELL") vote -= s.strength / 100; }
-  const trendF = d.filters.find((f: any) => /اتجاه|trend/i.test(f.name));
-  const trendUp = trendF ? /صاعد|📈|فوق/.test(trendF.desc) : null;
+  const trendF = d.filters.find((f: any) => f.id === "trend_filter");
+  const trendUp = trendF ? trendF.allowsBuy : null;
   if (trendUp === true) vote += 1.2; else if (trendUp === false) vote -= 1.2;
 
-  const validAI = aiResults.filter((r: any) => r.signal !== "ERROR" && r.signal !== "HOLD");
-  const anyAI = aiResults.some((r: any) => r.signal !== "ERROR");
-  const aiBuys = validAI.filter((r: any) => r.signal === "BUY").length;
-  const aiSells = validAI.filter((r: any) => r.signal === "SELL").length;
-  vote += (aiBuys - aiSells) * 1.5;
-
-  const maxVote = d.strategies.length + 1.2 + validAI.length * 1.5;
+  const ai = aiConsensus(aiResults);
+  vote += (ai.buys - ai.sells) * 1.5;           // HOLD votes add nothing …
+  const maxVote = d.strategies.length + 1.2 + ai.answered * 1.5; // … but still dilute
   const norm = Math.max(-1, Math.min(1, vote / (Math.max(1, maxVote) * 0.5)));
-  const dir: "BUY" | "SELL" | "HOLD" = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
-  let conf = Math.round(Math.abs(norm) * 100);
-
-  let entry = "", sl = "", tp = "";
-  const best = validAI.filter((r: any) => r.signal === dir && r.entry).sort((a: any, b: any) => b.confidence - a.confidence)[0];
-  if (best) { entry = String(best.entry); sl = String(best.sl); tp = String(best.tp); if (best.confidence) conf = Math.round((conf + best.confidence) / 2); }
-  else if (dir !== "HOLD") {
-    const atr = d.ATR || d.price * 0.001;
-    entry = d.fmt(d.price);
-    sl = d.fmt(dir === "BUY" ? d.price - 1.5 * atr : d.price + 1.5 * atr);
-    tp = d.fmt(dir === "BUY" ? d.price + 2 * atr : d.price - 2 * atr);
-  }
+  let dir: "BUY" | "SELL" | "HOLD" = Math.abs(norm) < 0.18 ? "HOLD" : norm > 0 ? "BUY" : "SELL";
+  const conf = Math.round(Math.abs(norm) * 100);
 
   const reasons: string[] = [`${buys.length} إشارة شراء مقابل ${sells.length} بيع`];
   if (trendUp !== null) reasons.push(`الاتجاه الرئيسي ${trendUp ? "صاعد 📈" : "هابط 📉"}`);
-  if (anyAI && validAI.length) reasons.push(`توافق AI ${aiBuys}🟢/${aiSells}🔴`);
-  else if (!anyAI) reasons.push("نماذج AI غير مفعّلة (فعّل المفاتيح لتحليل أعمق)");
+  if (ai.answered) reasons.push(`AI: ${ai.buys}🟢 ${ai.sells}🔴 ${ai.holds}🟡 من ${ai.answered}`);
+  else reasons.push("نماذج AI غير متاحة");
 
-  const dirLabel = dir === "BUY" ? "🟢 <b>شراء</b>" : dir === "SELL" ? "🔴 <b>بيع</b>" : "🟡 <b>انتظار</b>";
+  // ── Safety gates: any one of them turns the verdict into "wait" ──
+  const blockers: string[] = [];
+  if (dir !== "HOLD" && ai.answered > 0) {
+    const agree = dir === "BUY" ? ai.buys : ai.sells;
+    if (agree * 2 <= ai.answered) blockers.push(`أغلبية نماذج AI لا تؤيد ${dir === "BUY" ? "الشراء" : "البيع"} (${agree}/${ai.answered})`);
+  }
+  if (dir !== "HOLD" && conf < MIN_CONFIDENCE) blockers.push(`الثقة ${conf}% أقل من ${MIN_CONFIDENCE}%`);
+  const costPct = spreadCostPct(pair, d.ATR);
+  if (costPct !== null && costPct >= 25) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
+  const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
+  if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
+  if (blockers.length) dir = "HOLD";
+
+  // ── Levels: AI levels only if they are sane, otherwise ATR-based ──
+  let entry = NaN, sl = NaN, tp = NaN, rr = NaN, levelsFrom: "AI" | "ATR" | "" = "";
+  if (dir !== "HOLD") {
+    const atr = d.ATR || d.price * 0.001;
+    const isBuy = dir === "BUY";
+    const candidates = aiResults
+      .filter((r: any) => r.signal === dir)
+      .sort((a: any, b: any) => b.confidence - a.confidence);
+    for (const r of candidates) {
+      const e = firstNumber(r.entry), s0 = firstNumber(r.sl), t0 = firstNumber(r.tp);
+      const e1 = isFinite(e) ? e : d.price;
+      if (!isFinite(s0) || !isFinite(t0)) continue;
+      const risk = isBuy ? e1 - s0 : s0 - e1, reward = isBuy ? t0 - e1 : e1 - t0;
+      if (risk >= 0.5 * atr && reward / risk >= MIN_RR && Math.abs(e1 - d.price) <= atr) {
+        entry = e1; sl = s0; tp = t0; rr = reward / risk; levelsFrom = "AI"; break;
+      }
+    }
+    if (!levelsFrom) {
+      entry = d.price;
+      sl = isBuy ? d.price - 1.5 * atr : d.price + 1.5 * atr;
+      tp = isBuy ? d.price + 2.5 * atr : d.price - 2.5 * atr;
+      rr = 2.5 / 1.5; levelsFrom = "ATR";
+    }
+  }
+  return { dir, conf, entry, sl, tp, rr, levelsFrom, reasons, blockers, costPct };
+}
+
+function buildRecommendation(
+  pair: string,
+  d: Awaited<ReturnType<typeof fetchMarket>>,
+  aiResults: any[],
+  news: NewsEvent[] = [],
+): string[] {
+  const rec = computeRecommendation(pair, d, aiResults, news);
+  const dirLabel = rec.dir === "BUY" ? "🟢 <b>شراء</b>" : rec.dir === "SELL" ? "🔴 <b>بيع</b>" : "🟡 <b>انتظار</b>";
   const out = [
     ``,
     `<b>━━ ✅ التوصية النهائية ━━</b>`,
-    `${dirLabel} | ثقة <code>${conf}%</code>`,
-    `📝 <i>${reasons.join("، ")}.</i>`,
+    rec.dir === "HOLD" ? dirLabel : `${dirLabel} | ثقة <code>${rec.conf}%</code>`,
+    `📝 <i>${rec.reasons.join("، ")}.</i>`,
   ];
-  if (dir !== "HOLD" && entry) out.push(`🎯 دخول <code>${entry}</code> | 🛑 وقف <code>${sl}</code> | 🎯 هدف <code>${tp}</code>`);
-  else out.push(`⏸️ <i>لا صفقة واضحة الآن — انتظر تحسّن التوافق.</i>`);
+  for (const b of rec.blockers) out.push(`⛔ ${b}`);
+  if (rec.costPct !== null) out.push(`💸 تكلفة السبريد ≈ <code>${rec.costPct.toFixed(0)}%</code> من وقف الخسارة${rec.costPct >= 12 ? " ⚠️" : ""}`);
+  if (rec.dir !== "HOLD") {
+    out.push(`🎯 دخول <code>${d.fmt(rec.entry)}</code> | 🛑 وقف <code>${d.fmt(rec.sl)}</code> | 🎯 هدف <code>${d.fmt(rec.tp)}</code>`);
+    out.push(`⚖️ العائد:المخاطرة <code>1:${rec.rr.toFixed(2)}</code> — ${rec.levelsFrom === "AI" ? "مستويات AI بعد التحقق" : "مستويات محسوبة من ATR (مستويات AI لم تجتز الفحص)"}`);
+  } else if (!rec.blockers.length) {
+    out.push(`⏸️ <i>لا صفقة واضحة الآن — انتظر تحسّن التوافق.</i>`);
+  }
   out.push(`⚠️ <i>إدارة المخاطرة: لا تخاطر بأكثر من 1–2% من رأس المال.</i>`);
   return out;
+}
+
+// ─── Live signal journal (auto) ───────────────────────────────────────
+// Every BUY/SELL recommendation the bot sends is logged and later graded
+// (win/loss/expired) from real prices by the journal evaluator in router.ts,
+// so the bot's REAL live hit-rate is measured without selection bias.
+let ownerUserIdCache: number | null | undefined;
+async function ownerUserId(): Promise<number | null> {
+  if (ownerUserIdCache !== undefined) return ownerUserIdCache;
+  try {
+    const { db } = await import("@workspace/db");
+    const { users } = await import("@workspace/db/schema");
+    const { eq, asc } = await import("drizzle-orm");
+    const [u] = await db.select({ id: users.id }).from(users).where(eq(users.role, "admin")).orderBy(asc(users.id)).limit(1);
+    const id = u?.id ?? null;
+    ownerUserIdCache = id;
+    return id;
+  } catch {
+    ownerUserIdCache = null;
+    return null;
+  }
+}
+
+const journalDedup = new Map<string, number>();
+async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string): Promise<void> {
+  if (rec.dir === "HOLD" || !isFinite(rec.entry) || !isFinite(rec.sl)) return;
+  const key = `${pair}|${interval}|${rec.dir}`;
+  if (Date.now() - (journalDedup.get(key) ?? 0) < 30 * 60 * 1000) return; // same setup re-sent
+  journalDedup.set(key, Date.now());
+  try {
+    const { insertSignalJournal, ensureSignalJournalSchema } = await import("../hayo/db.js");
+    await ensureSignalJournalSchema();
+    await insertSignalJournal({
+      userId: await ownerUserId(), pair, timeframe: interval, direction: rec.dir,
+      entry: rec.entry, stopLoss: rec.sl, takeProfit: rec.tp, confidence: rec.conf, source,
+      note: rec.levelsFrom === "AI" ? "levels: AI (validated)" : "levels: ATR",
+    });
+  } catch (err: any) { console.error("[Journal] insert failed:", err.message); }
+}
+
+/** One-line live track record of the bot's own recommendations. */
+async function journalStatsLine(): Promise<string> {
+  try {
+    const { getJournalStats } = await import("../hayo/db.js");
+    const st = await getJournalStats(await ownerUserId());
+    if (!st) return "";
+    const closed = Number(st.wins ?? 0) + Number(st.losses ?? 0);
+    if (closed === 0) return `📒 <i>سجل الإشارات الحي: لا صفقات مغلقة بعد (${st.open ?? 0} مفتوحة)</i>`;
+    return `📒 <b>سجل الإشارات الحي:</b> ${closed} مغلقة | فوز <code>${st.winRate ?? Math.round(Number(st.wins) / closed * 100)}%</code> | متوسط <code>${Number(st.avgR ?? 0) >= 0 ? "+" : ""}${Number(st.avgR ?? 0).toFixed(2)}R</code>${closed < 30 ? " <i>(عينة صغيرة)</i>" : ""}`;
+  } catch { return ""; }
 }
 
 function buildAIMsg(
@@ -599,16 +728,14 @@ function buildAIMsg(
   isAutoSignal = false,
   news: NewsEvent[] = [],
   htfBias = "",
+  journalLine = "",
 ) {
   const p = PAIRS[pair];
   const buys  = d.strategies.filter(s=>s.signal==="BUY").length;
   const sells = d.strategies.filter(s=>s.signal==="SELL").length;
-  const valid = aiResults.filter(r=>r.signal!=="ERROR"&&r.signal!=="HOLD");
-  const validAll = aiResults.filter(r=>r.signal!=="ERROR");
-  const aiBuys  = valid.filter(r=>r.signal==="BUY").length;
-  const aiSells = valid.filter(r=>r.signal==="SELL").length;
-  const aiCons  = aiBuys>aiSells?"🟢 شراء":aiSells>aiBuys?"🔴 بيع":"🟡 انتظار";
-  const avgConf = validAll.length ? Math.round(validAll.reduce((a:number,r:any)=>a+r.confidence,0)/validAll.length) : 0;
+  const ai = aiConsensus(aiResults);
+  const aiCons = ai.label==="BUY"?"🟢 شراء":ai.label==="SELL"?"🔴 بيع":ai.label==="HOLD"?"🟡 انتظار":"⚖️ منقسم";
+  const avgConf = ai.avgConf;
   const highImpactNews = news.filter(e=>e.impact==="High");
   // Live news countdown: nearest high-impact event + a danger/caution gate.
   const fmtCd = (m: number|null) => {
@@ -652,7 +779,7 @@ function buildAIMsg(
       `📰 أخبار متوسطة: ${news.map(e=>e.currency+"—"+e.title.slice(0,22)+fmtCd(e.minutesUntil)).join(" | ")}`,
     ] : []),
     ``,
-    `<b>━━ 🤖 الذكاء الاصطناعي (5 نماذج) ━━</b>`,
+    `<b>━━ 🤖 الذكاء الاصطناعي (${aiResults.length} نماذج) ━━</b>`,
     ...aiResults.map((r:any)=>r.signal==="ERROR"
       ? `${r.icon} <b>${r.name}</b>: ⚠️ غير متاح`
       : [
@@ -663,9 +790,10 @@ function buildAIMsg(
     ),
     ``,
     `┌────────────────────────────────┐`,
-    `│  AI توافق: ${aiCons.padEnd(10)} ثقة: ${avgConf}%  │`,
+    `│  AI توافق: ${aiCons.padEnd(10)} ${ai.votes}/${ai.answered} | ثقة: ${avgConf}%  │`,
     `└────────────────────────────────┘`,
-    ...buildRecommendation(d, aiResults),
+    ...buildRecommendation(pair, d, aiResults, news),
+    journalLine,
     ``,
     `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
   ].filter(l=>l!=="").join("\n");
@@ -716,7 +844,13 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         lastSignalTimeLocal.set(key, Date.now());
 
         const htfBias = await computeHtfBias(pair, tf);
-        const msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias);
+        const rec = computeRecommendation(pair, d, aiResults, news);
+        if (rec.dir === "HOLD") {
+          console.log(`[AutoScan] ${key}: final recommendation HOLD (${rec.blockers.join("; ") || "weak"}) — skip`);
+          continue;
+        }
+        await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "telegram-auto");
+        const msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias, await journalStatsLine());
         await bot.sendMessage(ownerChatId, msg, {
           parse_mode: "HTML",
           reply_markup: {
@@ -920,7 +1054,17 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         continue;
       }
 
+      // Same safety gates as a manual analysis (AI majority, confidence, spread
+      // cost, news): only send when the final recommendation agrees.
+      const rec = computeRecommendation(pair, results[2].data, aiResults, news);
+      if (rec.dir !== convergenceDir) {
+        console.log(`[Convergence] ${pair}: final recommendation ${rec.dir} (${rec.blockers.join("; ") || "weak"}) — skip`);
+        continue;
+      }
+
       convergenceCooldown.set(coolKey, Date.now());
+      await journalRecommendation(pair, "15min", rec, "telegram-convergence");
+      const journalLine = await journalStatsLine();
 
       const p = PAIRS[pair];
       const d15 = results[2].data;
@@ -996,7 +1140,8 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number) {
         `│  🎯 التطابق: ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"}  ثقة AI: ${avgConf}%  │`,
         `│  3/3 فريمات متطابقة             │`,
         `└──────────────────────────────────┘`,
-        ...buildRecommendation(d15, aiResults),
+        ...buildRecommendation(pair, d15, aiResults, news),
+        journalLine,
         ``,
         `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
       ].join("\n");
@@ -1716,7 +1861,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
           );
           const news = await fetchEconomicNews(pair);
           const [aiResults, htfBias] = await Promise.all([runAI(pair, tf, marketData, news), computeHtfBias(pair, tf)]);
-          await bot.editMessageText(buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias), {
+          await journalRecommendation(pair, TIMEFRAMES[tf].interval, computeRecommendation(pair, marketData, aiResults, news), "telegram-manual");
+          await bot.editMessageText(buildAIMsg(pair, tf, marketData, aiResults, false, news, htfBias, await journalStatsLine()), {
             chat_id:chatId, message_id:loadMsgId, parse_mode:"HTML", reply_markup:afterResultKeyboard(),
           });
         }
