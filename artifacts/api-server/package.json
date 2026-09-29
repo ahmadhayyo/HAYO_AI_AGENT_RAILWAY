@@ -9,6 +9,7 @@
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "backtest": "tsx scripts/backtest-signals.ts",
+    "backtest-smc": "NODE_OPTIONS=--max-old-space-size=6000 tsx scripts/backtest-smc.ts",
     "train-weights": "NODE_OPTIONS=--max-old-space-size=12000 tsx scripts/train-weights.ts"
   },
   "dependencies": {

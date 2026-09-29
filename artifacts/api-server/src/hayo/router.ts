@@ -179,7 +179,7 @@ async function evaluateSignalJournal(): Promise<void> {
       const created = new Date(s.createdAt).getTime();
       // Binary option: graded ONLY by where price is at expiry vs. entry.
       // Win pays BINARY_PAYOUT (R = +payout), loss costs the stake (R = -1).
-      if (s.source === "tg-bin" || s.source === "tg-wgt") {
+      if (s.source === "tg-bin" || s.source === "tg-wgt" || s.source === "tg-trap") {
         const n = Number(String(s.note ?? "").match(/binary:(\d+)/)?.[1] ?? 5);
         const tfMs = TF_MS[timeframe] ?? 6e4;
         const expiryTs = created + n * tfMs;

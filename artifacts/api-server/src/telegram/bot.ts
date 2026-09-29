@@ -11,6 +11,7 @@ import { renderChartSnapshot } from "../hayo/services/chart-snapshot";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
 import { fetchOhlcFallback, dropFormingCandle, assessData, fetchRealtimePrice } from "../hayo/market-data";
 import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/weights-model";
+import { lastBarTrap } from "../hayo/liquidity-trap";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
   calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
@@ -51,7 +52,7 @@ const PAIRS: Record<string, PairInfo> = {
 // TwelveData interval config per bot timeframe key
 interface TfConfig { interval: string; outputsize: number; label: string }
 const TIMEFRAMES: Record<string, TfConfig> = {
-  "1m":  { interval: "1min",  outputsize: 250, label: "1 دقيقة"  },
+  "1m":  { interval: "1min",  outputsize: 600, label: "1 دقيقة"  }, // 600: liquidity-trap engine warm-up
   "5m":  { interval: "5min",  outputsize: 250, label: "5 دقائق"  },
   "15m": { interval: "15min", outputsize: 250, label: "15 دقيقة" },
   "30m": { interval: "30min", outputsize: 250, label: "30 دقيقة" },
@@ -306,7 +307,8 @@ type Flt = FilterResult;
 // ─── Market Data — TwelveData API ─────────────────────────────────────
 interface CacheEntry { data: any; ts: number }
 const marketCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 3 * 60 * 1000; // 3-minute cache
+const CACHE_TTL_MS = 3 * 60 * 1000; // 3-minute cache (capped at half a bar, see fetchMarketCandles)
+const INTERVAL_MIN: Record<string, number> = { "1min": 1, "5min": 5, "15min": 15, "30min": 30, "1h": 60, "4h": 240, "1day": 1440, "1week": 10080 };
 
 /**
  * useTwelveData: manual analyses (a person is waiting) try TwelveData first —
@@ -340,7 +342,7 @@ function tradePrice(d: any): number { return typeof d.livePrice === "number" && 
 /** "💰 price" line: live quote with its exact time, plus the last closed candle. */
 function priceLine(d: any): string {
   const t = (ms: number) => localAndUtc(ms);
-  const closeAt = d.datetime ? String(d.datetime).slice(11, 16) : "";
+  const closeAt = d.datetime ? localAndUtc(toUtcMs(String(d.datetime))).slice(0, 5) : "";
   return typeof d.livePrice === "number"
     ? `💰 <b>${d.fmt(d.livePrice)}</b> حي (${escHtml(d.liveSource || "")}) ⏱ <i>${t(d.liveAt)}</i>\n🕯 إغلاق آخر شمعة مكتملة <code>${d.fmt(d.price)}</code> <i>(شمعة ${closeAt})</i>`
     : `💰 <b>${d.fmt(d.price)}</b> <i>إغلاق شمعة ${closeAt} UTC — لا سعر حي متاح</i>`;
@@ -353,10 +355,13 @@ async function fetchMarket(pair: string, tfCfg: TfConfig, opts: { useTwelveData?
 
 async function fetchMarketCandles(pair: string, tfCfg: TfConfig, opts: { useTwelveData?: boolean } = {}) {
   const p = PAIRS[pair];
-  const cacheKey = `${pair}:${tfCfg.interval}:${opts.useTwelveData ? "td" : "fb"}`;
+  const cacheKey = `${pair}:${tfCfg.interval}:${tfCfg.outputsize}:${opts.useTwelveData ? "td" : "fb"}`;
 
   const cached = marketCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+  // Never serve candles older than half a bar: a 3-minute cache made the
+  // 1-minute models decide on bars up to 3 closes old.
+  const ttl = Math.min(CACHE_TTL_MS, (INTERVAL_MIN[tfCfg.interval] ?? 3) * 30_000);
+  if (cached && Date.now() - cached.ts < ttl) {
     console.log(`[Bot] Cache hit: ${cacheKey} (${Math.round((Date.now()-cached.ts)/1000)}s old)`);
     return cached.data;
   }
@@ -1059,7 +1064,7 @@ async function ownerUserId(): Promise<number | null> {
 
 const journalDedup = new Map<string, number>();
 async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string): Promise<void> {
-  const isBinary = source === "tg-bin" || source === "tg-wgt";
+  const isBinary = source === "tg-bin" || source === "tg-wgt" || source === "tg-trap";
   if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return;
   const key = `${pair}|${interval}|${rec.dir}|${source}`;
   const dedupMs = isBinary ? 60 * 1000 : 30 * 60 * 1000;
@@ -1077,14 +1082,14 @@ async function journalRecommendation(pair: string, interval: string, rec: Recomm
 }
 
 /** One-line live track record of the bot's own recommendations. */
-async function journalStatsLine(kind: boolean | "binary" | "weights" | "forex" = "forex"): Promise<string> {
+async function journalStatsLine(kind: boolean | "binary" | "weights" | "trap" | "forex" = "forex"): Promise<string> {
   const k = kind === true ? "binary" : kind === false ? "forex" : kind;
   try {
     const { getJournalStats } = await import("../hayo/db.js");
     const st = await getJournalStats(await ownerUserId(), k);
     if (!st) return "";
     if (k !== "forex") {
-      const title = k === "weights" ? "⚖️ سجل نظام الأوزان (حي)" : "🎰 سجل الإشارات الثنائية التلقائية";
+      const title = k === "weights" ? "⚖️ سجل نظام الأوزان (حي)" : k === "trap" ? "🪤 سجل فخ السيولة (حي)" : "🎰 سجل الإشارات الثنائية التلقائية";
       const n = Number(st.wins ?? 0) + Number(st.losses ?? 0);
       if (n === 0) return `<i>${title}: لا صفقات منتهية بعد (${st.open ?? 0} قيد الانتظار)</i>`;
       const be = Math.round(100 / (1 + BINARY_PAYOUT));
@@ -1362,6 +1367,9 @@ const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, st
 };
 /** Presets decided by the learned weighting model (hayo/weights-model.ts). */
 const CONVERGENCE_MODEL: Partial<Record<ConvergencePreset, string>> = { fast: "fast", scalp: "scalp" };
+/** Liquidity trap: weights-model agreement needed, and its 2019 test hit rate (10 bars, 1m). */
+const TRAP_MIN_P = 0.53;
+const TRAP_OOS = 55.8;
 /** Auto-signal binary mode: which weighting model serves each low timeframe. */
 const BINARY_MODEL_BY_TF: Record<string, string> = { "1m": "fast", "5m": "scalp" };
 const WEIGHTED_ASSETS = new Set(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD"]);
@@ -1683,25 +1691,37 @@ async function weightedSignal(
   const v = weightedVerdict(modelId, datas.map(d => d.candles));
   if (!v) { summary.lines.push(`⚠️ ${label}: شموع غير كافية لنموذج الأوزان`); return none; }
   const pTxt = `${(v.p * 100).toFixed(1)}%`;
-  if (v.dir === "HOLD") {
-    summary.lines.push(`➖ ${label}: ⚖️ احتمال الصعود ${pTxt} — لا أفضلية كافية${opts.icons ? ` (${opts.icons})` : ""}`);
+  // 🪤 Liquidity trap (1-minute "fast" model only — consistent there in the
+  // research, not on 5m): the reverse of a stretched Breaker-box entry candle,
+  // sent when the weights model leans the same way (p ≥ TRAP_MIN_P).
+  const trap = modelId === "fast" ? lastBarTrap(datas[0].candles) : null;
+  const trapP = trap ? (trap.dir === "BUY" ? v.p : 1 - v.p) : 0;
+  let mode: "weights" | "trap" = "weights";
+  let sigDir: "BUY" | "SELL";
+  if (v.dir !== "HOLD") sigDir = v.dir;
+  else if (trap && trapP >= TRAP_MIN_P) { mode = "trap"; sigDir = trap.dir; }
+  else {
+    const trapNote = trap ? ` — 🪤 فخ ${trap.dir === "BUY" ? "شراء" : "بيع"} لكن موافقة النموذج ${(trapP * 100).toFixed(1)}% < ${TRAP_MIN_P * 100}%` : "";
+    summary.lines.push(`➖ ${label}: ⚖️ احتمال الصعود ${pTxt} — لا أفضلية كافية${trapNote}${opts.icons ? ` (${opts.icons})` : ""}`);
     return none;
   }
+  const isTrap = mode === "trap";
+  const title = isTrap ? "🪤 فخ السيولة + أوزان" : opts.title;
   const lowData = datas[0];
   const topKey = tfKeys[tfKeys.length - 1];
   const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tfKeys[0], lowData), computeHtfBias(pair, topKey)]);
 
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
-  if (danger) { summary.lines.push(`⛔ ${label}: ⚖️ ${v.dir === "BUY" ? "شراء" : "بيع"} لكن خبر عالي التأثير ${danger.currency} خلال 15 دقيقة`); return none; }
+  if (danger) { summary.lines.push(`⛔ ${label}: ⚖️ ${sigDir === "BUY" ? "شراء" : "بيع"} لكن خبر عالي التأثير ${danger.currency} خلال 15 دقيقة`); return none; }
 
   let aiResults: any[] = [];
   let ai = aiConsensus([]);
   if (opts.useAI) {
     aiResults = await runAI(pair, `${tfKeys[0]} (أوزان ${tfKeys.join(" + ")})`, lowData, news, chart, htfBias);
     ai = aiConsensus(aiResults);
-    const opposite = v.dir === "BUY" ? "SELL" : "BUY";
+    const opposite = sigDir === "BUY" ? "SELL" : "BUY";
     if (ai.answered >= MIN_AI_ANSWERS && ai.label === opposite) {
-      summary.lines.push(`🤖 ${label}: ⚖️ ${v.dir === "BUY" ? "شراء" : "بيع"} (${pTxt}) لكن أغلبية AI ${opposite === "BUY" ? "شراء" : "بيع"} — تم الإلغاء`);
+      summary.lines.push(`🤖 ${label}: ⚖️ ${sigDir === "BUY" ? "شراء" : "بيع"} (${pTxt}) لكن أغلبية AI ${opposite === "BUY" ? "شراء" : "بيع"} — تم الإلغاء`);
       return none;
     }
   }
@@ -1709,18 +1729,20 @@ async function weightedSignal(
   const tfMin = TF_MINUTES[tfKeys[0]] ?? 1;
   const candles = opts.expiryOverride && opts.expiryOverride > 0 ? opts.expiryOverride : v.horizon;
   summary.sent++;
-  summary.lines.push(`🚨 ${label}: ⚖️ ${v.dir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
+  summary.lines.push(isTrap
+    ? `🚨 ${label}: 🪤 فخ سيولة ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} + أوزان ${(trapP * 100).toFixed(1)}% — أُرسلت إشارة`
+    : `🚨 ${label}: ⚖️ ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
 
   const entry = tradePrice(lowData);
   const at = typeof lowData.liveAt === "number" ? lowData.liveAt : Date.now();
   const rec: Recommendation = {
-    dir: v.dir, conf: v.edgePct, entry, sl: NaN, tp: NaN, rr: NaN, levelsFrom: "",
+    dir: sigDir, conf: v.edgePct, entry, sl: NaN, tp: NaN, rr: NaN, levelsFrom: "",
     reasons: [], blockers: [], costPct: null, expiry: candles, expiryFrom: candles === v.horizon ? "model" : "fixed",
   };
-  await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, rec, "tg-wgt");
-  const journalLine = await journalStatsLine("weights");
+  await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, rec, isTrap ? "tg-trap" : "tg-wgt");
+  const journalLine = await journalStatsLine(isTrap ? "trap" : "weights");
 
-  const dirProb = Math.round((v.dir === "BUY" ? v.p : 1 - v.p) * 1000) / 10;
+  const dirProb = Math.round((sigDir === "BUY" ? v.p : 1 - v.p) * 1000) / 10;
   const pct = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
   const drivers = v.top.map(t => `• <code>${t.tf}</code> ${t.reading} <i>(${t.label})</i> <code>${pct(t.contribution)}</code>`).join("\n");
   const tfLines = datas.map((d, i) => {
@@ -1731,11 +1753,18 @@ async function weightedSignal(
     ? (ai.answered ? `🤖 AI (${ai.answered} نماذج): ${ai.buys}🟢 ${ai.sells}🔴 ${ai.holds}🟡 — ${ai.answered >= MIN_AI_ANSWERS ? "لا اعتراض" : "استشاري فقط (أقل من نموذجين)"}` : "🤖 AI: لم يستجب أي نموذج — القرار لنموذج الأوزان")
     : "";
   const full = [
-    `⚖️ <b>${opts.title} — التحليل الكامل</b>`,
-    `${p.flag} <b>${p.label}</b> — ${v.dir === "BUY" ? "🟢 شراء (CALL)" : "🔴 بيع (PUT)"} | درجة <b>${v.grade}</b>`,
+    `<b>${title} — التحليل الكامل</b>`,
+    `${p.flag} <b>${p.label}</b> — ${sigDir === "BUY" ? "🟢 شراء (CALL)" : "🔴 بيع (PUT)"}${isTrap ? "" : ` | درجة <b>${v.grade}</b>`}`,
     priceLine(lowData),
     dataLine(lowData),
     ``,
+    ...(trap ? [
+      `<b>━━ 🪤 فخ السيولة ━━</b>`,
+      `شمعة دخول صندوق Breaker ${trap.dir === "SELL" ? "صاعد" : "هابط"} (<code>${lowData.fmt(trap.boxBot)}</code>–<code>${lowData.fmt(trap.boxTop)}</code>، جودة ${trap.boxScore.toFixed(0)}) جاءت ممتدة جداً: Value Chart <b>${trap.vc.toFixed(1)}</b> (الحد ±8)`,
+      `← هذه شمعة المتأخرين (سيولة)؛ الإشارة عكسها: <b>${trap.dir === "BUY" ? "شراء" : "بيع"}</b>. موافقة نموذج الأوزان: <b>${(trapP * 100).toFixed(1)}%</b>`,
+      isTrap ? `📈 دقة "فخ + موافقة النموذج ≥ 53%" في الاختبار: 55.7% (2018) / <b>${TRAP_OOS}%</b> (2019) على 10 شموع` : (trap.dir === sigDir ? `✅ الفخ يؤكد إشارة الأوزان` : `⚠️ الفخ عكس إشارة الأوزان — القرار للأوزان`),
+      ``,
+    ] : []),
     `<b>━━ ⚖️ قرار النموذج ━━</b>`,
     `احتمال الصعود بعد ${v.horizon} شموع (${tfKeys[0]}): <b>${pTxt}</b>`,
     v.expectedWinRate !== null ? `📈 دقة هذه الدرجة في اختبار 2019 (بيانات لم يرها النموذج): <b>${v.expectedWinRate}%</b>` : "",
@@ -1753,11 +1782,12 @@ async function weightedSignal(
   ].filter(l => l !== "").join("\n");
 
   await sendCompactSignal(bot, ownerChatId, {
-    title: opts.title, pair, tf: tfKeys[0], dir: v.dir, entry, fmt: lowData.fmt, at,
-    strengthPct: dirProb, strengthNote: `(درجة ${v.grade}${v.expectedWinRate !== null ? ` — دقة الاختبار ${v.expectedWinRate}%` : ""})`,
+    title, pair, tf: tfKeys[0], dir: sigDir, entry, fmt: lowData.fmt, at,
+    strengthPct: dirProb,
+    strengthNote: isTrap ? `(فخ سيولة VC ${trap!.vc.toFixed(1)} — دقة الاختبار ${TRAP_OOS}%)` : `(درجة ${v.grade}${v.expectedWinRate !== null ? ` — دقة الاختبار ${v.expectedWinRate}%` : ""}${trap && trap.dir === sigDir ? " + 🪤 فخ" : ""})`,
     binary: { candles, tfMin },
   }, full, chart, `📸 ${p.label} | ${tfKeys[0]} — الشارت الحي`);
-  console.log(`[Weights] ⚖️ ${pair} ${tfKeys[0]} ${v.dir} p=${v.p.toFixed(3)} grade ${v.grade} (${modelId})`);
+  console.log(`[Weights] ${isTrap ? "🪤 trap" : "⚖️"} ${pair} ${tfKeys[0]} ${sigDir} p=${v.p.toFixed(3)} grade ${v.grade} (${modelId})`);
   return { sent: true, expiryMs: candles * tfMin * 60_000 };
 }
 
