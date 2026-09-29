@@ -68,6 +68,8 @@ interface AutoConfig {
   timeframes: string[];       // timeframes to scan
   intervalMinutes: number;    // scan every X minutes
   useAI: boolean;             // true: AI plurality decides; false: technical-only signals
+  binary: boolean;            // binary-options mode: CALL/PUT + expiry, no SL/TP, no spread gate
+  binaryExpiry: number;       // expiry in candles (3/5/7/10); 0 = auto (decided by the analysis)
 }
 
 const defaultAutoConfig: AutoConfig = {
@@ -78,7 +80,15 @@ const defaultAutoConfig: AutoConfig = {
   timeframes: ["15m", "1h"],
   intervalMinutes: 30,
   useAI: true,
+  binary: false,
+  binaryExpiry: 0,
 };
+/** Binary trade still running per pair:tf (a new one opens only after it expires). */
+const binaryBusyUntil = new Map<string, number>();
+
+/** Binary payout assumed for the journal's R and break-even (override: HAYO_BINARY_PAYOUT=0.8). */
+const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.85);
+const TF_MINUTES: Record<string, number> = { "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440 };
 
 let autoConfig: AutoConfig = { ...defaultAutoConfig };
 let autoScanTimer: NodeJS.Timeout | null = null;
@@ -210,6 +220,20 @@ function autoMenuKeyboard(): TelegramBot.InlineKeyboardMarkup {
     inline_keyboard: [
       [{ text: `${c.enabled ? "🔴 إيقاف الإشارات التلقائية" : "🟢 تفعيل الإشارات التلقائية"}`, callback_data: "auto:toggle" }],
       [{ text: "▶️ فحص فوري الآن (SCAN)", callback_data: "auto:now" }],
+      [{ text: "━━ نوع التداول ━━", callback_data: "auto:noop" }],
+      [
+        { text: `${!c.binary ? "✅ " : ""}📈 فوركس (وقف/هدف)`, callback_data: "auto:mode:forex" },
+        { text: `${c.binary ? "✅ " : ""}🎰 خيارات ثنائية`, callback_data: "auto:mode:binary" },
+      ],
+      ...(c.binary ? [
+        [{ text: `${c.binaryExpiry===0?"✅ ":""}⌛ مدة تلقائية (يحددها التحليل)`, callback_data: "auto:exp:0" }],
+        [
+          { text: `${c.binaryExpiry===3?"✅ ":""}3`, callback_data: "auto:exp:3" },
+          { text: `${c.binaryExpiry===5?"✅ ":""}5`, callback_data: "auto:exp:5" },
+          { text: `${c.binaryExpiry===7?"✅ ":""}7`, callback_data: "auto:exp:7" },
+          { text: `${c.binaryExpiry===10?"✅ ":""}10 شموع`, callback_data: "auto:exp:10" },
+        ],
+      ] : []),
       [{ text: "━━ نوع التحليل ━━", callback_data: "auto:noop" }],
       [
         { text: `${c.useAI ? "✅ " : ""}🤖 مع AI`, callback_data: "auto:ai:on" },
@@ -583,6 +607,15 @@ ${news.some(e=>e.impact==="High")?"5. 📰 هناك أخبار عالية الت
     `"risk":"LOW"|"MEDIUM"|"HIGH","chartReading":"ما تراه في الشارت في جملتين","chartAgrees":true|false}`,
   );
 
+  // Binary-options mode: each model also proposes the expiry (in candles).
+  let sysUsed = sys, visionUsed = visionSys;
+  if ((d as any).binary) {
+    const addField = (t: string) => t.replace(`"risk":"LOW"|"MEDIUM"|"HIGH"`, `"risk":"LOW"|"MEDIUM"|"HIGH","expiryCandles":2-30`);
+    const rule = `\n8. 🎰 هذه إشارة خيارات ثنائية على إطار ${tf}: حدّد "expiryCandles" = عدد الشموع (2-30) التي يُرجَّح أن يبقى خلالها السعر في اتجاه قرارك حتى الانتهاء، بناءً على قوة الزخم وبُعد أقرب دعم/مقاومة في الاتجاه المعاكس. لا تُطل المدة إذا كان مستوى معاكس قريباً.`;
+    sysUsed = addField(sys).replace(`7. إذا كانت الإشارات متعارضة`, `${rule.trim()}\n7. إذا كانت الإشارات متعارضة`);
+    visionUsed = addField(visionSys).replace(`7. إذا كانت الإشارات متعارضة`, `${rule.trim()}\n7. إذا كانت الإشارات متعارضة`);
+  }
+
   // ── 5 providers — same as platform ─────────────────────────────────
   const providers: AIProvider[] = ["claude","gpt4","gemini","geminiPro","deepseek"];
   const settled = await Promise.allSettled(
@@ -596,7 +629,7 @@ ${news.some(e=>e.impact==="High")?"5. 📰 هناك أخبار عالية الت
         // Vision models get the chart + chart-reading instructions. If the image
         // could not be delivered, callProviderVision falls back to text-only and
         // sawImage=false — its "chartReading" is then discarded below.
-        const res = await callProviderVision(p, chart ? visionSys : sys, ctx, chart);
+        const res = await callProviderVision(p, chart ? visionUsed : sysUsed, ctx, chart);
         const clean = res.content.replace(/```json\n?|```\n?/g,"").trim();
         const j = JSON.parse(clean.slice(clean.indexOf("{"), clean.lastIndexOf("}")+1));
         const sig = ["BUY","SELL","HOLD"].includes(j.signal) ? j.signal : "HOLD";
@@ -605,7 +638,8 @@ ${news.some(e=>e.impact==="High")?"5. 📰 هناك أخبار عالية الت
           reasoning:j.reasoning||"—", entry:j.entryZone||"—", sl:j.stopLoss||"—", tp:j.takeProfit||"—", risk:j.risk||"MEDIUM",
           sawChart: res.sawImage,
           chartReading: res.sawImage ? String(j.chartReading || "") : "",
-          chartAgrees: res.sawImage && typeof j.chartAgrees === "boolean" ? j.chartAgrees : null };
+          chartAgrees: res.sawImage && typeof j.chartAgrees === "boolean" ? j.chartAgrees : null,
+          expiryCandles: Number.isFinite(Number(j.expiryCandles)) ? Math.round(Number(j.expiryCandles)) : null };
       } catch (err: any) {
         console.error(`[TelegramBot] ${name} error:`, err.message);
         return { provider:p, name, icon, signal:"ERROR", confidence:0, reasoning:"", entry:"—", sl:"—", tp:"—", risk:"—", sawChart:false, chartReading:"", chartAgrees:null };
@@ -764,6 +798,8 @@ interface Recommendation {
   reasons: string[];
   blockers: string[];
   costPct: number | null;
+  expiry?: number;                          // binary: expiry in candles
+  expiryFrom?: "AI" | "ADX" | "fixed";
 }
 
 // Deterministic FINAL recommendation — strategies + trend filter + AI majority,
@@ -808,7 +844,9 @@ export function computeRecommendation(
   // ── Safety gates (external facts, not opinions): turn the verdict into "wait" ──
   const blockers: string[] = [];
   const costPct = spreadCostPct(pair, d.ATR);
-  if (COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
+  const binary = (d as any).binary as { expiry: number; tfMin: number } | undefined;
+  // Binary options pay a fixed amount at expiry: no stop, no spread → no cost gate.
+  if (!binary && COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
   if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
   if ((d as any).poorData) blockers.push(`بيانات السوق غير صالحة (${(d as any).qualityNote} — ${(d as any).dataSource}) — لا توصية على بيانات غير حية`);
@@ -839,7 +877,19 @@ export function computeRecommendation(
       rr = 2.5 / 1.5; levelsFrom = "ATR";
     }
   }
-  return { dir, conf, entry, sl, tp, rr, levelsFrom, reasons, blockers, costPct };
+  // ── Binary expiry: fixed by the user, else median of the agreeing models,
+  //    else from trend strength (strong trend → hold longer, range → shorter).
+  let expiry: number | undefined, expiryFrom: Recommendation["expiryFrom"];
+  if (binary && dir !== "HOLD") {
+    const clampE = (n: number) => Math.max(2, Math.min(30, Math.round(n)));
+    const votes = aiResults
+      .filter((r: any) => r.signal === dir && Number.isFinite(r.expiryCandles) && r.expiryCandles >= 1)
+      .map((r: any) => clampE(r.expiryCandles)).sort((a: number, b: number) => a - b);
+    if (binary.expiry > 0) { expiry = binary.expiry; expiryFrom = "fixed"; }
+    else if (votes.length) { expiry = votes[Math.floor((votes.length - 1) / 2)]; expiryFrom = "AI"; }
+    else { const adx = d.ADX?.adx ?? 20; expiry = adx >= 30 ? 10 : adx >= 25 ? 7 : adx >= 20 ? 5 : 3; expiryFrom = "ADX"; }
+  }
+  return { dir, conf, entry, sl, tp, rr, levelsFrom, reasons, blockers, costPct, expiry, expiryFrom };
 }
 
 function buildRecommendation(
@@ -859,6 +909,13 @@ function buildRecommendation(
     `📝 <i>${rec.reasons.join("، ")}.</i>`,
   ];
   for (const b of rec.blockers) out.push(`⛔ ${b}`);
+  const binary = (d as any).binary as { expiry: number; tfMin: number } | undefined;
+  if (binary) {
+    if (rec.dir !== "HOLD") out.push(...binaryLines(d, rec, binary.tfMin));
+    else if (!rec.blockers.length) out.push(`⏸️ <i>لا صفقة واضحة الآن — انتظر تحسّن التوافق.</i>`);
+    out.push(`⚠️ <i>إدارة المخاطرة: لا تخاطر بأكثر من 1–2% من الرصيد في الصفقة.</i>`);
+    return out;
+  }
   if (rec.costPct !== null) out.push(`💸 تكلفة السبريد ≈ <code>${rec.costPct.toFixed(0)}%</code> من وقف الخسارة${rec.costPct >= 12 ? " ⚠️" : ""}`);
   if (rec.dir !== "HOLD") {
     out.push(`🎯 دخول <code>${d.fmt(rec.entry)}</code> | 🛑 وقف <code>${d.fmt(rec.sl)}</code> | 🎯 هدف <code>${d.fmt(rec.tp)}</code>`);
@@ -868,6 +925,24 @@ function buildRecommendation(
   }
   out.push(`⚠️ <i>إدارة المخاطرة: لا تخاطر بأكثر من 1–2% من رأس المال.</i>`);
   return out;
+}
+
+/** Binary-options execution block: direction, entry price/time, expiry, win condition. */
+function binaryLines(d: any, rec: Recommendation, tfMin: number): string[] {
+  const dir = rec.dir, entry = rec.entry, n = rec.expiry ?? 5;
+  const at = typeof d.liveAt === "number" ? d.liveAt : Date.now();
+  const hhmmss = (ms: number) => new Date(ms).toISOString().slice(11, 19);
+  const mins = n * tfMin;
+  const from = rec.expiryFrom === "AI" ? "حدّدها AI (وسيط النماذج الموافِقة)" : rec.expiryFrom === "ADX" ? "من قوة الاتجاه ADX" : "مدة ثابتة من الإعدادات";
+  const breakEven = Math.round(100 / (1 + BINARY_PAYOUT));
+  return [
+    `<b>━━ 🎰 خيار ثنائي ━━</b>`,
+    dir === "BUY" ? `🟢 <b>CALL — صعود</b>` : `🔴 <b>PUT — هبوط</b>`,
+    `💵 سعر الدخول <code>${d.fmt(entry)}</code> ⏱ <i>${hhmmss(at)} UTC</i>`,
+    `⌛ المدة: <b>${n} شموع</b> = ${mins} دقيقة → تنتهي ≈ <i>${hhmmss(at + mins * 60_000)} UTC</i> <i>(${from})</i>`,
+    `✅ تربح إذا كان السعر عند الانتهاء ${dir === "BUY" ? "أعلى" : "أدنى"} من <code>${d.fmt(entry)}</code>`,
+    `📊 <i>نقطة التعادل: فوز ≥ ${breakEven}% من الصفقات (بعائد ${Math.round(BINARY_PAYOUT * 100)}%)</i>`,
+  ];
 }
 
 // ─── Live signal journal (auto) ───────────────────────────────────────
@@ -893,27 +968,35 @@ async function ownerUserId(): Promise<number | null> {
 
 const journalDedup = new Map<string, number>();
 async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string): Promise<void> {
-  if (rec.dir === "HOLD" || !isFinite(rec.entry) || !isFinite(rec.sl)) return;
-  const key = `${pair}|${interval}|${rec.dir}`;
-  if (Date.now() - (journalDedup.get(key) ?? 0) < 30 * 60 * 1000) return; // same setup re-sent
+  const isBinary = source === "tg-bin";
+  if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return;
+  const key = `${pair}|${interval}|${rec.dir}|${source}`;
+  const dedupMs = isBinary ? 60 * 1000 : 30 * 60 * 1000;
+  if (Date.now() - (journalDedup.get(key) ?? 0) < dedupMs) return; // same setup re-sent
   journalDedup.set(key, Date.now());
   try {
     const { insertSignalJournal, ensureSignalJournalSchema } = await import("../hayo/db.js");
     await ensureSignalJournalSchema();
     await insertSignalJournal({
       userId: await ownerUserId(), pair, timeframe: interval, direction: rec.dir,
-      entry: rec.entry, stopLoss: rec.sl, takeProfit: rec.tp, confidence: rec.conf, source,
-      note: rec.levelsFrom === "AI" ? "levels: AI (validated)" : "levels: ATR",
+      entry: rec.entry, stopLoss: isBinary ? rec.entry : rec.sl, takeProfit: isBinary ? null : rec.tp, confidence: rec.conf, source,
+      note: isBinary ? `binary:${rec.expiry ?? 5}` : rec.levelsFrom === "AI" ? "levels: AI (validated)" : "levels: ATR",
     });
   } catch (err: any) { console.error("[Journal] insert failed:", err.message); }
 }
 
 /** One-line live track record of the bot's own recommendations. */
-async function journalStatsLine(): Promise<string> {
+async function journalStatsLine(binary = false): Promise<string> {
   try {
     const { getJournalStats } = await import("../hayo/db.js");
-    const st = await getJournalStats(await ownerUserId());
+    const st = await getJournalStats(await ownerUserId(), binary ? "binary" : "forex");
     if (!st) return "";
+    if (binary) {
+      const n = Number(st.wins ?? 0) + Number(st.losses ?? 0);
+      if (n === 0) return `🎰 <i>سجل الخيارات الثنائية: لا صفقات منتهية بعد (${st.open ?? 0} قيد الانتظار)</i>`;
+      const be = Math.round(100 / (1 + BINARY_PAYOUT));
+      return `🎰 <b>سجل الخيارات الثنائية:</b> ${n} صفقة | فوز <code>${st.winRate}%</code> (التعادل ${be}%) | صافي <code>${Number(st.totalR) >= 0 ? "+" : ""}${Number(st.totalR).toFixed(2)}</code> رهان${n < 30 ? " <i>(عينة صغيرة)</i>" : ""}`;
+    }
     const closed = Number(st.wins ?? 0) + Number(st.losses ?? 0);
     if (closed === 0) return `📒 <i>سجل الإشارات الحي: لا صفقات مغلقة بعد (${st.open ?? 0} مفتوحة)</i>`;
     return `📒 <b>سجل الإشارات الحي:</b> ${closed} مغلقة | فوز <code>${st.winRate ?? Math.round(Number(st.wins) / closed * 100)}%</code> | متوسط <code>${Number(st.avgR ?? 0) >= 0 ? "+" : ""}${Number(st.avgR ?? 0).toFixed(2)}R</code>${closed < 30 ? " <i>(عينة صغيرة)</i>" : ""}`;
@@ -1027,13 +1110,19 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         if (!TIMEFRAMES[tf] || !PAIRS[pair]) continue;
         const key = `${pair}:${tf}`;
         const label = `${PAIRS[pair].label} ${tf}`;
-        if (Date.now() - (lastSignalTimeLocal.get(key) || 0) < SIGNAL_COOLDOWN_MS) {
-          summary.lines.push(`⏸️ ${label}: أُرسلت إشارة خلال آخر 4 ساعات`);
+        // Binary: a new trade may open once the previous one expired.
+        const tfMin = TF_MINUTES[tf] ?? 1;
+        const busy = autoConfig.binary
+          ? Date.now() < (binaryBusyUntil.get(key) ?? 0)
+          : Date.now() - (lastSignalTimeLocal.get(key) || 0) < SIGNAL_COOLDOWN_MS;
+        if (busy) {
+          summary.lines.push(`⏸️ ${label}: ${autoConfig.binary ? "الصفقة الثنائية السابقة لم تنتهِ بعد" : "أُرسلت إشارة خلال آخر 4 ساعات"}`);
           continue;
         }
         try {
           await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
           const d = await fetchMarket(pair, TIMEFRAMES[tf]);
+          if (autoConfig.binary) (d as any).binary = { expiry: autoConfig.binaryExpiry, tfMin };
           summary.checked++;
           if ((d as any).poorData) {
             summary.lines.push(`⚠️ ${label}: بيانات غير صالحة من ${(d as any).dataSource} (${(d as any).qualityNote}) — تم التخطي`);
@@ -1056,19 +1145,20 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
               summary.lines.push(`🤖 ${label}: فني ${cons.direction === "BUY" ? "شراء" : "بيع"} لكن قرار AI ${rec.dir === "BUY" ? "شراء" : rec.dir === "SELL" ? "بيع" : "انتظار"} (ثقة ${ai.avgConf}%)${rec.blockers.length ? " — " + rec.blockers[0] : ""}`);
               continue;
             }
-            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "tg-auto");
-            msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias, await journalStatsLine());
+            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, autoConfig.binary ? "tg-bin" : "tg-auto");
+            msg = buildAIMsg(pair, tf, d, aiResults, true, news, htfBias, await journalStatsLine(autoConfig.binary));
           } else {
             rec = computeRecommendation(pair, d, [], news);
             if (rec.dir !== cons.direction) {
               summary.lines.push(`⛔ ${label}: ${rec.blockers[0] || "القرار الفني النهائي انتظار"}`);
               continue;
             }
-            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "tg-auto-tech");
-            msg = buildQuickMsg(pair, tf, d, news, await journalStatsLine(), `🔔 <b>إشارة تلقائية — تحليل فني (بدون AI)</b>`);
+            await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, autoConfig.binary ? "tg-bin" : "tg-auto-tech");
+            msg = buildQuickMsg(pair, tf, d, news, await journalStatsLine(autoConfig.binary), autoConfig.binary ? `🎰 <b>إشارة خيار ثنائي — تحليل فني (بدون AI)</b>` : `🔔 <b>إشارة تلقائية — تحليل فني (بدون AI)</b>`);
           }
 
-          lastSignalTimeLocal.set(key, Date.now());
+          if (autoConfig.binary) binaryBusyUntil.set(key, Date.now() + (rec.expiry ?? 5) * tfMin * 60_000);
+          else lastSignalTimeLocal.set(key, Date.now());
           summary.sent++;
           summary.lines.push(`🚨 ${label}: ${rec.dir === "BUY" ? "🟢 شراء" : "🔴 بيع"} — أُرسلت إشارة`);
           console.log(`[AutoScan] 🚨 Signal: ${key} ${rec.dir} (tech ${cons.pct}%)`);
@@ -1564,6 +1654,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       `⚙️ <b>إعدادات الإشارات التلقائية</b>`,
       ``,
       `الحالة: ${autoConfig.enabled ? "✅ <b>مفعّلة</b>" : "❌ <b>معطّلة</b>"}`,
+      `التداول: ${autoConfig.binary ? `🎰 <b>خيارات ثنائية</b> — CALL/PUT، المدة: ${autoConfig.binaryExpiry ? `${autoConfig.binaryExpiry} شموع` : "تلقائية (يحددها التحليل)"}، بلا بوابة سبريد` : "📈 <b>فوركس</b> — دخول/وقف/هدف"}`,
       `النوع: ${autoConfig.useAI ? "🤖 <b>مع AI</b> — القرار = الأكثر توافقاً بين النماذج" : "⚡ <b>بدون AI</b> — قرار فني من الاستراتيجيات والفلاتر"}`,
       `الأزواج: <code>${autoConfig.pairs.length === Object.keys(PAIRS).length ? "جميع الأزواج (SCAN)" : autoConfig.pairs.join(", ")||"لا يوجد"}</code>`,
       `الإطارات: <code>${autoConfig.timeframes.join(", ")||"لا يوجد"}</code>`,
@@ -2004,6 +2095,18 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       } else {
         autoConfig.pairs.push(p);
       }
+      await sendAutoMenu(chatId, msgId);
+      return;
+    }
+
+    if (data === "auto:mode:forex" || data === "auto:mode:binary") {
+      autoConfig.binary = data === "auto:mode:binary";
+      await sendAutoMenu(chatId, msgId);
+      return;
+    }
+    if (data.startsWith("auto:exp:")) {
+      const n = parseInt(data.split(":")[2]);
+      if ([0, 3, 5, 7, 10].includes(n)) autoConfig.binaryExpiry = n;
       await sendAutoMenu(chatId, msgId);
       return;
     }
