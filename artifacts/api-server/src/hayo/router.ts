@@ -141,6 +141,7 @@ setTimeout(async () => {
 // timeframe and check whether price hit the stop-loss or take-profit (SL checked
 // first per candle = pessimistic). Marks win/loss with the realized R multiple,
 // or expires signals still open after 5 days. Independent of the UI.
+const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.85);
 async function evaluateSignalJournal(): Promise<void> {
   let open: any[] = [];
   try { open = await getOpenSignals(); } catch { return; }
@@ -167,15 +168,31 @@ async function evaluateSignalJournal(): Promise<void> {
     const [pair, timeframe] = key.split("|");
     const symbol = tdSymbolMap[pair];
     if (!symbol) continue;
-    let candles: Array<{ high: number; low: number; time: number }> = [];
+    let candles: Array<{ high: number; low: number; close: number; time: number }> = [];
     try {
       const td = await fetchTwelveData(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=${timeframe}&outputsize=200&apikey=__API_KEY__`);
       if (td?.values && Array.isArray(td.values)) {
-        candles = td.values.map((c: any) => ({ high: parseFloat(c.high), low: parseFloat(c.low), time: toUtcMs(String(c.datetime)) })).filter((c: any) => !Number.isNaN(c.time));
+        candles = td.values.map((c: any) => ({ high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close), time: toUtcMs(String(c.datetime)) })).filter((c: any) => !Number.isNaN(c.time));
       }
     } catch { /* skip group this cycle */ }
     for (const s of sigs) {
       const created = new Date(s.createdAt).getTime();
+      // Binary option: graded ONLY by where price is at expiry vs. entry.
+      // Win pays BINARY_PAYOUT (R = +payout), loss costs the stake (R = -1).
+      if (s.source === "tg-bin") {
+        const n = Number(String(s.note ?? "").match(/binary:(\d+)/)?.[1] ?? 5);
+        const tfMs = TF_MS[timeframe] ?? 6e4;
+        const expiryTs = created + n * tfMs;
+        const bar = candles.find(c => c.time <= expiryTs && expiryTs < c.time + tfMs);
+        if (bar && isFinite(bar.close)) {
+          const entry = Number(s.entry), up = bar.close > entry, down = bar.close < entry;
+          const won = s.direction === "BUY" ? up : down;
+          await closeSignalJournal(s.id, won ? "win" : "loss", bar.close, won ? BINARY_PAYOUT : -1).catch(() => {});
+        } else if (now - expiryTs > 864e5) {
+          await closeSignalJournal(s.id, "expired", null, null).catch(() => {});
+        }
+        continue;
+      }
       const entry = Number(s.entry), sl = Number(s.stopLoss), tp = s.takeProfit != null ? Number(s.takeProfit) : null;
       const isBuy = s.direction === "BUY";
       const rDen = Math.abs(entry - sl) || 1e-9;
@@ -194,7 +211,7 @@ async function evaluateSignalJournal(): Promise<void> {
     }
   }
 }
-setInterval(() => { evaluateSignalJournal().catch(() => {}); }, 15 * 60 * 1000);
+setInterval(() => { evaluateSignalJournal().catch(() => {}); }, 5 * 60 * 1000);
 setTimeout(() => { evaluateSignalJournal().catch(() => {}); }, 60 * 1000);
 
 // ── Telegram delivery targets for a user's trading messages ────────────

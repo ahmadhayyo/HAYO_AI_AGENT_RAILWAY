@@ -436,9 +436,14 @@ export async function getJournalList(limit = 50, userId?: number | null): Promis
   return res.rows ?? res ?? [];
 }
 
-export async function getJournalStats(userId?: number | null): Promise<any> {
+/**
+ * kind: "forex" (default — everything except binary-options rows),
+ * "binary" (source 'tg-bin' only) or "all".
+ */
+export async function getJournalStats(userId?: number | null, kind: "forex" | "binary" | "all" = "forex"): Promise<any> {
   if (!db) return null;
-  const whereClause = userId != null ? sql`WHERE "userId" = ${userId}` : sql``;
+  const kindSql = kind === "binary" ? sql`"source" = 'tg-bin'` : kind === "forex" ? sql`"source" IS DISTINCT FROM 'tg-bin'` : sql`TRUE`;
+  const whereClause = userId != null ? sql`WHERE "userId" = ${userId} AND ${kindSql}` : sql`WHERE ${kindSql}`;
   const res: any = await db.execute(sql`
     SELECT
       count(*) FILTER (WHERE "status" = 'win')  AS wins,
