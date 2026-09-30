@@ -15,6 +15,7 @@ import { lastBarTrap } from "../hayo/liquidity-trap";
 import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE } from "../hayo/signal-policy";
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
 import { enqueueEaSignal, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier } from "../hayo/ea-bridge";
+import { freshExtremeNoLine } from "../hayo/extreme-filter";
 import { executeDerivSignal, getDerivSettings, updateDerivSettings, setDerivToken, derivAccount, setDerivNotifier } from "../hayo/deriv-bridge";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
@@ -1885,6 +1886,15 @@ async function weightedSignal(
   }
   const sigDir = decision.dir;
   const isTrap = decision.mode === "trap";
+  // 1m weights signals: no BUY into a fresh 500-candle low (SELL into a fresh
+  // high) that has no historical reversal line — measured better both years.
+  if (modelId === "fast" && !isTrap && process.env.HAYO_EXTREME_FILTER !== "0") {
+    const xc = freshExtremeNoLine(datas[0].candles, sigDir);
+    if (xc.blocked) {
+      summary.lines.push(`⛔ ${label}: ⚖️ ${sigDir === "BUY" ? "شراء عند قاع جديد" : "بيع عند قمة جديدة"} لآخر 500 شمعة بلا خط ارتداد تاريخي (${xc.touches} ارتداد) — أُلغيت`);
+      return none;
+    }
+  }
   // claim synchronously (no await since the check) → atomic across concurrent scans
   const claimKey = `${pair}:${modelId}`;
   if (Date.now() < (weightedClaims.get(claimKey) ?? 0)) {
