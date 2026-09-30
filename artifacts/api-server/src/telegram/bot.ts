@@ -1096,7 +1096,7 @@ async function sendCompactSignal(bot: TelegramBot, chatId: number, o: CompactSig
   // EVERY signal (binary / convergence / trap / forex) is also queued as a
   // draw-only "mark" so the MT4 indicator can plot an arrow on the current
   // candle the moment it appears. This never places a trade.
-  try { enqueueEaMark({ pair: o.pair, dir: o.dir, price: o.entry, kind: o.binary ? "binary" : "forex" }); }
+  try { enqueueEaMark({ pair: o.pair, dir: o.dir, price: o.entry, kind: o.binary ? "binary" : "forex", candles: o.binary?.candles ?? 0 }); }
   catch (err: any) { console.warn("[EA] mark failed:", err?.message); }
 }
 
