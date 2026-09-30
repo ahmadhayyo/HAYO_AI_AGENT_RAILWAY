@@ -114,6 +114,27 @@ export function formatSignals(enabled: boolean, list: EaSignal[], now = Date.now
   return lines.join("\n") + "\n";
 }
 
+/**
+ * High/medium-impact economic calendar (ForexFactory weekly feed) for the
+ * stand-alone scalper EA's news filter, cached 30 min:
+ *   N|<unix>|<currency>|<High/Medium>|<title>
+ */
+let newsCache: { at: number; items: { t: number; cur: string; impact: string; title: string }[] } | null = null;
+export async function eaNews(fetcher: typeof fetch = fetch): Promise<{ t: number; cur: string; impact: string; title: string }[]> {
+  if (newsCache && Date.now() - newsCache.at < 30 * 60_000) return newsCache.items;
+  try {
+    const res = await fetcher("https://nfs.faireconomy.media/ff_calendar_thisweek.json", { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return newsCache?.items ?? [];
+    const raw = (await res.json()) as any[];
+    const items = raw
+      .filter(e => e && (e.impact === "High" || e.impact === "Medium") && typeof e.country === "string")
+      .map(e => ({ t: Date.parse(e.date), cur: clean(e.country, 4), impact: clean(e.impact, 8), title: clean(e.title, 60) }))
+      .filter(e => Number.isFinite(e.t));
+    newsCache = { at: Date.now(), items };
+    return items;
+  } catch { return newsCache?.items ?? []; }
+}
+
 export function eaRouter(): Router {
   const r = Router();
   r.get("/signals", async (req: Request, res: Response) => {
@@ -128,6 +149,16 @@ export function eaRouter(): Router {
     }
     const after = Number(req.query.after) || 0;
     res.type("text/plain").send(formatSignals(s.enabled, s.enabled ? pendingEaSignals(after) : []));
+  });
+  r.get("/news", async (req: Request, res: Response) => {
+    const s = await getEaSettings();
+    if (!tokenOk(req.query.token, s.token)) { res.status(401).type("text/plain").send("ERR|bad token\n"); return; }
+    const items = await eaNews();
+    const now = Date.now();
+    const lines = [`OK|${Math.floor(now / 1000)}`, ...items
+      .filter(e => e.t > now - 2 * 3_600_000 && e.t < now + 48 * 3_600_000)
+      .map(e => ["N", Math.floor(e.t / 1000), e.cur, e.impact, e.title].join("|"))];
+    res.type("text/plain").send(lines.join("\n") + "\n");
   });
   r.get("/report", async (req: Request, res: Response) => {
     const s = await getEaSettings();
