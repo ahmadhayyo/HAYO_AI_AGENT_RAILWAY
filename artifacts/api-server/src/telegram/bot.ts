@@ -17,7 +17,7 @@ import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } 
 import { enqueueEaSignal, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier } from "../hayo/ea-bridge";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
-  calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
+  calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, TYPICAL_SPREAD, toUtcMs,
   type StrategySignal, type FilterResult,
 } from "../hayo/market-analysis";
 
@@ -850,6 +850,18 @@ const MIN_AI_ANSWERS = Math.max(1, Number(process.env.HAYO_MIN_AI_ANSWERS ?? 2))
 // Spread cost (% of a 1.5×ATR stop) at which a trade is blocked. Env-tunable;
 // HAYO_COST_BLOCK_PCT=0 disables the gate (the cost line is still shown).
 const COST_BLOCK_PCT = Number(process.env.HAYO_COST_BLOCK_PCT ?? 25);
+// TYPICAL_SPREAD is close to raw-ECN pricing; a standard retail account (e.g.
+// XM Standard) pays more, and much more outside London/New York. The forex
+// gate uses a realistic estimate so no signal is sent that the MT4 EA would
+// refuse (its limit is the same 25% of the stop) or that starts deep in loss.
+const SPREAD_MULT = Number(process.env.HAYO_SPREAD_MULT ?? 1.25);
+const SPREAD_MULT_OFF_HOURS = Number(process.env.HAYO_SPREAD_MULT_OFF_HOURS ?? 1.8);
+function expectedSpread(pair: string, at = Date.now()): number | null {
+  const sp = TYPICAL_SPREAD[pair];
+  if (!sp) return null;
+  const h = new Date(at).getUTCHours();
+  return sp * (h >= 7 && h < 21 ? SPREAD_MULT : SPREAD_MULT_OFF_HOURS);   // London + New York vs. Asia / rollover
+}
 
 interface Recommendation {
   dir: "BUY" | "SELL" | "HOLD";
@@ -904,10 +916,9 @@ export function computeRecommendation(
 
   // ── Safety gates (external facts, not opinions): turn the verdict into "wait" ──
   const blockers: string[] = [];
-  const costPct = spreadCostPct(pair, d.ATR);
+  let costPct = spreadCostPct(pair, d.ATR);
   const binary = (d as any).binary as { expiry: number; tfMin: number } | undefined;
   // Binary options pay a fixed amount at expiry: no stop, no spread → no cost gate.
-  if (!binary && COST_BLOCK_PCT > 0 && costPct !== null && costPct >= COST_BLOCK_PCT) blockers.push(`السبريد ≈ ${costPct.toFixed(0)}% من الوقف على هذا الإطار — استخدم إطاراً أعلى`);
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
   if (danger) blockers.push(`خبر عالي التأثير ${danger.currency} ${danger.title} خلال 15 دقيقة`);
   // Counter-trend filter: no trade AGAINST both the main trend (price vs SMA200)
@@ -953,6 +964,18 @@ export function computeRecommendation(
       sl = isBuy ? px - 1.5 * atr : px + 1.5 * atr;
       tp = isBuy ? px + 2.5 * atr : px - 2.5 * atr;
       rr = 2.5 / 1.5; levelsFrom = "ATR";
+    }
+    // Spread vs. the ACTUAL stop of this signal (realistic retail spread).
+    if (!binary) {
+      const sp = expectedSpread(pair);
+      const stop = Math.abs(entry - sl);
+      if (sp !== null && stop > 0) {
+        costPct = (sp / stop) * 100;
+        if (COST_BLOCK_PCT > 0 && costPct >= COST_BLOCK_PCT) {
+          blockers.push(`السبريد المتوقع ≈ ${costPct.toFixed(0)}% من وقف الخسارة (الحد ${COST_BLOCK_PCT}%) — الصفقة تبدأ بخسارة كبيرة؛ استخدم إطاراً أعلى`);
+          dir = "HOLD"; entry = NaN; sl = NaN; tp = NaN; rr = NaN; levelsFrom = "";
+        }
+      }
     }
   }
   // ── Binary expiry: fixed by the user, else median of the agreeing models,
