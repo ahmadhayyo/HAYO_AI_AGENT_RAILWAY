@@ -103,17 +103,17 @@ export function pendingEaSignals(after: number, now = Date.now()): EaSignal[] {
  * plots as an arrow on the current candle — NOT executed. Separate from the
  * execution queue above so drawing never places a trade.
  */
-export interface EaMark { id: number; pair: string; dir: "BUY" | "SELL"; price: number; createdAt: number; expiresAt: number; kind: string; }
+export interface EaMark { id: number; pair: string; dir: "BUY" | "SELL"; price: number; createdAt: number; expiresAt: number; kind: string; candles: number; }
 const marks: EaMark[] = [];
 let lastMarkId = 0;
 const MARK_TTL_MS = 5 * 60_000;
 
-export function enqueueEaMark(m: { pair: string; dir: "BUY" | "SELL"; price: number; kind: string }): EaMark | null {
+export function enqueueEaMark(m: { pair: string; dir: "BUY" | "SELL"; price: number; kind: string; candles?: number }): EaMark | null {
   if (!(m.price > 0) || (m.dir !== "BUY" && m.dir !== "SELL")) return null;
   const now = Date.now();
   const id = Math.max(now, lastMarkId + 1);
   lastMarkId = id;
-  const e: EaMark = { id, pair: m.pair, dir: m.dir, price: m.price, createdAt: now, expiresAt: now + MARK_TTL_MS, kind: String(m.kind).replace(/[|\r\n]/g, " ").slice(0, 20) };
+  const e: EaMark = { id, pair: m.pair, dir: m.dir, price: m.price, createdAt: now, expiresAt: now + MARK_TTL_MS, kind: String(m.kind).replace(/[|\r\n]/g, " ").slice(0, 20), candles: Math.max(0, Math.round(m.candles ?? 0)) };
   marks.push(e);
   while (marks.length > QUEUE_MAX) marks.shift();
   return e;
@@ -122,8 +122,9 @@ export function pendingEaMarks(after: number, now = Date.now()): EaMark[] {
   return marks.filter(m => m.id > after && m.expiresAt > now);
 }
 export function formatMarks(list: EaMark[], now = Date.now()): string {
+  // M|id|pair|dir|price|created|kind|candles  (candles = binary trade length, 0 for forex)
   const lines = [`OK|${Math.floor(now / 1000)}`];
-  for (const m of list) lines.push(["M", m.id, m.pair, m.dir, num(m.price), Math.floor(m.createdAt / 1000), m.kind].join("|"));
+  for (const m of list) lines.push(["M", m.id, m.pair, m.dir, num(m.price), Math.floor(m.createdAt / 1000), m.kind, m.candles].join("|"));
   return lines.join("\n") + "\n";
 }
 
