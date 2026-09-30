@@ -358,7 +358,20 @@ async function fetchMarket(pair: string, tfCfg: TfConfig, opts: { useTwelveData?
   return withLivePrice(p.tdSymbol, await fetchMarketCandles(pair, tfCfg, opts));
 }
 
-async function fetchMarketCandles(pair: string, tfCfg: TfConfig, opts: { useTwelveData?: boolean } = {}) {
+// Scanners running side by side (auto + convergence) ask for the same candles
+// at the same moment: share one in-flight request instead of hitting the feed
+// twice (Dukascopy then throttles and requests stall).
+const marketInflight = new Map<string, Promise<any>>();
+function fetchMarketCandles(pair: string, tfCfg: TfConfig, opts: { useTwelveData?: boolean } = {}): Promise<any> {
+  const key = `${pair}:${tfCfg.interval}:${tfCfg.outputsize}:${opts.useTwelveData ? "td" : "fb"}`;
+  const running = marketInflight.get(key);
+  if (running) return running;
+  const pr = fetchMarketCandlesOnce(pair, tfCfg, opts).finally(() => marketInflight.delete(key));
+  marketInflight.set(key, pr);
+  return pr;
+}
+
+async function fetchMarketCandlesOnce(pair: string, tfCfg: TfConfig, opts: { useTwelveData?: boolean } = {}) {
   const p = PAIRS[pair];
   const cacheKey = `${pair}:${tfCfg.interval}:${tfCfg.outputsize}:${opts.useTwelveData ? "td" : "fb"}`;
 
