@@ -263,7 +263,7 @@ export async function fetchFromDukascopy(symbol: string, interval: string, outpu
     try {
       const res = await fetch(`https://freeserv.dukascopy.com/2.0/index.php?${params}`, {
         headers: { Referer: "https://freeserv.dukascopy.com/2.0/", "User-Agent": "Mozilla/5.0" },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(6000)   // a dropped request would stall a scan pass,
       });
       if (res.ok) { const t = await res.text(); if (/\(\s*\[/.test(t)) txt = t; }
     } catch { /* retry */ }
