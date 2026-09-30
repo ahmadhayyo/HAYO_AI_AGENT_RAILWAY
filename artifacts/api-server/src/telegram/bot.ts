@@ -89,6 +89,9 @@ const defaultAutoConfig: AutoConfig = {
 };
 /** Binary trade still running per pair:tf (a new one opens only after it expires). */
 const binaryBusyUntil = new Map<string, number>();
+// A weights signal claims its pair+model until the trade expires, so two scans
+// running at once (manual + automatic, or convergence + auto) never send it twice.
+const weightedClaims = new Map<string, number>();
 
 /** Binary payout assumed for the journal's R and break-even (override: HAYO_BINARY_PAYOUT=0.8). */
 const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.85);
@@ -1290,7 +1293,6 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
           continue;
         }
         try {
-          await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
           if (autoConfig.binary) {
             // Binary options run on the validated weighting model (1m / 5m).
             const modelId = BINARY_MODEL_BY_TF[tf];
@@ -1302,14 +1304,16 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
               summary.lines.push(`➖ ${label}: ⚖️ نموذج الأوزان مدرَّب على العملات والذهب فقط`);
               continue;
             }
-            const datas: any[] = [];
-            for (const k of WEIGHT_MODELS[modelId].tfs) { datas.push(await fetchMarket(pair, TIMEFRAMES[k])); await new Promise(r => setTimeout(r, 500)); }
+            // the three timeframes in parallel (mostly cache hits) so a full
+            // scan fits in about a minute and every 1m candle gets checked
+            const datas: any[] = await Promise.all(WEIGHT_MODELS[modelId].tfs.map(k => fetchMarket(pair, TIMEFRAMES[k])));
             summary.checked++;
             const r = await weightedSignal(bot, ownerChatId, pair, modelId, datas, WEIGHT_MODELS[modelId].tfs,
               { useAI, summary, title: "🎰 خيار ثنائي — نظام الأوزان", expiryOverride: autoConfig.binaryExpiry || undefined });
             if (r.sent) binaryBusyUntil.set(key, Date.now() + r.expiryMs);
             continue;
           }
+          await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
           const d = await fetchMarket(pair, TIMEFRAMES[tf]);
           summary.checked++;
           if ((d as any).poorData) {
@@ -1778,13 +1782,21 @@ async function weightedSignal(
   }
   const sigDir = decision.dir;
   const isTrap = decision.mode === "trap";
+  // claim synchronously (no await since the check) → atomic across concurrent scans
+  const claimKey = `${pair}:${modelId}`;
+  if (Date.now() < (weightedClaims.get(claimKey) ?? 0)) {
+    summary.lines.push(`⏸️ ${label}: ⚖️ نفس الإشارة أُرسلت للتو من فحص آخر — تم التخطي`);
+    return none;
+  }
+  weightedClaims.set(claimKey, Date.now() + 120_000);
+  const release = () => { weightedClaims.delete(claimKey); return none; };
   const title = isTrap ? "🪤 فخ السيولة + أوزان" : opts.title;
   const lowData = datas[0];
   const topKey = tfKeys[tfKeys.length - 1];
   const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, tfKeys[0], lowData), computeHtfBias(pair, topKey)]);
 
   const danger = news.find(e => e.impact === "High" && e.minutesUntil !== null && Math.abs(e.minutesUntil) <= 15);
-  if (danger) { summary.lines.push(`⛔ ${label}: ⚖️ ${sigDir === "BUY" ? "شراء" : "بيع"} لكن خبر عالي التأثير ${danger.currency} خلال 15 دقيقة`); return none; }
+  if (danger) { summary.lines.push(`⛔ ${label}: ⚖️ ${sigDir === "BUY" ? "شراء" : "بيع"} لكن خبر عالي التأثير ${danger.currency} خلال 15 دقيقة`); return release(); }
 
   let aiResults: any[] = [];
   let ai = aiConsensus([]);
@@ -1794,12 +1806,13 @@ async function weightedSignal(
     const opposite = sigDir === "BUY" ? "SELL" : "BUY";
     if (ai.answered >= MIN_AI_ANSWERS && ai.label === opposite) {
       summary.lines.push(`🤖 ${label}: ⚖️ ${sigDir === "BUY" ? "شراء" : "بيع"} (${pTxt}) لكن أغلبية AI ${opposite === "BUY" ? "شراء" : "بيع"} — تم الإلغاء`);
-      return none;
+      return release();
     }
   }
 
   const tfMin = TF_MINUTES[tfKeys[0]] ?? 1;
   const candles = opts.expiryOverride && opts.expiryOverride > 0 ? opts.expiryOverride : v.horizon;
+  weightedClaims.set(claimKey, Date.now() + candles * tfMin * 60_000);
   summary.sent++;
   summary.lines.push(isTrap
     ? `🚨 ${label}: 🪤 فخ سيولة ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} + أوزان ${(trapP * 100).toFixed(1)}% — أُرسلت إشارة`
