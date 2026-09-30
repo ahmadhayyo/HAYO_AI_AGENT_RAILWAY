@@ -3,9 +3,13 @@
  * on Deriv the moment the bot sends them (entry timing is where the edge is:
  * one candle late costs 1-3 points of hit rate, see research notes).
  *
- * Official API: WebSocket wss://ws.derivws.com/websockets/v3?app_id=<id>
- *   authorize → contracts_for (allowed Rise/Fall durations) → buy
- *   → at expiry proposal_open_contract (won / lost, profit) → Telegram.
+ * Two Deriv APIs are supported:
+ *  - current (Personal Access Tokens "pat_…" + the owner's registered App ID):
+ *      REST https://api.derivws.com/trading/v1/options/accounts          (Bearer + Deriv-App-ID)
+ *      POST …/accounts/{id}/otp → data.url = an already-authenticated WebSocket
+ *  - legacy (old API tokens): wss://ws.derivws.com/websockets/v3?app_id=… + authorize
+ * Then: contracts_for (allowed Rise/Fall durations) → buy → at expiry
+ * proposal_open_contract (won / lost, profit) → Telegram.
  * The API token (scope "Trade", created by the owner in Deriv) is stored
  * encrypted in botSettings ("derivBridge"). Real accounts are refused unless
  * the owner allows them explicitly. Off by default.
@@ -13,8 +17,9 @@
 import { loadBotSetting, saveBotSetting } from "./db";
 import { encryptCred, decryptCred } from "./services/trading-bridge";
 
-const APP_ID = process.env.DERIV_APP_ID || "1089";
-const WS_URL = process.env.DERIV_WS_URL || `wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}`;
+const LEGACY_APP_ID = process.env.DERIV_APP_ID || "1089";
+const LEGACY_WS_URL = process.env.DERIV_WS_URL || `wss://ws.derivws.com/websockets/v3?app_id=${LEGACY_APP_ID}`;
+const REST_BASE = (process.env.DERIV_REST_URL || "https://api.derivws.com").replace(/\/$/, "");
 
 export interface DerivStats { n: number; win: number; loss: number; pnl: number }
 export interface DerivSettings {
@@ -24,8 +29,9 @@ export interface DerivSettings {
   allowReal: boolean;
   source: "convergence" | "all";      // which binary signals are executed
   stats: DerivStats;
+  appId: string | null;               // App ID registered on developers.deriv.com (needed with PATs)
 }
-export interface DerivAccount { loginid: string; isVirtual: boolean; balance: number; currency: string }
+export interface DerivAccount { loginid: string; isVirtual: boolean; balance: number; currency: string; api: "current" | "legacy" }
 
 let settings: DerivSettings | null = null;
 let notifier: ((text: string) => void) | null = null;
@@ -38,6 +44,7 @@ export async function getDerivSettings(): Promise<DerivSettings> {
     tokenEnc: saved?.tokenEnc ?? null, enabled: saved?.enabled ?? false, stake: saved?.stake ?? 10,
     allowReal: saved?.allowReal ?? false, source: saved?.source ?? "convergence",
     stats: saved?.stats ?? { n: 0, win: 0, loss: 0, pnl: 0 },
+    appId: saved?.appId ?? null,
   };
   return settings;
 }
@@ -61,9 +68,9 @@ async function wsCtor(): Promise<any> {
   const mod: any = await import("ws");
   return mod.default ?? mod.WebSocket ?? mod;
 }
-async function withDeriv<T>(token: string, fn: (call: Call, acct: DerivAccount) => Promise<T>): Promise<T> {
+async function openSocket(url: string): Promise<{ call: Call; close: () => void }> {
   const WS = await wsCtor();
-  const ws = new WS(WS_URL);
+  const ws = new WS(url);
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: any }>();
   let seq = 0;
   await new Promise<void>((resolve, reject) => {
@@ -86,14 +93,56 @@ async function withDeriv<T>(token: string, fn: (call: Call, acct: DerivAccount) 
     pending.set(req_id, { resolve, reject, timer });
     ws.send(JSON.stringify({ ...req, req_id }));
   });
-  try {
-    const a = (await call({ authorize: token })).authorize;
-    const acct: DerivAccount = { loginid: a.loginid, isVirtual: !!a.is_virtual, balance: Number(a.balance), currency: a.currency || "USD" };
-    return await fn(call, acct);
-  } finally {
-    for (const p of pending.values()) clearTimeout(p.timer);
-    try { ws.close(); } catch { /* ignore */ }
+  const close = () => { for (const p of pending.values()) clearTimeout(p.timer); try { ws.close(); } catch { /* ignore */ } };
+  return { call, close };
+}
+
+/** Current API: REST with the PAT → pick the demo/real account → OTP WebSocket URL. */
+async function restJson(method: "GET" | "POST", path: string, token: string, appId: string): Promise<any> {
+  const res = await fetch(`${REST_BASE}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, "Deriv-App-ID": appId, Accept: "application/json", "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(10000),
+  });
+  const text = await res.text();
+  let body: any = null;
+  try { body = JSON.parse(text); } catch { /* not JSON */ }
+  if (!res.ok) {
+    const msg = body?.error?.message || body?.errors?.[0]?.message || body?.message || text.slice(0, 160) || res.statusText;
+    throw new Error(`Deriv ${res.status}: ${msg}`);
   }
+  return body;
+}
+function pickAccount(list: any[], wantReal: boolean): any | null {
+  const isDemo = (a: any) => /demo|virtual/i.test(String(a.account_type ?? a.type ?? "")) || a.is_virtual === 1 || a.is_virtual === true;
+  return list.find(a => (wantReal ? !isDemo(a) : isDemo(a))) ?? null;
+}
+
+async function withDeriv<T>(token: string, fn: (call: Call, acct: DerivAccount) => Promise<T>): Promise<T> {
+  const s = await getDerivSettings();
+  const appId = s.appId || process.env.DERIV_APP_ID || "";
+  if (token.startsWith("pat_")) {
+    if (!appId) throw new Error("توكنات pat_ تحتاج App ID — أرسل /deriv appid الرقم (رقم التطبيق من developers.deriv.com)");
+    const list = (await restJson("GET", "/trading/v1/options/accounts", token, appId))?.data ?? [];
+    const a = pickAccount(list, s.allowReal) ?? (s.allowReal ? null : null);
+    if (!a) throw new Error(s.allowReal ? "لا يوجد حساب حقيقي مرتبط بهذا التوكن" : "لا يوجد حساب تجريبي (demo) مرتبط بهذا التوكن");
+    const accountId = a.account_id ?? a.id ?? a.loginid;
+    const otp = (await restJson("POST", `/trading/v1/options/accounts/${encodeURIComponent(accountId)}/otp`, token, appId))?.data;
+    if (!otp?.url) throw new Error("Deriv: لم يُرجع رابط الاتصال (OTP)");
+    const acct: DerivAccount = {
+      loginid: String(accountId), isVirtual: !!pickAccount([a], false),
+      balance: Number(a.balance ?? NaN), currency: a.currency || "USD", api: "current",
+    };
+    const sock = await openSocket(otp.url);
+    try { return await fn(sock.call, acct); } finally { sock.close(); }
+  }
+  // legacy API token
+  const sock = await openSocket(LEGACY_WS_URL);
+  try {
+    const au = (await sock.call({ authorize: token })).authorize;
+    const acct: DerivAccount = { loginid: au.loginid, isVirtual: !!au.is_virtual, balance: Number(au.balance), currency: au.currency || "USD", api: "legacy" };
+    return await fn(sock.call, acct);
+  } finally { sock.close(); }
 }
 
 async function token(): Promise<string | null> {
@@ -148,15 +197,31 @@ export async function executeDerivSignal(sig: { pair: string; dir: "BUY" | "SELL
   try {
     const res = await withDeriv(t, async (call, acct) => {
       if (!acct.isVirtual && !s.allowReal) throw new Error("حساب حقيقي — التنفيذ عليه معطّل (فعّله بـ /deriv real on على مسؤوليتك)");
-      const cf = await call({ contracts_for: symbol, currency: acct.currency, product_type: "basic" });
-      const range = riseFallRange(cf.contracts_for?.available);
-      if (!range) throw new Error("عقود Rise/Fall غير متاحة لهذا الزوج الآن (السوق مغلق؟)");
-      const minutes = Math.min(range.max, Math.max(range.min, Math.round(sig.minutes)));
+      // allowed Rise/Fall durations (if the API answers contracts_for)
+      let range: { min: number; max: number } | null = null;
+      try {
+        const cf = await call(acct.api === "legacy"
+          ? { contracts_for: symbol, currency: acct.currency, product_type: "basic" }
+          : { contracts_for: symbol, currency: acct.currency });
+        range = riseFallRange(cf.contracts_for?.available);
+        if (!range && acct.api === "legacy") throw new Error("عقود Rise/Fall غير متاحة لهذا الزوج الآن (السوق مغلق؟)");
+      } catch (e: any) { if (acct.api === "legacy") throw e; }
+      const want = Math.round(sig.minutes);
       const stake = Math.max(0.35, Math.round(s.stake * 100) / 100);
-      const buy = (await call({
+      const symKey = acct.api === "legacy" ? "symbol" : "underlying_symbol";
+      const buyWith = (minutes: number) => call({
         buy: 1, price: stake,
-        parameters: { amount: stake, basis: "stake", contract_type: sig.dir === "BUY" ? "CALL" : "PUT", currency: acct.currency, duration: minutes, duration_unit: "m", symbol },
-      })).buy;
+        parameters: { amount: stake, basis: "stake", contract_type: sig.dir === "BUY" ? "CALL" : "PUT", currency: acct.currency, duration: minutes, duration_unit: "m", [symKey]: symbol },
+      });
+      let minutes = range ? Math.min(range.max, Math.max(range.min, want)) : want;
+      let buy: any;
+      try { buy = (await buyWith(minutes)).buy; }
+      catch (e: any) {
+        // unknown limits: a too-short duration is the usual refusal → retry at 15 minutes
+        if (range || minutes >= 15 || !/duration|expiry|minimum|trading period|اقل|أقل/i.test(String(e?.message))) throw e;
+        minutes = 15;
+        buy = (await buyWith(minutes)).buy;
+      }
       return { acct, minutes, stake, buy };
     });
     const adj = res.minutes !== Math.round(sig.minutes) ? ` <i>(أقل مدة مسموحة في Deriv: ${res.minutes} د بدل ${Math.round(sig.minutes)})</i>` : "";
