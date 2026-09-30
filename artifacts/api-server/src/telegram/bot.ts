@@ -14,7 +14,7 @@ import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/we
 import { lastBarTrap } from "../hayo/liquidity-trap";
 import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE } from "../hayo/signal-policy";
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
-import { enqueueEaSignal, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier } from "../hayo/ea-bridge";
+import { enqueueEaSignal, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier, TP_R } from "../hayo/ea-bridge";
 import { freshExtremeNoLine } from "../hayo/extreme-filter";
 import { executeDerivSignal, getDerivSettings, updateDerivSettings, setDerivToken, derivAccount, setDerivNotifier } from "../hayo/deriv-bridge";
 import {
@@ -1065,9 +1065,7 @@ function compactSignalText(o: CompactSignal): string {
   } else if (o.forex && isFinite(o.forex.sl)) {
     const r = Math.abs(o.entry - o.forex.sl), s = o.dir === "BUY" ? 1 : -1;
     lines.push(`🛑 وقف الخسارة: <code>${o.fmt(o.forex.sl)}</code>`);
-    lines.push(`🎯 الهدف 1: <code>${o.fmt(o.entry + s * r)}</code>`);
-    lines.push(`🎯 الهدف 2: <code>${o.fmt(o.entry + s * 2 * r)}</code>`);
-    lines.push(`🎯 الهدف 3: <code>${o.fmt(o.entry + s * 3 * r)}</code>`);
+    TP_R.forEach((m, i) => lines.push(`🎯 الهدف ${i + 1}: <code>${o.fmt(o.entry + s * m * r)}</code>`));
   }
   lines.push(`💪 قوة الإشارة: <b>${o.strengthPct}%</b>${o.strengthNote ? ` <i>${o.strengthNote}</i>` : ""}`);
   lines.push(`⏱ ${localAndUtc(o.at)}`);
