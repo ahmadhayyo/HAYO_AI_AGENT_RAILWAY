@@ -15,6 +15,7 @@ import { lastBarTrap } from "../hayo/liquidity-trap";
 import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE } from "../hayo/signal-policy";
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
 import { enqueueEaSignal, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier } from "../hayo/ea-bridge";
+import { executeDerivSignal, getDerivSettings, updateDerivSettings, setDerivToken, derivAccount, setDerivNotifier } from "../hayo/deriv-bridge";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
   calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, TYPICAL_SPREAD, toUtcMs,
@@ -1122,6 +1123,38 @@ async function eaPanel(): Promise<{ text: string; kb: TelegramBot.InlineKeyboard
   return { text, kb };
 }
 
+/** Deriv auto-execution status / controls (Telegram /deriv). */
+async function derivPanel(): Promise<{ text: string; kb: TelegramBot.InlineKeyboardMarkup }> {
+  const s = await getDerivSettings();
+  let acctLine = "🔑 لا يوجد توكن — أرسل: <code>/deriv التوكن</code>";
+  if (s.tokenEnc) {
+    try {
+      const a = await derivAccount();
+      acctLine = `👤 الحساب <code>${escHtml(a.loginid)}</code> ${a.isVirtual ? "(تجريبي ✅)" : s.allowReal ? "(<b>حقيقي</b> — مسموح)" : "(<b>حقيقي</b> — التنفيذ عليه معطّل)"} — الرصيد <code>${a.balance.toFixed(2)} ${escHtml(a.currency)}</code>`;
+    } catch (e: any) { acctLine = `⚠️ تعذر الاتصال بـ Deriv: ${escHtml(String(e?.message || e))}`; }
+  }
+  const st = s.stats;
+  const text = [
+    `<b>🎰 Deriv — تنفيذ تلقائي للخيارات الثنائية (Rise/Fall)</b>`,
+    `الحالة: ${s.enabled ? "✅ <b>مفعّل</b>" : "⏸️ <b>متوقف</b>"}`,
+    acctLine,
+    `💵 مبلغ الصفقة: <b>${s.stake}</b>`,
+    `📡 المصدر: ${s.source === "convergence" ? "<b>نظام التطابق فقط</b>" : "<b>كل إشارات الخيارات الثنائية</b> (التطابق + التلقائية)"}`,
+    `📊 السجل: ${st.win} ربح / ${st.loss} خسارة${st.n ? ` (${Math.round(st.win / st.n * 100)}%)` : ""} — الصافي <b>${st.pnl >= 0 ? "+" : ""}${st.pnl.toFixed(2)}</b>`,
+    ``,
+    `<i>كل إشارة تُنفذ فوراً لحظة إرسالها بنفس الاتجاه ومدة الإشارة (عدد الشموع × الفريم).</i>`,
+    `<i>الأوامر: /deriv التوكن · /deriv stake 10 · /deriv real on|off</i>`,
+  ].join("\n");
+  const kb: TelegramBot.InlineKeyboardMarkup = { inline_keyboard: [
+    [s.enabled ? { text: "⏸️ إيقاف التنفيذ", callback_data: "dv:off" } : { text: "✅ تفعيل التنفيذ", callback_data: "dv:on" },
+     { text: "🔄 تحديث", callback_data: "dv:show" }],
+    [{ text: s.source === "convergence" ? "📡 المصدر: التطابق فقط ↔️" : "📡 المصدر: الكل ↔️", callback_data: "dv:src" }],
+    [1, 5, 10, 25].map(v => ({ text: `${s.stake === v ? "• " : ""}${v}`, callback_data: `dv:stake:${v}` })),
+    [{ text: "🗑️ حذف التوكن", callback_data: "dv:deltoken" }],
+  ] };
+  return { text, kb };
+}
+
 /** Binary-options execution block: direction, entry price/time, expiry, win condition. */
 function binaryLines(d: any, rec: Recommendation, tfMin: number): string[] {
   const dir = rec.dir, entry = rec.entry, n = rec.expiry ?? 5;
@@ -1378,7 +1411,7 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
             const datas: any[] = await Promise.all(WEIGHT_MODELS[modelId].tfs.map(k => fetchMarket(pair, TIMEFRAMES[k])));
             summary.checked++;
             const r = await weightedSignal(bot, ownerChatId, pair, modelId, datas, WEIGHT_MODELS[modelId].tfs,
-              { useAI, summary, title: "🎰 خيار ثنائي — نظام الأوزان", expiryOverride: autoConfig.binaryExpiry || undefined });
+              { useAI, summary, title: "🎰 خيار ثنائي — نظام الأوزان", expiryOverride: autoConfig.binaryExpiry || undefined, origin: "auto" });
             if (r.sent) binaryBusyUntil.set(key, Date.now() + r.expiryMs);
             continue;
           }
@@ -1821,7 +1854,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
 async function weightedSignal(
   bot: TelegramBot, ownerChatId: number, pair: string, modelId: string,
   datas: any[], tfKeys: string[],
-  opts: { useAI: boolean; summary: ScanSummary; title: string; expiryOverride?: number; icons?: string },
+  opts: { useAI: boolean; summary: ScanSummary; title: string; expiryOverride?: number; icons?: string; origin?: "convergence" | "auto" },
 ): Promise<{ sent: boolean; expiryMs: number }> {
   const none = { sent: false, expiryMs: 0 };
   const p = PAIRS[pair];
@@ -1882,6 +1915,9 @@ async function weightedSignal(
   const tfMin = TF_MINUTES[tfKeys[0]] ?? 1;
   const candles = opts.expiryOverride && opts.expiryOverride > 0 ? opts.expiryOverride : v.horizon;
   weightedClaims.set(claimKey, Date.now() + candles * tfMin * 60_000);
+  // All gates passed: execute on Deriv NOW (fire-and-forget) — entry timing is the edge.
+  executeDerivSignal({ pair, dir: sigDir, minutes: candles * tfMin, origin: opts.origin ?? "auto", label: `${p.label} ${tfKeys[0]}` })
+    .catch(err => console.warn("[Deriv] dispatch failed:", err?.message));
   summary.sent++;
   summary.lines.push(isTrap
     ? `🚨 ${label}: 🪤 فخ سيولة ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} + أوزان ${(trapP * 100).toFixed(1)}% — أُرسلت إشارة`
@@ -1951,7 +1987,7 @@ async function weightedConvergence(
   tfs: { key: string; cfg: TfConfig }[], icons: string, useAI: boolean, summary: ScanSummary, coolKey: string,
 ): Promise<void> {
   const r = await weightedSignal(bot, ownerChatId, pair, modelId, results.map(x => x.data), tfs.map(t => t.key),
-    { useAI, summary, title: "⚖️ تطابق — نظام الأوزان", icons });
+    { useAI, summary, title: "⚖️ تطابق — نظام الأوزان", icons, origin: "convergence" });
   if (r.sent) convergenceCooldown.set(coolKey, Date.now() - CONVERGENCE_COOLDOWN_MS + r.expiryMs);
 }
 
@@ -2164,7 +2200,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
           `• /auto — إعدادات الإشارات التلقائية\n` +
           `• /signals — آخر الإشارات\n` +
           `• /backtest — اختبار الإشارات على آخر 14 يوماً (مثال: /backtest 30 EURUSD)\n` +
-          `• /ea — ربط MT4 وتنفيذ صفقات الفوركس تلقائياً\n\n` +
+          `• /ea — ربط MT4 وتنفيذ صفقات الفوركس تلقائياً\n` +
+          `• /deriv — تنفيذ إشارات التطابق تلقائياً على Deriv\n\n` +
           `اختر زوجاً للتحليل:`,
           { parse_mode: "Markdown", reply_markup: pairsKeyboard() }
         );
@@ -2189,6 +2226,32 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     } catch (e: any) { console.warn("[TelegramBot] /ea error:", e?.message); }
   });
   if (botRole === "trading") setEaNotifier(text => { sendHtmlSafe(bot, ownerChatId, text).catch(() => {}); });
+  if (botRole === "trading") setDerivNotifier(text => { sendHtmlSafe(bot, ownerChatId, text).catch(() => {}); });
+
+  // /deriv [token | stake N | real on|off] — Deriv auto-execution of binary signals
+  bot.onText(/^\/deriv\b(.*)$/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    try {
+      if (!isOwner(chatId)) return;
+      const arg = (match?.[1] ?? "").trim();
+      if (/^stake\s+\d+(\.\d+)?$/i.test(arg)) {
+        const v = Math.min(10000, Math.max(0.35, Number(arg.split(/\s+/)[1])));
+        await updateDerivSettings({ stake: v });
+      } else if (/^real\s+(on|off)$/i.test(arg)) {
+        await updateDerivSettings({ allowReal: /on$/i.test(arg) });
+      } else if (/^[A-Za-z0-9]{10,64}$/.test(arg)) {
+        await setDerivToken(arg);
+        // do not leave the API token in the chat history
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch { /* ignore */ }
+        await sendHtmlSafe(bot, chatId, "🔑 تم حفظ توكن Deriv (مشفّراً) وحذف رسالتك التي تحتويه.");
+      } else if (arg) {
+        await sendHtmlSafe(bot, chatId, "❓ الاستخدام: <code>/deriv</code> · <code>/deriv التوكن</code> · <code>/deriv stake 10</code> · <code>/deriv real on</code>");
+        return;
+      }
+      const { text, kb } = await derivPanel();
+      await sendHtmlSafe(bot, chatId, text, { reply_markup: kb });
+    } catch (e: any) { console.warn("[TelegramBot] /deriv error:", e?.message); }
+  });
 
   bot.onText(/\/menu/, async (msg) => {
     try {
@@ -2251,6 +2314,17 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     let data      = query.data ?? "";
     const session = getSession(chatId);
     const bridgeSession = getBridgeSession(chatId);
+
+    if (data.startsWith("dv:")) {
+      if (data === "dv:on") await updateDerivSettings({ enabled: true });
+      if (data === "dv:off") await updateDerivSettings({ enabled: false });
+      if (data === "dv:src") { const s = await getDerivSettings(); await updateDerivSettings({ source: s.source === "convergence" ? "all" : "convergence" }); }
+      if (data.startsWith("dv:stake:")) await updateDerivSettings({ stake: Number(data.split(":")[2]) || 10 });
+      if (data === "dv:deltoken") await setDerivToken(null);
+      const { text, kb } = await derivPanel();
+      await withPlainFallback(text, { parse_mode: "HTML", reply_markup: kb }, (t, x) => bot.editMessageText(t, { chat_id: chatId, message_id: msgId, ...x }));
+      return;
+    }
 
     if (data.startsWith("ea:")) {
       if (data === "ea:on") await updateEaSettings({ enabled: true });
