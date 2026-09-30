@@ -14,7 +14,7 @@ import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/we
 import { lastBarTrap } from "../hayo/liquidity-trap";
 import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE, minGradeFor } from "../hayo/signal-policy";
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
-import { enqueueEaSignal, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier, TP_R } from "../hayo/ea-bridge";
+import { enqueueEaSignal, enqueueEaMark, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier, TP_R } from "../hayo/ea-bridge";
 import { freshExtremeNoLine } from "../hayo/extreme-filter";
 import { executeDerivSignal, getDerivSettings, updateDerivSettings, setDerivToken, derivAccount, setDerivNotifier } from "../hayo/deriv-bridge";
 import {
@@ -1093,6 +1093,11 @@ async function sendCompactSignal(bot: TelegramBot, chatId: number, o: CompactSig
     enqueueEaSignal({ pair: o.pair, dir: o.dir, entry: o.entry, sl: o.forex.sl, source: `${o.title} ${o.tf}` })
       .catch(err => console.warn("[EA] enqueue failed:", err?.message));
   }
+  // EVERY signal (binary / convergence / trap / forex) is also queued as a
+  // draw-only "mark" so the MT4 indicator can plot an arrow on the current
+  // candle the moment it appears. This never places a trade.
+  try { enqueueEaMark({ pair: o.pair, dir: o.dir, price: o.entry, kind: o.binary ? "binary" : "forex" }); }
+  catch (err: any) { console.warn("[EA] mark failed:", err?.message); }
 }
 
 /** MT4 bridge status / controls (Telegram /ea). */

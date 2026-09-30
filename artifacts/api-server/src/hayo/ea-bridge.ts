@@ -98,6 +98,35 @@ export function pendingEaSignals(after: number, now = Date.now()): EaSignal[] {
   return queue.filter(q => q.id > after && q.expiresAt > now);
 }
 
+/**
+ * MARKS: draw-only signals (binary / convergence / trap) that an MT4 indicator
+ * plots as an arrow on the current candle — NOT executed. Separate from the
+ * execution queue above so drawing never places a trade.
+ */
+export interface EaMark { id: number; pair: string; dir: "BUY" | "SELL"; price: number; createdAt: number; expiresAt: number; kind: string; }
+const marks: EaMark[] = [];
+let lastMarkId = 0;
+const MARK_TTL_MS = 5 * 60_000;
+
+export function enqueueEaMark(m: { pair: string; dir: "BUY" | "SELL"; price: number; kind: string }): EaMark | null {
+  if (!(m.price > 0) || (m.dir !== "BUY" && m.dir !== "SELL")) return null;
+  const now = Date.now();
+  const id = Math.max(now, lastMarkId + 1);
+  lastMarkId = id;
+  const e: EaMark = { id, pair: m.pair, dir: m.dir, price: m.price, createdAt: now, expiresAt: now + MARK_TTL_MS, kind: String(m.kind).replace(/[|\r\n]/g, " ").slice(0, 20) };
+  marks.push(e);
+  while (marks.length > QUEUE_MAX) marks.shift();
+  return e;
+}
+export function pendingEaMarks(after: number, now = Date.now()): EaMark[] {
+  return marks.filter(m => m.id > after && m.expiresAt > now);
+}
+export function formatMarks(list: EaMark[], now = Date.now()): string {
+  const lines = [`OK|${Math.floor(now / 1000)}`];
+  for (const m of list) lines.push(["M", m.id, m.pair, m.dir, num(m.price), Math.floor(m.createdAt / 1000), m.kind].join("|"));
+  return lines.join("\n") + "\n";
+}
+
 function tokenOk(given: unknown, expected: string): boolean {
   if (typeof given !== "string" || given.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
@@ -149,6 +178,12 @@ export function eaRouter(): Router {
     }
     const after = Number(req.query.after) || 0;
     res.type("text/plain").send(formatSignals(s.enabled, s.enabled ? pendingEaSignals(after) : []));
+  });
+  r.get("/marks", async (req: Request, res: Response) => {
+    const s = await getEaSettings();
+    if (!tokenOk(req.query.token, s.token)) { res.status(401).type("text/plain").send("ERR|bad token\n"); return; }
+    const after = Number(req.query.after) || 0;
+    res.type("text/plain").send(formatMarks(pendingEaMarks(after)));
   });
   r.get("/news", async (req: Request, res: Response) => {
     const s = await getEaSettings();
