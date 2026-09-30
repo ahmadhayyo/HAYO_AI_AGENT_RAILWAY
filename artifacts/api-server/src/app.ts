@@ -83,6 +83,10 @@ import { securityHeaders, apiRateLimiter } from "./hayo/services/security.js";
 app.use(securityHeaders);
 app.use("/api/", apiRateLimiter(120));
 
+// ─── MT4 bridge (Expert Advisor polls signals; token auth, no session) ─
+import { eaRouter } from "./hayo/ea-bridge";
+app.use("/api/ea", eaRouter());
+
 // ─── Healthcheck Endpoint ────────────────────────────────────────
 app.get("/api/healthz", (req, res) => {
   res.sendStatus(200);

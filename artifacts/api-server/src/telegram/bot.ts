@@ -14,6 +14,7 @@ import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/we
 import { lastBarTrap } from "../hayo/liquidity-trap";
 import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE } from "../hayo/signal-policy";
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
+import { enqueueEaSignal, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier } from "../hayo/ea-bridge";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
   calcPivotPoints, calcADX, calcStrategies, calcFilters, spreadCostPct, toUtcMs,
@@ -1064,6 +1065,38 @@ async function sendCompactSignal(bot: TelegramBot, chatId: number, o: CompactSig
       { text: "🔄 إعادة تحليل", callback_data: `pair:${o.pair}` },
     ]] },
   });
+  // Forex signals (entry + SL) are also queued for the MT4 bridge EA (/ea).
+  if (o.forex && !o.binary && isFinite(o.forex.sl)) {
+    enqueueEaSignal({ pair: o.pair, dir: o.dir, entry: o.entry, sl: o.forex.sl, source: `${o.title} ${o.tf}` })
+      .catch(err => console.warn("[EA] enqueue failed:", err?.message));
+  }
+}
+
+/** MT4 bridge status / controls (Telegram /ea). */
+async function eaPanel(): Promise<{ text: string; kb: TelegramBot.InlineKeyboardMarkup }> {
+  const s = await getEaSettings();
+  const base = (process.env.APP_URL || "").replace(/\/$/, "") || "https://<your-app>.up.railway.app";
+  const seen = s.lastSeen
+    ? `🔌 آخر اتصال: ${Math.round((Date.now() - s.lastSeen.at) / 1000)} ث — حساب <code>${escHtml(s.lastSeen.acct)}</code> ${s.lastSeen.demo ? "(تجريبي)" : "(<b>حقيقي</b>)"}، رصيد <code>${escHtml(s.lastSeen.bal)}</code>`
+    : "🔌 لم يتصل أي EA بعد";
+  const text = [
+    `<b>🤖 جسر MT4 — التنفيذ التلقائي لإشارات الفوركس</b>`,
+    `الحالة: ${s.enabled ? "✅ <b>مفعّل</b> — كل إشارة فوركس تُرسل إلى MT4" : "⏸️ <b>متوقف</b> — لا تُرسل إشارات إلى MT4"}`,
+    seen,
+    ``,
+    `<b>إعداد الـ EA في MT4:</b>`,
+    `ServerURL: <code>${escHtml(base)}</code>`,
+    `Token: <code>${s.token}</code>`,
+    `<i>وأضف الرابط في MT4: Tools ← Options ← Expert Advisors ← Allow WebRequest for listed URL</i>`,
+    ``,
+    `<i>⚠️ المفتاح يعطي حق تنفيذ صفقات على حسابك — لا تشاركه. زر "مفتاح جديد" يلغي القديم.</i>`,
+  ].join("\n");
+  const kb: TelegramBot.InlineKeyboardMarkup = { inline_keyboard: [
+    [s.enabled ? { text: "⏸️ إيقاف التنفيذ", callback_data: "ea:off" } : { text: "✅ تفعيل التنفيذ", callback_data: "ea:on" },
+     { text: "🔄 تحديث", callback_data: "ea:show" }],
+    [{ text: "🔑 مفتاح جديد", callback_data: "ea:token" }],
+  ] };
+  return { text, kb };
 }
 
 /** Binary-options execution block: direction, entry price/time, expiry, win condition. */
@@ -2107,7 +2140,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
           `• /scan — تحليل سوق فوري\n` +
           `• /auto — إعدادات الإشارات التلقائية\n` +
           `• /signals — آخر الإشارات\n` +
-          `• /backtest — اختبار الإشارات على آخر 14 يوماً (مثال: /backtest 30 EURUSD)\n\n` +
+          `• /backtest — اختبار الإشارات على آخر 14 يوماً (مثال: /backtest 30 EURUSD)\n` +
+          `• /ea — ربط MT4 وتنفيذ صفقات الفوركس تلقائياً\n\n` +
           `اختر زوجاً للتحليل:`,
           { parse_mode: "Markdown", reply_markup: pairsKeyboard() }
         );
@@ -2122,6 +2156,16 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       }
     } catch (e: any) { console.warn("[TelegramBot] /start error:", e?.message); }
   });
+
+  // /ea — MT4 bridge (Expert Advisor) status, token and on/off
+  bot.onText(/^\/ea\b/, async (msg) => {
+    try {
+      if (!isOwner(msg.chat.id)) return;
+      const { text, kb } = await eaPanel();
+      await sendHtmlSafe(bot, msg.chat.id, text, { reply_markup: kb });
+    } catch (e: any) { console.warn("[TelegramBot] /ea error:", e?.message); }
+  });
+  if (botRole === "trading") setEaNotifier(text => { sendHtmlSafe(bot, ownerChatId, text).catch(() => {}); });
 
   bot.onText(/\/menu/, async (msg) => {
     try {
@@ -2184,6 +2228,15 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     let data      = query.data ?? "";
     const session = getSession(chatId);
     const bridgeSession = getBridgeSession(chatId);
+
+    if (data.startsWith("ea:")) {
+      if (data === "ea:on") await updateEaSettings({ enabled: true });
+      if (data === "ea:off") await updateEaSettings({ enabled: false });
+      if (data === "ea:token") await regenerateEaToken();
+      const { text, kb } = await eaPanel();
+      await withPlainFallback(text, { parse_mode: "HTML", reply_markup: kb }, (t, x) => bot.editMessageText(t, { chat_id: chatId, message_id: msgId, ...x }));
+      return;
+    }
 
     // Helper to edit the current message (prevents double-message on button press)
     async function editNav(text: string, opts: Partial<TelegramBot.EditMessageTextOptions> = {}) {
