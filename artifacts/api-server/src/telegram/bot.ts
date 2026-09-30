@@ -1130,7 +1130,7 @@ async function derivPanel(): Promise<{ text: string; kb: TelegramBot.InlineKeybo
   if (s.tokenEnc) {
     try {
       const a = await derivAccount();
-      acctLine = `👤 الحساب <code>${escHtml(a.loginid)}</code> ${a.isVirtual ? "(تجريبي ✅)" : s.allowReal ? "(<b>حقيقي</b> — مسموح)" : "(<b>حقيقي</b> — التنفيذ عليه معطّل)"} — الرصيد <code>${a.balance.toFixed(2)} ${escHtml(a.currency)}</code>`;
+      acctLine = `👤 الحساب <code>${escHtml(a.loginid)}</code> ${a.isVirtual ? "(تجريبي ✅)" : s.allowReal ? "(<b>حقيقي</b> — مسموح)" : "(<b>حقيقي</b> — التنفيذ عليه معطّل)"}${Number.isFinite(a.balance) ? ` — الرصيد <code>${a.balance.toFixed(2)} ${escHtml(a.currency)}</code>` : ""} ✅ متصل`;
     } catch (e: any) { acctLine = `⚠️ تعذر الاتصال بـ Deriv: ${escHtml(String(e?.message || e))}`; }
   }
   const st = s.stats;
@@ -1138,12 +1138,13 @@ async function derivPanel(): Promise<{ text: string; kb: TelegramBot.InlineKeybo
     `<b>🎰 Deriv — تنفيذ تلقائي للخيارات الثنائية (Rise/Fall)</b>`,
     `الحالة: ${s.enabled ? "✅ <b>مفعّل</b>" : "⏸️ <b>متوقف</b>"}`,
     acctLine,
+    `🆔 App ID: ${s.appId ? `<code>${escHtml(s.appId)}</code>` : "<i>غير محدد — مطلوب لتوكنات pat_ (أرسل /deriv appid الرقم)</i>"}`,
     `💵 مبلغ الصفقة: <b>${s.stake}</b>`,
     `📡 المصدر: ${s.source === "convergence" ? "<b>نظام التطابق فقط</b>" : "<b>كل إشارات الخيارات الثنائية</b> (التطابق + التلقائية)"}`,
     `📊 السجل: ${st.win} ربح / ${st.loss} خسارة${st.n ? ` (${Math.round(st.win / st.n * 100)}%)` : ""} — الصافي <b>${st.pnl >= 0 ? "+" : ""}${st.pnl.toFixed(2)}</b>`,
     ``,
     `<i>كل إشارة تُنفذ فوراً لحظة إرسالها بنفس الاتجاه ومدة الإشارة (عدد الشموع × الفريم).</i>`,
-    `<i>الأوامر: /deriv التوكن · /deriv stake 10 · /deriv real on|off</i>`,
+    `<i>الأوامر: /deriv التوكن · /deriv appid الرقم · /deriv stake 10 · /deriv real on|off</i>`,
   ].join("\n");
   const kb: TelegramBot.InlineKeyboardMarkup = { inline_keyboard: [
     [s.enabled ? { text: "⏸️ إيقاف التنفيذ", callback_data: "dv:off" } : { text: "✅ تفعيل التنفيذ", callback_data: "dv:on" },
@@ -2237,6 +2238,8 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       if (/^stake\s+\d+(\.\d+)?$/i.test(arg)) {
         const v = Math.min(10000, Math.max(0.35, Number(arg.split(/\s+/)[1])));
         await updateDerivSettings({ stake: v });
+      } else if (/^appid\s+[A-Za-z0-9_-]{1,40}$/i.test(arg)) {
+        await updateDerivSettings({ appId: arg.split(/\s+/)[1] });
       } else if (/^real\s+(on|off)$/i.test(arg)) {
         await updateDerivSettings({ allowReal: /on$/i.test(arg) });
       } else if (/^[A-Za-z0-9_-]{10,200}$/.test(arg)) {
@@ -2245,7 +2248,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         try { await bot.deleteMessage(chatId, msg.message_id); } catch { /* ignore */ }
         await sendHtmlSafe(bot, chatId, "🔑 تم حفظ توكن Deriv (مشفّراً) وحذف رسالتك التي تحتويه.");
       } else if (arg) {
-        await sendHtmlSafe(bot, chatId, "❓ الاستخدام: <code>/deriv</code> · <code>/deriv التوكن</code> · <code>/deriv stake 10</code> · <code>/deriv real on</code>");
+        await sendHtmlSafe(bot, chatId, "❓ الاستخدام: <code>/deriv</code> · <code>/deriv التوكن</code> · <code>/deriv appid الرقم</code> · <code>/deriv stake 10</code> · <code>/deriv real on</code>");
         return;
       }
       const { text, kb } = await derivPanel();
