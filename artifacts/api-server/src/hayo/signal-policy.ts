@@ -15,6 +15,20 @@ export type MinGrade = "A" | "B";
 
 export const WEIGHTS_MIN_GRADE: MinGrade = (process.env.WEIGHTS_MIN_GRADE ?? "A").trim().toUpperCase() === "B" ? "B" : "A";
 
+/**
+ * Minimum grade PER MODEL. Recent-data backtest (OANDA, binary payout 0.85,
+ * break-even 54.05%, measured on BOTH 2018 and 2019 out-of-sample):
+ *   fast (1m/5m/15m)  grade B → 54.7% / 54.7%  (~2200-2500 signals) → profitable
+ *   scalp (5m/15m/1h) grade B → 56.8% / 53.1%  → NOT consistent, keep A
+ * So the default is B for "fast" (many more signals, still positive) and A for
+ * everything else. Env WEIGHTS_MIN_GRADE=A|B forces one grade for all models.
+ */
+export function minGradeFor(modelId: string): MinGrade {
+  const env = (process.env.WEIGHTS_MIN_GRADE ?? "").trim().toUpperCase();
+  if (env === "A" || env === "B") return env;
+  return modelId === "fast" ? "B" : "A";
+}
+
 export const TRAP_POLICY: Record<MinGrade, { minP: number; oos2018: number; oos2019: number }> = {
   A: { minP: 0.56, oos2018: 57.3, oos2019: 60.4 },
   B: { minP: 0.53, oos2018: 55.7, oos2019: 55.8 },

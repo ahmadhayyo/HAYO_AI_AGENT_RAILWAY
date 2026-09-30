@@ -12,7 +12,7 @@ import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, 
 import { fetchOhlcFallback, dropFormingCandle, assessData, fetchRealtimePrice } from "../hayo/market-data";
 import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/weights-model";
 import { lastBarTrap } from "../hayo/liquidity-trap";
-import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE } from "../hayo/signal-policy";
+import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE, minGradeFor } from "../hayo/signal-policy";
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
 import { enqueueEaSignal, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier, TP_R } from "../hayo/ea-bridge";
 import { freshExtremeNoLine } from "../hayo/extreme-filter";
@@ -1882,11 +1882,15 @@ async function weightedSignal(
   // sent when the weights model leans the same way (p ≥ TRAP_MIN_P).
   const trap = modelId === "fast" ? lastBarTrap(datas[0].candles) : null;
   const trapP = trap ? trapAgreement(v.p, trap.dir) : 0;
-  // Minimum grade (WEIGHTS_MIN_GRADE, default A) — shared with /backtest.
-  const decision = decideSignal(v, trap);
+  // Minimum grade PER MODEL (fast → B, others → A; env can override) — the
+  // recent-data backtest shows fast grade B is profitable OOS in both years and
+  // ~10x more frequent, while scalp grade B is not consistent. Shared with /backtest.
+  const modelGrade = minGradeFor(modelId);
+  const trapMinP = TRAP_POLICY[modelGrade].minP;
+  const decision = decideSignal(v, trap, modelGrade);
   if (!decision) {
-    const trapNote = trap ? ` — 🪤 فخ ${trap.dir === "BUY" ? "شراء" : "بيع"} لكن موافقة النموذج ${(trapP * 100).toFixed(1)}% أقل من ${TRAP_MIN_P * 100}%` : "";
-    const why = v.grade !== "-" ? `درجة ${v.grade} (المطلوب ${WEIGHTS_MIN_GRADE})` : "لا أفضلية كافية";
+    const trapNote = trap ? ` — 🪤 فخ ${trap.dir === "BUY" ? "شراء" : "بيع"} لكن موافقة النموذج ${(trapP * 100).toFixed(1)}% أقل من ${trapMinP * 100}%` : "";
+    const why = v.grade !== "-" ? `درجة ${v.grade} (المطلوب ${modelGrade})` : "لا أفضلية كافية";
     summary.lines.push(`➖ ${label}: ⚖️ احتمال الصعود ${pTxt} — ${why}${trapNote}${opts.icons ? ` (${opts.icons})` : ""}`);
     return none;
   }
@@ -1969,7 +1973,7 @@ async function weightedSignal(
       `<b>━━ 🪤 فخ السيولة ━━</b>`,
       `شمعة دخول صندوق Breaker ${trap.dir === "SELL" ? "صاعد" : "هابط"} (<code>${lowData.fmt(trap.boxBot)}</code>–<code>${lowData.fmt(trap.boxTop)}</code>، جودة ${trap.boxScore.toFixed(0)}) جاءت ممتدة جداً: Value Chart <b>${trap.vc.toFixed(1)}</b> (الحد ±8)`,
       `← هذه شمعة المتأخرين (سيولة)؛ الإشارة عكسها: <b>${trap.dir === "BUY" ? "شراء" : "بيع"}</b>. موافقة نموذج الأوزان: <b>${(trapP * 100).toFixed(1)}%</b>`,
-      isTrap ? `📈 دقة "فخ + موافقة النموذج ≥ ${TRAP_MIN_P * 100}%" في الاختبار: ${TRAP_POLICY[WEIGHTS_MIN_GRADE].oos2018}% (2018) / <b>${TRAP_OOS}%</b> (2019) على 10 شموع` : (trap.dir === sigDir ? `✅ الفخ يؤكد إشارة الأوزان` : `⚠️ الفخ عكس إشارة الأوزان — القرار للأوزان`),
+      isTrap ? `📈 دقة "فخ + موافقة النموذج ≥ ${trapMinP * 100}%" في الاختبار: ${TRAP_POLICY[modelGrade].oos2018}% (2018) / <b>${TRAP_POLICY[modelGrade].oos2019}%</b> (2019) على 10 شموع` : (trap.dir === sigDir ? `✅ الفخ يؤكد إشارة الأوزان` : `⚠️ الفخ عكس إشارة الأوزان — القرار للأوزان`),
       ``,
     ] : []),
     `<b>━━ ⚖️ قرار النموذج ━━</b>`,
@@ -1991,7 +1995,7 @@ async function weightedSignal(
   await sendCompactSignal(bot, ownerChatId, {
     title, pair, tf: tfKeys[0], dir: sigDir, entry, fmt: lowData.fmt, at,
     strengthPct: dirProb,
-    strengthNote: isTrap ? `(فخ سيولة VC ${trap!.vc.toFixed(1)} — دقة الاختبار ${TRAP_OOS}%)` : `(درجة ${v.grade}${v.expectedWinRate !== null ? ` — دقة الاختبار ${v.expectedWinRate}%` : ""}${trap && trap.dir === sigDir ? " + 🪤 فخ" : ""})`,
+    strengthNote: isTrap ? `(فخ سيولة VC ${trap!.vc.toFixed(1)} — دقة الاختبار ${TRAP_POLICY[modelGrade].oos2019}%)` : `(درجة ${v.grade}${v.expectedWinRate !== null ? ` — دقة الاختبار ${v.expectedWinRate}%` : ""}${trap && trap.dir === sigDir ? " + 🪤 فخ" : ""})`,
     binary: { candles, tfMin },
   }, full, chart, `📸 ${p.label} | ${tfKeys[0]} — الشارت الحي`);
   console.log(`[Weights] ${isTrap ? "🪤 trap" : "⚖️"} ${pair} ${tfKeys[0]} ${sigDir} p=${v.p.toFixed(3)} grade ${v.grade} (${modelId})`);
