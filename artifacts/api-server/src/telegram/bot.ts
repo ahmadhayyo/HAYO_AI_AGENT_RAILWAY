@@ -2239,7 +2239,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
         await updateDerivSettings({ stake: v });
       } else if (/^real\s+(on|off)$/i.test(arg)) {
         await updateDerivSettings({ allowReal: /on$/i.test(arg) });
-      } else if (/^[A-Za-z0-9]{10,64}$/.test(arg)) {
+      } else if (/^[A-Za-z0-9_-]{10,200}$/.test(arg)) {
         await setDerivToken(arg);
         // do not leave the API token in the chat history
         try { await bot.deleteMessage(chatId, msg.message_id); } catch { /* ignore */ }
