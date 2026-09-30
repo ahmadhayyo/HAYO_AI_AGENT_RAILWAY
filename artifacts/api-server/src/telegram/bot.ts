@@ -1680,6 +1680,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
   const pairsToScan = convergenceConfig.pairs.filter(p => PAIRS[p]);
   const useAI = convergenceConfig.useAI;
   console.log(`[Convergence] Scanning ${pairsToScan.length} pairs × ${CONVERGENCE_PRESETS[convergenceConfig.preset].label} (${useAI ? "AI" : "technical"})`);
+  const t0 = Date.now();
   try {
 
   for (const pair of pairsToScan) {
@@ -1693,13 +1694,17 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
 
       const tfs = convergenceTfs();
       const topTf = tfs[tfs.length - 1];
-      for (const { key, cfg } of tfs) {
-        await new Promise(r => setTimeout(r, 2000)); // gentle pacing (Yahoo/OANDA first; TwelveData only as fallback)
-        const d = await fetchMarket(pair, cfg);
+      // The 3 timeframes in parallel, a short pause between pairs: with 2 s before
+      // every fetch a full scan took ~3.5 min, so each pair was looked at only
+      // every 3-4 one-minute candles and most grade-A moments were never seen.
+      await new Promise(r => setTimeout(r, 400));
+      const fetched = await Promise.all(tfs.map(({ cfg }) => fetchMarket(pair, cfg)));
+      tfs.forEach(({ key, cfg }, i) => {
+        const d = fetched[i];
         if ((d as any).poorData) throw new Error(`POOR_DATA ${cfg.interval} (${(d as any).dataSource})`);
         const cons = calcConsensus(d.strategies);
         results.push({ tf: key, direction: cons.direction, pct: cons.pct, data: d });
-      }
+      });
 
       summary.checked++;
       const dirs = results.map(r => r.direction);
@@ -1843,6 +1848,9 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
   } catch (outerErr: any) {
     console.error(`[Convergence] Fatal scan error:`, outerErr.message || outerErr);
   }
+  // one line per scan: how long it took and every near-miss (grade B, blocked by a gate)
+  const notable = summary.lines.filter(l => /^(⛔|🤖|⏸️)/.test(l) || /درجة B/.test(l));
+  console.log(`[Convergence] scan done in ${((Date.now() - t0) / 1000).toFixed(0)}s — checked ${summary.checked}, sent ${summary.sent}${notable.length ? ` | ${notable.join(" | ").replace(/<[^>]+>/g, "")}` : ""}`);
 }
 
 /**
