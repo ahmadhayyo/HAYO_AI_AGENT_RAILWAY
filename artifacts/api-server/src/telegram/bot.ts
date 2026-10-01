@@ -12,9 +12,10 @@ import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, 
 import { fetchOhlcFallback, dropFormingCandle, assessData, fetchRealtimePrice } from "../hayo/market-data";
 import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/weights-model";
 import { lastBarTrap } from "../hayo/liquidity-trap";
-import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE, minGradeFor } from "../hayo/signal-policy";
+import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE, minGradeFor, setFastGradeOverride, type MinGrade } from "../hayo/signal-policy";
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
 import { enqueueEaSignal, enqueueEaMark, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier, TP_R } from "../hayo/ea-bridge";
+import { loadBotSetting, saveBotSetting } from "../hayo/db";
 import { freshExtremeNoLine } from "../hayo/extreme-filter";
 import { executeDerivSignal, getDerivSettings, updateDerivSettings, setDerivToken, derivAccount, setDerivNotifier } from "../hayo/deriv-bridge";
 import {
@@ -2251,6 +2252,31 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
       await sendHtmlSafe(bot, msg.chat.id, text, { reply_markup: kb });
     } catch (e: any) { console.warn("[TelegramBot] /ea error:", e?.message); }
   });
+
+  // /grade [A|B] — accuracy vs frequency for the 1m "fast" convergence model.
+  // A: ~56.3% OOS, fewer signals.  B: ~54.7% OOS, ~10x more signals.
+  bot.onText(/^\/grade\b(.*)$/, async (msg, match) => {
+    try {
+      if (!isOwner(msg.chat.id)) return;
+      const arg = (match?.[1] ?? "").trim().toUpperCase();
+      if (arg === "A" || arg === "B") {
+        setFastGradeOverride(arg as MinGrade);
+        await saveBotSetting("minGradeFast", arg);
+      }
+      const cur = minGradeFor("fast");
+      await sendHtmlSafe(bot, msg.chat.id, [
+        `<b>🎚️ درجة إشارات التطابق (فريم 1د)</b>`,
+        `الحالية: <b>${cur}</b>`,
+        ``,
+        `<b>A</b> — دقة أعلى ≈ 56.3% (اختبار سنتين)، إشارات أقل`,
+        `<b>B</b> — إشارات أكثر بكثير، دقة ≈ 54.7%`,
+        ``,
+        `للتبديل: <code>/grade A</code> أو <code>/grade B</code>`,
+      ].join("\n"));
+    } catch (e: any) { console.warn("[TelegramBot] /grade error:", e?.message); }
+  });
+  // restore the saved grade override on startup
+  loadBotSetting<string>("minGradeFast").then(v => { if (v === "A" || v === "B") setFastGradeOverride(v as MinGrade); }).catch(() => {});
   if (botRole === "trading") setEaNotifier(text => { sendHtmlSafe(bot, ownerChatId, text).catch(() => {}); });
   if (botRole === "trading") setDerivNotifier(text => { sendHtmlSafe(bot, ownerChatId, text).catch(() => {}); });
 
