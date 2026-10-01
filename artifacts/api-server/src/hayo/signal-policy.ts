@@ -23,9 +23,16 @@ export const WEIGHTS_MIN_GRADE: MinGrade = (process.env.WEIGHTS_MIN_GRADE ?? "A"
  * So the default is B for "fast" (many more signals, still positive) and A for
  * everything else. Env WEIGHTS_MIN_GRADE=A|B forces one grade for all models.
  */
+// Runtime override set from the Telegram /grade command (persisted in botSettings).
+// null = use the default policy. The env var, when set, still wins over everything.
+let fastGradeOverride: MinGrade | null = null;
+export function setFastGradeOverride(g: MinGrade | null): void { fastGradeOverride = g; }
+export function getFastGradeOverride(): MinGrade | null { return fastGradeOverride; }
+
 export function minGradeFor(modelId: string): MinGrade {
   const env = (process.env.WEIGHTS_MIN_GRADE ?? "").trim().toUpperCase();
-  if (env === "A" || env === "B") return env;
+  if (env === "A" || env === "B") return env as MinGrade;
+  if (modelId === "fast" && fastGradeOverride) return fastGradeOverride;
   return modelId === "fast" ? "B" : "A";
 }
 
