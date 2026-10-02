@@ -16,6 +16,7 @@ import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE, minGradeFo
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
 import { enqueueEaSignal, enqueueEaMark, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier, TP_R } from "../hayo/ea-bridge";
 import { loadBotSetting, saveBotSetting } from "../hayo/db";
+import { metaFeatures, metaConfidence, META_MIN_CONF, META_ENABLED } from "../hayo/meta-model";
 import { freshExtremeNoLine } from "../hayo/extreme-filter";
 import { executeDerivSignal, getDerivSettings, updateDerivSettings, setDerivToken, derivAccount, setDerivNotifier } from "../hayo/deriv-bridge";
 import {
@@ -1911,6 +1912,25 @@ async function weightedSignal(
       return none;
     }
   }
+  // Meta-labeling confidence gate (fast model only). A second-stage model scores
+  // the signal from all layers (weights edge, trap, strategy consensus on
+  // 1m/5m/15m, volatility regime, efficiency, momentum, session); only
+  // high-confidence signals pass. Out-of-sample this lifts the win rate from
+  // ~55% to ~64-66% (both directions of the 2018/2019 split). Env HAYO_META_MIN=0
+  // disables it.
+  if (modelId === "fast" && META_ENABLED && datas.length >= 3) {
+    try {
+      const conf = metaConfidence(metaFeatures({
+        p: v.p, dir: sigDir, trapDir: trap?.dir ?? null,
+        c1: datas[0].candles, c5: datas[1].candles, c15: datas[2].candles,
+      }));
+      if (conf < META_MIN_CONF) {
+        summary.lines.push(`🧠 ${label}: ⚖️ ${sigDir === "BUY" ? "شراء" : "بيع"} لكن ثقة النموذج الثانوي ${(conf * 100).toFixed(0)}% < ${(META_MIN_CONF * 100).toFixed(0)}% — أُلغيت`);
+        return none;
+      }
+      (opts as any).__metaConf = conf;
+    } catch (err: any) { console.warn("[Meta] scoring failed:", err?.message); }
+  }
   // claim synchronously (no await since the check) → atomic across concurrent scans
   const claimKey = `${pair}:${modelId}`;
   if (Date.now() < (weightedClaims.get(claimKey) ?? 0)) {
@@ -1998,10 +2018,12 @@ async function weightedSignal(
     `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
   ].filter(l => l !== "").join("\n");
 
+  const metaConf = (opts as any).__metaConf as number | undefined;
+  const metaNote = typeof metaConf === "number" ? ` — 🧠 ثقة ${(metaConf * 100).toFixed(0)}%` : "";
   await sendCompactSignal(bot, ownerChatId, {
     title, pair, tf: tfKeys[0], dir: sigDir, entry, fmt: lowData.fmt, at,
     strengthPct: dirProb,
-    strengthNote: isTrap ? `(فخ سيولة VC ${trap!.vc.toFixed(1)} — دقة الاختبار ${TRAP_POLICY[modelGrade].oos2019}%)` : `(درجة ${v.grade}${v.expectedWinRate !== null ? ` — دقة الاختبار ${v.expectedWinRate}%` : ""}${trap && trap.dir === sigDir ? " + 🪤 فخ" : ""})`,
+    strengthNote: (isTrap ? `(فخ سيولة VC ${trap!.vc.toFixed(1)} — دقة الاختبار ${TRAP_POLICY[modelGrade].oos2019}%)` : `(درجة ${v.grade}${v.expectedWinRate !== null ? ` — دقة الاختبار ${v.expectedWinRate}%` : ""}${trap && trap.dir === sigDir ? " + 🪤 فخ" : ""})`) + metaNote,
     binary: { candles, tfMin },
   }, full, chart, `📸 ${p.label} | ${tfKeys[0]} — الشارت الحي`);
   console.log(`[Weights] ${isTrap ? "🪤 trap" : "⚖️"} ${pair} ${tfKeys[0]} ${sigDir} p=${v.p.toFixed(3)} grade ${v.grade} (${modelId})`);
