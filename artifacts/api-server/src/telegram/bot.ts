@@ -17,7 +17,7 @@ import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } 
 import { enqueueEaSignal, enqueueEaMark, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier, TP_R } from "../hayo/ea-bridge";
 import { loadBotSetting, saveBotSetting } from "../hayo/db";
 import { metaFeatures, metaConfidence, META_MIN_CONF, META_ENABLED } from "../hayo/meta-model";
-import { freshExtremeNoLine } from "../hayo/extreme-filter";
+import { freshExtremeNoLine, trendMisaligned, type TrendGateMode } from "../hayo/extreme-filter";
 import { executeDerivSignal, getDerivSettings, updateDerivSettings, setDerivToken, derivAccount, setDerivNotifier } from "../hayo/deriv-bridge";
 import {
   calcRSI, calcMACD, calcBB, calcATR, calcStochastic, calcWilliamsR,
@@ -1910,6 +1910,24 @@ async function weightedSignal(
     if (xc.blocked) {
       summary.lines.push(`⛔ ${label}: ⚖️ ${sigDir === "BUY" ? "شراء عند قاع جديد" : "بيع عند قمة جديدة"} لآخر 500 شمعة بلا خط ارتداد تاريخي (${xc.touches} ارتداد) — أُلغيت`);
       return none;
+    }
+  }
+  // Trend-alignment ("anti-knife") gate (fast model only). The owner's live
+  // losses were counter-trend reversion in a collapse chart; OOS 2019 that bucket
+  // (counter-trend in a strong 15m regime) wins ~47% while trend-aligned wins
+  // ~59%. Reject a signal that fights the 15m trend when the 15m regime is
+  // strongly directional. Env HAYO_TREND_GATE=off|regime|strict (default regime),
+  // HAYO_TREND_ER sets the regime threshold (default 0.3).
+  if (modelId === "fast" && !isTrap && datas.length >= 3) {
+    const raw = (process.env.HAYO_TREND_GATE ?? "regime").trim().toLowerCase();
+    const mode: TrendGateMode = raw === "0" || raw === "off" ? "off" : raw === "strict" ? "strict" : "regime";
+    if (mode !== "off") {
+      const closes15 = (datas[2].candles as any[]).map(c => c.close);
+      const tg = trendMisaligned(closes15, sigDir, mode, Number(process.env.HAYO_TREND_ER ?? 0.3));
+      if (tg.blocked) {
+        summary.lines.push(`🧭 ${label}: ⚖️ ${sigDir === "BUY" ? "شراء" : "بيع"} عكس اتجاه 15m في نظام قوي (ER ${tg.er.toFixed(2)}) — أُلغيت (سكين ساقط)`);
+        return none;
+      }
     }
   }
   // Meta-labeling confidence gate (fast model only). A second-stage model scores
