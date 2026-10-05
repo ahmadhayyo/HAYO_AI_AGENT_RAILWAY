@@ -40,3 +40,41 @@ export function freshExtremeNoLine(bars: FilterBar[], dir: "BUY" | "SELL", lookb
   }
   return { fresh, touches, blocked: fresh && touches < minTouches };
 }
+
+/**
+ * Trend-alignment ("anti-knife") gate for the 1-minute weights (convergence)
+ * signals — from the owner's live losses (counter-trend reversion in a collapse
+ * chart), confirmed on OANDA 1m (6 instruments, grade B, 10-bar expiry, OOS 2019):
+ *   all grade-B signals                               54.9%
+ *   trend-aligned only (dir == 15m trend)             58.9%
+ *   counter-trend                                     53.1%
+ *   counter-trend in a STRONG 15m regime (ER>0.4)     46.9%  ← systematic loser
+ * Trend on 15m = price vs SMA200 (SMA50 fallback), the server's own trend_filter.
+ * Efficiency ratio (ER) = |net move| / |path| over the last `erBars` 15m bars;
+ * high ER = a clean directional trend (a collapse/run), where catching the
+ * reverse is a falling knife.
+ *   mode "regime" (default): block counter-trend only when ER >= erMin.
+ *   mode "strict": block every counter-trend signal (trade with the trend only).
+ *   mode "off": never block.
+ */
+export type TrendGateMode = "off" | "regime" | "strict";
+export interface TrendGateCheck { trendUp: boolean | null; counter: boolean; er: number; blocked: boolean }
+
+export function trendMisaligned(
+  closes15: number[], dir: "BUY" | "SELL",
+  mode: TrendGateMode = "regime", erMin = 0.3, erBars = 30,
+): TrendGateCheck {
+  const n = closes15.length;
+  if (mode === "off" || n < 60) return { trendUp: null, counter: false, er: 0, blocked: false };
+  const period = n >= 200 ? 200 : 50;
+  let s = 0; for (let i = n - period; i < n; i++) s += closes15[i];
+  const ma = s / period;
+  const price = closes15[n - 1];
+  const trendUp = price > ma;
+  const counter = dir === "BUY" ? !trendUp : trendUp;
+  const lb = Math.min(erBars, n - 1);
+  let path = 0; for (let i = n - lb; i < n; i++) path += Math.abs(closes15[i] - closes15[i - 1]);
+  const er = path > 0 ? Math.abs(price - closes15[n - 1 - lb]) / path : 0;
+  const blocked = counter && (mode === "strict" || er >= erMin);
+  return { trendUp, counter, er, blocked };
+}
