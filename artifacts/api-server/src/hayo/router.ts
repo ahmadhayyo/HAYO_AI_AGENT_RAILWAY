@@ -188,7 +188,7 @@ async function evaluateSignalJournal(): Promise<void> {
             const side = s.direction === "BUY" ? "🟢 CALL" : "🔴 PUT";
             void settle(Number(contractId), `${pair} ${timeframe}`, side, 0, Number(s.id), Number(stake));
           }
-          continue; // Deriv contract settlement is the source of truth for this executed trade.
+          continue; // Deriv contract settlement is the source of truth for executed trades.
         }
         const n = Number(String(s.note ?? "").match(/binary:(\d+)/)?.[1] ?? 5);
         const tfMs = TF_MS[timeframe] ?? 6e4;
