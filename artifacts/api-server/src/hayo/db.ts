@@ -446,7 +446,7 @@ export async function getJournalStats(userId?: number | null, kind: "forex" | "b
   const kindSql = kind === "binary" ? sql`"source" IN ('tg-bin', 'tg-conv-bin')`
     : kind === "weights" ? sql`"source" = 'tg-wgt'`
     : kind === "trap" ? sql`"source" = 'tg-trap'`
-    : kind === "forex" ? sql`"source" NOT IN ('tg-bin', 'tg-wgt', 'tg-trap', 'tg-conv-bin')`
+    : kind === "forex" ? sql`"source" NOT IN ('tg-bin', 'tg-wgt', 'tg-trap', 'tg-conv-bin', 'tg-conv-shadow')`
     : sql`TRUE`;
   const whereClause = userId != null ? sql`WHERE "userId" = ${userId} AND ${kindSql}` : sql`WHERE ${kindSql}`;
   const res: any = await db.execute(sql`
@@ -488,13 +488,13 @@ export async function getJournalStats(userId?: number | null, kind: "forex" | "b
 export async function getConvergenceGateStats(userId: number | null | undefined, profile: string): Promise<{ wins: number; losses: number } | null> {
   if (!db) return null;
   const ownerClause = userId != null ? sql`AND "userId" = ${userId}` : sql``;
-  const marker = `%convergence:${profile}:%`;
+  const marker = `%convergence:${profile}`;
   const res: any = await db.execute(sql`
     SELECT count(*) FILTER (WHERE "status" = 'win') AS wins,
            count(*) FILTER (WHERE "status" = 'loss') AS losses
     FROM (
       SELECT "status" FROM "signalJournal"
-      WHERE "source" = 'tg-conv-bin' AND "note" LIKE ${marker}
+      WHERE "source" IN ('tg-conv-bin', 'tg-conv-shadow') AND "note" LIKE ${marker}
         AND "status" IN ('win','loss') ${ownerClause}
       ORDER BY "closedAt" DESC LIMIT 30
     ) recent`);
