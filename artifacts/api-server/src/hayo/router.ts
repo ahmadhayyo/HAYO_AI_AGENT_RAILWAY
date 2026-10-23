@@ -1,4 +1,4 @@
-Warning: truncated output (original token count: 61991)
+Warning: truncated output (original token count: 61999)
 Total output lines: 4775
 
 import { z } from "zod";
@@ -182,7 +182,7 @@ async function evaluateSignalJournal(): Promise<void> {
       const created = new Date(s.createdAt).getTime();
       // Binary option: graded ONLY by where price is at expiry vs. entry.
       // Win pays BINARY_PAYOUT (R = +payout), loss costs the stake (R = -1).
-      if (s.source === "tg-bin" || s.source === "tg-wgt" || s.source === "tg-trap" || s.source === "tg-conv-bin") {
+      if (s.source === "tg-bin" || s.source === "tg-wgt" || s.source === "tg-trap" || s.source === "tg-conv-bin" || s.source === "tg-conv-shadow") {
         const n = Number(String(s.note ?? "").match(/binary:(\d+)/)?.[1] ?? 5);
         const tfMs = TF_MS[timeframe] ?? 6e4;
         const expiryTs = created + n * tfMs;
@@ -2028,8 +2028,7 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         return db.select().from(subscriptions);
       }),
 
-      // Get subscribers with user+plan info
-      getSubscribers: adminPro…11991 tokens truncated…eepseek.com/v1/chat/completions", {
+      // Get subscribers with user+plan inf…11999 tokens truncated…eepseek.com/v1/chat/completions", {
             method: "POST",
             headers: {
               "Authorization": `Bearer ${deepseekKey}`,
