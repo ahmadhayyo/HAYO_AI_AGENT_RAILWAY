@@ -1802,7 +1802,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
       }
       const opposingLevel = nearOpposingPivot(topData, convergenceDir);
       if (opposingLevel !== null) {
-        summary.lines.push(`⛔ ${plabel}: ${convergenceDir === "BUY" ? "مقاومة" : "دعم" قريب على ${topTf.key} (${(opposingLevel * 100).toFixed(0)}% من ATR) — أُلغيت`);
+        summary.lines.push(`⛔ ${plabel}: ${convergenceDir === "BUY" ? "مقاومة" : "دعم"} قريب على ${topTf.key} (${(opposingLevel * 100).toFixed(0)}% من ATR) — أُلغيت`);
         continue;
       }
       // Binary entry is the first low-timeframe bar after the completed signal bar.
