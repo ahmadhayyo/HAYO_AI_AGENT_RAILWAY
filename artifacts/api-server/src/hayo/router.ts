@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 61999)
-Total output lines: 4775
-
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import path from "path";
@@ -2028,7 +2025,1024 @@ ${input.description ? `تعليمات إضافية: ${input.description}` : ""}
         return db.select().from(subscriptions);
       }),
 
-      // Get subscribers with user+plan inf…11999 tokens truncated…eepseek.com/v1/chat/completions", {
+      // Get subscribers with user+plan info
+      getSubscribers: adminProcedure.query(async () => {
+        const { db } = await import("@workspace/db");
+        const { subscriptions, users, subscriptionPlans } = await import("@workspace/db/schema");
+        const { eq, desc } = await import("drizzle-orm");
+        const now = new Date();
+        const rows = await db.select({
+          id: subscriptions.id,
+          userId: subscriptions.userId,
+          planId: subscriptions.planId,
+          status: subscriptions.status,
+          startDate: subscriptions.startDate,
+          endDate: subscriptions.endDate,
+          userName: users.name,
+          userEmail: users.email,
+          planName: subscriptionPlans.name,
+          planDisplayName: subscriptionPlans.displayName,
+        })
+          .from(subscriptions)
+          .leftJoin(users, eq(subscriptions.userId, users.id))
+          .leftJoin(subscriptionPlans, eq(subscriptions.planId, subscriptionPlans.id))
+          .orderBy(desc(subscriptions.startDate));
+
+        return rows.map(r => ({
+          ...r,
+          user: { name: r.userName, email: r.userEmail },
+          plan: { name: r.planName, displayName: r.planDisplayName },
+          isExpired: r.endDate ? r.endDate < now : false,
+          daysLeft: r.endDate ? Math.max(0, Math.ceil((r.endDate.getTime() - now.getTime()) / 86400000)) : null,
+        }));
+      }),
+
+      create: adminProcedure
+        .input(z.object({ userId: z.number(), planId: z.number(), durationDays: z.number().default(30) }))
+        .mutation(async ({ input }) => {
+          const { db } = await import("@workspace/db");
+          const { subscriptions } = await import("@workspace/db/schema");
+          const now = new Date();
+          const endDate = new Date(now.getTime() + input.durationDays * 86400000);
+          await db.insert(subscriptions).values({
+            userId: input.userId,
+            planId: input.planId,
+            status: "active",
+            startDate: now,
+            endDate,
+          });
+          return { success: true };
+        }),
+
+      cancel: adminProcedure
+        .input(z.object({ subscriptionId: z.number() }))
+        .mutation(async ({ input }) => {
+          const { db } = await import("@workspace/db");
+          const { subscriptions } = await import("@workspace/db/schema");
+          const { eq } = await import("drizzle-orm");
+          await db.update(subscriptions).set({ status: "cancelled" }).where(eq(subscriptions.id, input.subscriptionId));
+          return { success: true };
+        }),
+
+      extend: adminProcedure
+        .input(z.object({ subscriptionId: z.number(), extraDays: z.number() }))
+        .mutation(async ({ input }) => {
+          const { db } = await import("@workspace/db");
+          const { subscriptions } = await import("@workspace/db/schema");
+          const { eq } = await import("drizzle-orm");
+          const sub = await db.select().from(subscriptions).where(eq(subscriptions.id, input.subscriptionId)).limit(1);
+          if (!sub[0]) throw new TRPCError({ code: "NOT_FOUND", message: "الاشتراك غير موجود" });
+          const base = sub[0].endDate && sub[0].endDate > new Date() ? sub[0].endDate : new Date();
+          const newEnd = new Date(base.getTime() + input.extraDays * 86400000);
+          await db.update(subscriptions).set({ endDate: newEnd, status: "active" }).where(eq(subscriptions.id, input.subscriptionId));
+          return { success: true };
+        }),
+    }),
+
+    apiKeys: router({
+      list: adminProcedure.query(async () => {
+        const { db } = await import("@workspace/db");
+        const { apiKeys, users } = await import("@workspace/db/schema");
+        const { eq } = await import("drizzle-orm");
+        return db.select({
+          id: apiKeys.id,
+          name: apiKeys.label,
+          keyHash: apiKeys.keyHash,
+          isActive: apiKeys.isActive,
+          createdAt: apiKeys.createdAt,
+          userId: apiKeys.userId,
+          userName: users.name,
+          userEmail: users.email,
+        }).from(apiKeys).leftJoin(users, eq(apiKeys.userId, users.id));
+      }),
+
+      revoke: adminProcedure
+        .input(z.object({ id: z.number() }))
+        .mutation(async ({ input }) => {
+          const { db } = await import("@workspace/db");
+          const { apiKeys } = await import("@workspace/db/schema");
+          const { eq } = await import("drizzle-orm");
+          await db.update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, input.id));
+          return { success: true };
+        }),
+    }),
+  }),
+
+  // ==================== Subscription Codes ====================
+  subscriptions: router({
+    // Get user's active subscription (from codes or plans)
+    myActive: protectedProcedure.query(async ({ ctx }) => {
+      const { db } = await import("@workspace/db");
+      const { subscriptionCodes, subscriptionPlans } = await import("@workspace/db/schema");
+      const { eq, and, gt, isNotNull } = await import("drizzle-orm");
+      const now = new Date();
+      const active = await db.select({
+        code: subscriptionCodes,
+        plan: subscriptionPlans,
+      })
+        .from(subscriptionCodes)
+        .innerJoin(subscriptionPlans, eq(subscriptionCodes.planId, subscriptionPlans.id))
+        .where(and(
+          eq(subscriptionCodes.usedBy, ctx.user.id),
+          isNotNull(subscriptionCodes.usedAt),
+          gt(subscriptionCodes.expiresAt, now),
+        ))
+        .orderBy(subscriptionCodes.expiresAt)
+        .limit(1);
+      return active[0] || null;
+    }),
+
+    // Redeem a subscription code
+    redeem: protectedProcedure
+      .input(z.object({ code: z.string().trim().toUpperCase() }))
+      .mutation(async ({ input, ctx }) => {
+        const { db } = await import("@workspace/db");
+        const { subscriptionCodes, subscriptionPlans } = await import("@workspace/db/schema");
+        const { eq, and, isNull } = await import("drizzle-orm");
+        const now = new Date();
+
+        const result = await db.select({ code: subscriptionCodes, plan: subscriptionPlans })
+          .from(subscriptionCodes)
+          .innerJoin(subscriptionPlans, eq(subscriptionCodes.planId, subscriptionPlans.id))
+          .where(and(
+            eq(subscriptionCodes.code, input.code),
+            eq(subscriptionCodes.isActive, true),
+            isNull(subscriptionCodes.usedBy),
+          ))
+          .limit(1);
+
+        const entry = result[0];
+        if (!entry) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "الكود غير صحيح أو مستخدم مسبقاً" });
+        }
+
+        const expiresAt = new Date(now.getTime() + entry.code.durationDays * 24 * 60 * 60 * 1000);
+        // Atomic claim: only succeeds while the code is STILL unredeemed. Closes
+        // the race where two concurrent requests both pass the SELECT above and
+        // would otherwise each redeem the same code.
+        const claimed = await db.update(subscriptionCodes)
+          .set({ usedBy: ctx.user.id, usedAt: now, expiresAt, isActive: false })
+          .where(and(eq(subscriptionCodes.id, entry.code.id), isNull(subscriptionCodes.usedBy)))
+          .returning({ id: subscriptionCodes.id });
+        if (!claimed[0]) {
+          throw new TRPCError({ code: "CONFLICT", message: "الكود استُخدم للتو من جلسة أخرى" });
+        }
+
+        return { success: true, plan: entry.plan, expiresAt };
+      }),
+
+    // Check usage limits
+    checkLimit: protectedProcedure.query(async ({ ctx }) => {
+      // Admin/owner: always unlimited
+      if (ctx.user.role === "admin") {
+        return { todayCount: 0, dailyLimit: -1, planName: "owner", isLimited: false, hasActiveSub: true };
+      }
+      const { db } = await import("@workspace/db");
+      const { usageRecords } = await import("@workspace/db/schema");
+      const { eq, and } = await import("drizzle-orm");
+      const now = new Date();
+      const todayStr = now.toISOString().slice(0, 10); // "YYYY-MM-DD"
+
+      // Resolve the effective plan from BOTH subscriptions and codes (unified).
+      const { plan, source } = await getEffectivePlan(ctx.user.id);
+
+      const usage = await db.select().from(usageRecords)
+        .where(and(eq(usageRecords.userId, ctx.user.id), eq(usageRecords.date, todayStr)))
+        .limit(1);
+
+      const todayCount = usage[0]?.messageCount || 0;
+      const dailyLimit = plan.dailyMessageLimit === -1 ? Infinity : plan.dailyMessageLimit;
+      const isLimited = todayCount >= dailyLimit;
+
+      return {
+        todayCount,
+        dailyLimit: plan.dailyMessageLimit,
+        planName: plan.name,
+        isLimited,
+        hasActiveSub: source !== "free",
+      };
+    }),
+
+    // ── Stripe: Create Checkout Session ──────────────────────────
+    createStripeCheckout: protectedProcedure
+      .input(z.object({
+        planName: z.enum(["starter", "pro", "business"]),
+        billingPeriod: z.enum(["monthly", "yearly"]).default("monthly"),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const stripeKey = process.env.STRIPE_SECRET_KEY;
+        if (!stripeKey) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Stripe غير مُعد حالياً. استخدم الدفع اليدوي." });
+
+        const { db } = await import("@workspace/db");
+        const { subscriptionPlans } = await import("@workspace/db/schema");
+        const { eq } = await import("drizzle-orm");
+
+        const planRows = await db.select().from(subscriptionPlans).where(eq(subscriptionPlans.name, input.planName)).limit(1);
+        const plan = planRows[0];
+        if (!plan) throw new TRPCError({ code: "NOT_FOUND", message: "الخطة غير موجودة" });
+
+        const price = input.billingPeriod === "yearly" ? plan.priceYearly : plan.priceMonthly;
+        const durationDays = input.billingPeriod === "yearly" ? 365 : 30;
+
+        const Stripe = (await import("stripe")).default;
+        const stripe = new Stripe(stripeKey, { apiVersion: "2024-04-10" as any });
+
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ["card"],
+          mode: "payment",
+          customer_email: ctx.user.email || undefined,
+          line_items: [{
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: `HAYO AI — ${plan.displayName} (${input.billingPeriod === "yearly" ? "سنوي" : "شهري"})`,
+                description: plan.description || "",
+              },
+              unit_amount: price,
+            },
+            quantity: 1,
+          }],
+          metadata: {
+            userId: String(ctx.user.id),
+            planName: input.planName,
+            billingPeriod: input.billingPeriod,
+            durationDays: String(durationDays),
+          },
+          success_url: `${process.env.APP_URL || "https://hayo-ai.com"}/payment?status=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.APP_URL || "https://hayo-ai.com"}/pricing`,
+        });
+
+        return { url: session.url, sessionId: session.id };
+      }),
+
+    // ── Stripe: Verify Payment & Activate ────────────────────────
+    verifyStripePayment: protectedProcedure
+      .input(z.object({ sessionId: z.string() }))
+      .mutation(async ({ input, ctx }) => {
+        const stripeKey = process.env.STRIPE_SECRET_KEY;
+        if (!stripeKey) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Stripe غير مُعد" });
+
+        const Stripe = (await import("stripe")).default;
+        const stripe = new Stripe(stripeKey, { apiVersion: "2024-04-10" as any });
+        const session = await stripe.checkout.sessions.retrieve(input.sessionId);
+
+        if (session.payment_status !== "paid") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع لم يكتمل بعد" });
+        }
+
+        const planName = session.metadata?.planName;
+        const durationDays = parseInt(session.metadata?.durationDays || "30");
+        if (!planName) throw new TRPCError({ code: "BAD_REQUEST", message: "بيانات الخطة مفقودة" });
+
+        const { db } = await import("@workspace/db");
+        const { subscriptionCodes, subscriptionPlans } = await import("@workspace/db/schema");
+        const { eq, like } = await import("drizzle-orm");
+        const { randomBytes } = await import("crypto");
+
+        const planRows = await db.select().from(subscriptionPlans).where(eq(subscriptionPlans.name, planName)).limit(1);
+        if (!planRows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "الخطة غير موجودة" });
+
+        // Idempotency: a paid checkout session may only ever grant ONE entitlement.
+        // If this session was already processed, return the existing record instead
+        // of minting another code (prevents replaying a single payment for many codes).
+        const existing = await db.select().from(subscriptionCodes)
+          .where(like(subscriptionCodes.note, `Stripe: ${session.id}%`))
+          .limit(1);
+        if (existing[0]) {
+          return { success: true, plan: planRows[0], expiresAt: existing[0].expiresAt, code: existing[0].code, alreadyProcessed: true };
+        }
+
+        const code = `STRIPE-${randomBytes(4).toString("hex").toUpperCase()}`;
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+        await db.insert(subscriptionCodes).values({
+          code,
+          planId: planRows[0].id,
+          durationDays,
+          isActive: false,
+          usedBy: ctx.user.id,
+          usedAt: now,
+          expiresAt,
+          note: `Stripe: ${session.id} | ${session.customer_email || ""}`,
+        });
+
+        return { success: true, plan: planRows[0], expiresAt, code };
+      }),
+  }),
+
+  // ==================== Islam Message (رسالة الإسلام) ====================
+  islam: router({
+    listSurahs: publicProcedure.query(async () => {
+      const { listSurahs } = await import("./services/islam.js");
+      return listSurahs();
+    }),
+    getSurah: publicProcedure.input(z.object({ number: z.number().min(1).max(114), edition: z.string().default("quran-uthmani") })).query(async ({ input }) => {
+      const { getSurah } = await import("./services/islam.js");
+      return getSurah(input.number, input.edition);
+    }),
+    getAyah: publicProcedure.input(z.object({ reference: z.string(), editions: z.string().default("quran-uthmani,ar.muyassar") })).query(async ({ input }) => {
+      const { getAyah } = await import("./services/islam.js");
+      return getAyah(input.reference, input.editions);
+    }),
+    searchQuran: publicProcedure.input(z.object({ query: z.string().min(2) })).mutation(async ({ input }) => {
+      const { searchQuran } = await import("./services/islam.js");
+      return searchQuran(input.query);
+    }),
+    getTafsir: publicProcedure.input(z.object({ surah: z.number(), ayah: z.number(), edition: z.string().default("ar-tafsir-al-tabari") })).query(async ({ input }) => {
+      const { getTafsir } = await import("./services/islam.js");
+      return getTafsir(input.surah, input.ayah, input.edition);
+    }),
+    listTafsirs: publicProcedure.query(async () => {
+      const { listTafsirs } = await import("./services/islam.js");
+      return listTafsirs();
+    }),
+    listHadithBooks: publicProcedure.query(async () => {
+      const { listHadithBooks } = await import("./services/islam.js");
+      return listHadithBooks();
+    }),
+    searchHadith: protectedProcedure.input(z.object({ query: z.string().min(3), book: z.string().default("all") })).mutation(async ({ input }) => {
+      const { searchHadith } = await import("./services/islam.js");
+      return searchHadith(input.query, input.book);
+    }),
+    compareMadhahib: protectedProcedure.input(z.object({ topic: z.string().min(5) })).mutation(async ({ input }) => {
+      const { compareMadhahib } = await import("./services/islam.js");
+      return compareMadhahib(input.topic);
+    }),
+    scientificMiracle: protectedProcedure.input(z.object({ topic: z.string().min(5) })).mutation(async ({ input }) => {
+      const { scientificMiracle } = await import("./services/islam.js");
+      return scientificMiracle(input.topic);
+    }),
+  }),
+
+  // ==================== OSINT Intelligence Tools ====================
+  osint: router({
+    ipLookup: osintProcedure
+      .input(z.object({ ip: z.string().min(4).max(50) }))
+      .mutation(async ({ input }) => {
+        const { ipLookup } = await import("./services/osint.js");
+        return ipLookup(input.ip);
+      }),
+    whoisLookup: osintProcedure
+      .input(z.object({ domain: z.string().min(3).max(200) }))
+      .mutation(async ({ input }) => {
+        const { whoisLookup } = await import("./services/osint.js");
+        return whoisLookup(input.domain);
+      }),
+    dnsLookup: osintProcedure
+      .input(z.object({ domain: z.string().min(3).max(200), type: z.string().default("A") }))
+      .mutation(async ({ input }) => {
+        const { dnsLookup } = await import("./services/osint.js");
+        return dnsLookup(input.domain, input.type);
+      }),
+    emailBreachCheck: osintProcedure
+      .input(z.object({ email: z.string().email() }))
+      .mutation(async ({ input }) => {
+        const { emailBreachCheck } = await import("./services/osint.js");
+        return emailBreachCheck(input.email);
+      }),
+    usernameSearch: osintProcedure
+      .input(z.object({ username: z.string().min(2).max(50) }))
+      .mutation(async ({ input }) => {
+        const { usernameSearch } = await import("./services/osint.js");
+        return usernameSearch(input.username);
+      }),
+    phoneLookup: osintProcedure
+      .input(z.object({ phone: z.string().min(5).max(20) }))
+      .mutation(async ({ input }) => {
+        const { phoneLookup } = await import("./services/osint.js");
+        return phoneLookup(input.phone);
+      }),
+    techLookup: osintProcedure
+      .input(z.object({ url: z.string().min(3).max(200) }))
+      .mutation(async ({ input }) => {
+        const { techLookup } = await import("./services/osint.js");
+        return techLookup(input.url);
+      }),
+    sslLookup: osintProcedure
+      .input(z.object({ domain: z.string().min(3).max(200) }))
+      .mutation(async ({ input }) => {
+        const { sslLookup } = await import("./services/osint.js");
+        return sslLookup(input.domain);
+      }),
+    subdomainSearch: osintProcedure
+      .input(z.object({ domain: z.string().min(3).max(200) }))
+      .mutation(async ({ input }) => {
+        const { subdomainSearch } = await import("./services/osint.js");
+        return subdomainSearch(input.domain);
+      }),
+    phoneLocalLookup: osintProcedure
+      .input(z.object({ phone: z.string().min(6).max(20) }))
+      .mutation(async ({ input, ctx }) => {
+        const { phoneLocalLookup, logOsintSearch } = await import("./services/osint.js");
+        const result = await phoneLocalLookup(input.phone);
+        await logOsintSearch(ctx.user.id, "phone_local", input.phone, result.totalResults);
+        return result;
+      }),
+    coverageStats: osintProcedure
+      .query(async () => {
+        const { getCoverageStats } = await import("./services/osint.js");
+        return getCoverageStats();
+      }),
+
+    importStats: osintProcedure
+      .query(async () => {
+        const { getImportStats } = await import("./services/osint-import.js");
+        return getImportStats();
+      }),
+
+    importFromCSV: osintProcedure
+      .input(z.object({ csvContent: z.string().min(10), sourceName: z.string().min(1).max(100) }))
+      .mutation(async ({ input }) => {
+        const { importFromCSVContent } = await import("./services/osint-import.js");
+        return importFromCSVContent(input.csvContent, input.sourceName);
+      }),
+
+    importFromGoogleDrive: osintProcedure
+      .input(z.object({ fileId: z.string().min(1), sourceName: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const { importFromGoogleDrive } = await import("./services/osint-import.js");
+        return importFromGoogleDrive(input.fileId, input.sourceName || "");
+      }),
+
+    listGoogleDriveFiles: osintProcedure
+      .query(async () => {
+        const { listGoogleDriveFiles } = await import("./services/osint-import.js");
+        return listGoogleDriveFiles();
+      }),
+
+    importFromObjectStorage: osintProcedure
+      .input(z.object({ filePath: z.string().min(1), sourceName: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const { importFromObjectStorage } = await import("./services/osint-import.js");
+        return importFromObjectStorage(input.filePath, input.sourceName || "");
+      }),
+
+    listObjectStorageFiles: osintProcedure
+      .query(async () => {
+        const { listObjectStorageFiles } = await import("./services/osint-import.js");
+        return listObjectStorageFiles();
+      }),
+
+    importFromSupabase: osintProcedure
+      .input(z.object({
+        connectionUrl: z.string().min(10),
+        tableName: z.string().min(1),
+        sourceName: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { importFromSupabase } = await import("./services/osint-import.js");
+        return importFromSupabase(input.connectionUrl, input.tableName, input.sourceName || "");
+      }),
+
+    listSupabaseTables: osintProcedure
+      .input(z.object({ connectionUrl: z.string().min(10) }))
+      .mutation(async ({ input }) => {
+        const { listSupabaseTables } = await import("./services/osint-import.js");
+        return listSupabaseTables(input.connectionUrl);
+      }),
+
+    deleteBySource: osintProcedure
+      .input(z.object({ source: z.string().min(1) }))
+      .mutation(async ({ input }) => {
+        const { deleteContactsBySource } = await import("./services/osint-import.js");
+        return deleteContactsBySource(input.source);
+      }),
+
+    clearAllContacts: osintProcedure
+      .mutation(async () => {
+        const { clearAllContacts } = await import("./services/osint-import.js");
+        return clearAllContacts();
+      }),
+  }),
+
+  // ==================== Mind Map ====================
+  mindMap: router({
+    generate: protectedProcedure
+      .input(z.object({
+        idea: z.string().min(5).max(2000),
+        depth: z.number().min(2).max(4).default(3),
+        userNotes: z.string().max(2000).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await incrementUsage(ctx.user.id);
+        const { generateMindMap } = await import("./services/mindmap.js");
+        return generateMindMap(input.idea, input.depth, input.userNotes || "");
+      }),
+
+    expand: protectedProcedure
+      .input(z.object({
+        node: z.any(),
+        parentContext: z.string(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await incrementUsage(ctx.user.id);
+        const { expandNode } = await import("./services/mindmap.js");
+        return expandNode(input.node, input.parentContext);
+      }),
+  }),
+
+  // ==================== System Maintenance (Admin) ====================
+  maintenance: router({
+    // Quick health scan
+    healthCheck: adminProcedure.query(async () => {
+      const { systemHealthCheck } = await import("./services/security.js");
+      return systemHealthCheck();
+    }),
+
+    // Quick code scan (no AI)
+    quickScan: adminProcedure.mutation(async () => {
+      const { quickScan } = await import("./services/maintenance.js");
+      const projectRoot = process.cwd();
+      return quickScan(projectRoot);
+    }),
+
+    // Get project file structure
+    projectStructure: adminProcedure.query(async () => {
+      const { getProjectStructure } = await import("./services/maintenance.js");
+      return getProjectStructure(process.cwd());
+    }),
+
+    // AI deep diagnosis — full or specific files
+    aiDiagnose: adminProcedure
+      .input(z.object({
+        files: z.array(z.string()).optional(),
+        scope: z.enum(["all", "frontend", "backend", "routes", "services"]).default("all"),
+        userNote: z.string().max(2000).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { aiDiagnose, getProjectStructure } = await import("./services/maintenance.js");
+        const root = process.cwd();
+        let files = input.files || [];
+
+        if (files.length === 0) {
+          const structure = getProjectStructure(root);
+          const scopeFilter: Record<string, string> = {
+            all: "src/",
+            frontend: "src/pages/",
+            backend: "src/hayo/",
+            routes: "src/routes/",
+            services: "src/hayo/services/",
+          };
+          const prefix = scopeFilter[input.scope] || "src/";
+          files = structure.files.filter(f => f.path.startsWith(prefix)).slice(0, 10).map(f => f.path);
+        }
+
+        return aiDiagnose(files, root, input.userNote || "");
+      }),
+
+    // AI fix specific file + problem — with optional auto-apply
+    aiFix: adminProcedure
+      .input(z.object({
+        filePath: z.string(),
+        problem: z.string().min(5).max(2000),
+        autoApply: z.boolean().default(false),
+      }))
+      .mutation(async ({ input }) => {
+        const { aiFix } = await import("./services/maintenance.js");
+        return aiFix(input.filePath, process.cwd(), input.problem, input.autoApply);
+      }),
+
+    // Read any file content (admin full access)
+    readFile: adminProcedure
+      .input(z.object({ filePath: z.string() }))
+      .query(async ({ input }) => {
+        const { readFile } = await import("./services/maintenance.js");
+        return readFile(input.filePath, process.cwd());
+      }),
+
+    // Batch fix multiple files
+    batchFix: adminProcedure
+      .input(z.object({
+        fixes: z.array(z.object({ file: z.string(), problem: z.string() })).min(1).max(10),
+        autoApply: z.boolean().default(false),
+      }))
+      .mutation(async ({ input }) => {
+        const { batchAiFix } = await import("./services/maintenance.js");
+        return batchAiFix(input.fixes, process.cwd(), input.autoApply);
+      }),
+
+    // Restore file from backup
+    restoreBackup: adminProcedure
+      .input(z.object({ backupPath: z.string(), originalPath: z.string() }))
+      .mutation(async ({ input }) => {
+        const { restoreBackup } = await import("./services/maintenance.js");
+        return restoreBackup(input.backupPath, input.originalPath, process.cwd());
+      }),
+
+    // 🚀 Executive auto-execute: scan → diagnose → fix all automatically
+    autoExecute: adminProcedure
+      .input(z.object({
+        scope: z.enum(["all", "frontend", "backend", "services"]).default("all"),
+      }))
+      .mutation(async ({ input }) => {
+        const { autoExecute } = await import("./services/maintenance.js");
+        return autoExecute(process.cwd(), input.scope);
+      }),
+  }),
+
+  // ==================== Admin - Codes ====================
+  // (added to admin router via separate top-level for readability)
+  codes: router({
+    // Generate a new subscription code (admin only)
+    generate: adminProcedure
+      .input(z.object({
+        planId: z.number(),
+        durationDays: z.number().default(30),
+        note: z.string().optional(),
+        count: z.number().min(1).max(50).default(1),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const { db } = await import("@workspace/db");
+        const { subscriptionCodes } = await import("@workspace/db/schema");
+        const { randomBytes } = await import("crypto");
+
+        const generated: string[] = [];
+        for (let i = 0; i < input.count; i++) {
+          const code = `HAYO-${randomBytes(3).toString("hex").toUpperCase()}-${randomBytes(3).toString("hex").toUpperCase()}`;
+          await db.insert(subscriptionCodes).values({
+            code,
+            planId: input.planId,
+            durationDays: input.durationDays,
+            createdBy: ctx.user.id,
+            note: input.note || null,
+            isActive: true,
+          });
+          generated.push(code);
+        }
+        return { codes: generated };
+      }),
+
+    // List all codes (admin only)
+    list: adminProcedure.query(async () => {
+      const { db } = await import("@workspace/db");
+      const { subscriptionCodes, subscriptionPlans, users } = await import("@workspace/db/schema");
+      const { eq, desc } = await import("drizzle-orm");
+      return db.select({
+        id: subscriptionCodes.id,
+        code: subscriptionCodes.code,
+        planId: subscriptionCodes.planId,
+        durationDays: subscriptionCodes.durationDays,
+        note: subscriptionCodes.note,
+        isActive: subscriptionCodes.isActive,
+        usedAt: subscriptionCodes.usedAt,
+        expiresAt: subscriptionCodes.expiresAt,
+        createdAt: subscriptionCodes.createdAt,
+        planName: subscriptionPlans.displayName,
+        usedByEmail: users.email,
+      })
+        .from(subscriptionCodes)
+        .leftJoin(subscriptionPlans, eq(subscriptionCodes.planId, subscriptionPlans.id))
+        .leftJoin(users, eq(subscriptionCodes.usedBy, users.id))
+        .orderBy(desc(subscriptionCodes.createdAt));
+    }),
+
+    // Delete/deactivate a code
+    deactivate: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const { db } = await import("@workspace/db");
+        const { subscriptionCodes } = await import("@workspace/db/schema");
+        const { eq } = await import("drizzle-orm");
+        await db.update(subscriptionCodes).set({ isActive: false }).where(eq(subscriptionCodes.id, input.id));
+        return { success: true };
+      }),
+  }),
+
+  // ==================== Ethical Pentest Engine ====================
+  pentest: router({
+    // Return the per-host ownership token + how to publish it (web active scans).
+    getOwnershipToken: appBuilderProcedure
+      .input(z.object({ target: z.string().min(3).max(300) }))
+      .query(async ({ input, ctx }) => {
+        const { ownershipToken, normalizeHost, VERIFY_FILE_PATH, VERIFY_DNS_PREFIX } = await import("./pentest/authorization.js");
+        const host = normalizeHost(input.target);
+        const token = ownershipToken(ctx.user.id, host);
+        return {
+          host,
+          token,
+          file: { path: VERIFY_FILE_PATH, content: token },
+          dns: { type: "TXT", value: `${VERIFY_DNS_PREFIX}${token}` },
+        };
+      }),
+
+    // Authorized active web scan → unified, evidence-backed findings.
+    scanWeb: appBuilderProcedure
+      .input(z.object({
+        target: z.string().min(3).max(300),
+        authorized: z.boolean(),
+        // Optional credentials → authenticated scan of a login-gated target.
+        username: z.string().max(200).optional(),
+        password: z.string().max(200).optional(),
+        // Opt-in intrusive detection suite (smuggling/deserialization/proto-pollution).
+        // Requires an explicit liability affirmation in the UI.
+        aggressive: z.boolean().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized,
+          userId: ctx.user.id,
+          target: "web",
+          subject: input.target,
+          ip: ctx.req.ip,
+        });
+        if (!auth.allowed) {
+          throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح بفحص هذا الهدف", cause: { token: auth.token } });
+        }
+        const { runWebScan } = await import("./pentest/webEngine.js");
+        return runWebScan(input.target, { username: input.username, password: input.password, aggressive: input.aggressive });
+      }),
+
+    // Authorized Android (APK) scan over a decompiled session.
+    scanAndroid: appBuilderProcedure
+      .input(z.object({
+        sessionId: z.string().min(3).max(200),
+        authorized: z.boolean(),
+        // Optional captured HTTP traffic (e.g. from the Frida agent) → traffic DAST.
+        trafficLogs: z.array(z.object({
+          url: z.string(),
+          method: z.string(),
+          headers: z.record(z.string()).default({}),
+          body: z.string().optional(),
+          responseStatus: z.number().optional(),
+          responseBody: z.string().optional(),
+        })).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized, userId: ctx.user.id, target: "android", subject: input.sessionId, ip: ctx.req.ip,
+        });
+        if (!auth.allowed) throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح" });
+        const { runAndroidScan } = await import("./pentest/androidEngine.js");
+        return runAndroidScan(input.sessionId, { trafficLogs: input.trafficLogs });
+      }),
+
+    // Authorized wallet scan (public on-chain data only).
+    scanWallet: appBuilderProcedure
+      .input(z.object({
+        address: z.string().regex(/^(0x[a-fA-F0-9]{40}|T[1-9A-HJ-NP-Za-km-z]{25,})$/, "عنوان محفظة غير صالح (EVM 0x... أو TRON T...)"),
+        chain: z.enum(["ETH", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "BASE", "AVALANCHE", "FANTOM", "GNOSIS", "LINEA", "SCROLL", "ZKSYNC", "BLAST", "CRONOS", "CELO", "MANTLE", "MOONBEAM", "TRON"]).default("ETH"),
+        authorized: z.boolean(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await assertCredits(ctx.user, "reverse_analyze");
+        const { authorizeScan } = await import("./pentest/authorization.js");
+        const auth = await authorizeScan({
+          authorized: input.authorized, userId: ctx.user.id, target: "wallet", subject: input.address, ip: ctx.req.ip,
+        });
+        if (!auth.allowed) throw new TRPCError({ code: "FORBIDDEN", message: auth.reason || "غير مصرّح" });
+        if (input.chain === "TRON" || /^T[1-9A-HJ-NP-Za-km-z]{25,}$/.test(input.address)) {
+          const { runTronScan } = await import("./pentest/tronEngine.js");
+          const tr = await runTronScan(input.address);
+          return { address: input.address, chain: "TRON", ...tr };
+        }
+        const { runWalletScan } = await import("./pentest/walletEngine.js");
+        return runWalletScan(input.address, input.chain as any);
+      }),
+
+    // ── Hybrid dynamic analysis (local Frida companion agent) ──────────
+    // Pair a local agent run to a decompiled session; returns the run command.
+    startDynamic: appBuilderProcedure
+      .input(z.object({ sessionId: z.string().min(3).max(200), package: z.string().min(1).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        const { issueDynamicToken } = await import("./pentest/dynamic.js");
+        const { token, expiresAt } = issueDynamicToken(ctx.user.id, input.sessionId);
+        const server = (process.env.APP_URL || "").replace(/\/$/, "") || "https://<your-app-url>";
+        return {
+          token,
+          expiresAt,
+          // One-click: everything (device, frida-server, package) is auto-detected.
+          command: `python auto.py --token ${token}`,
+          manualCommand: `python agent.py --server ${server} --token ${token} --package ${input.package}`,
+          note: "الأسهل: انقر نقرًا مزدوجًا على HAYO-Dynamic.bat في مجلد pentest-agent والصق الرمز مرة واحدة — يكتشف المحاكي و frida-server واسم التطبيق تلقائيًا. أو شغّل الأمر أعلاه في المجلد نفسه. النتائج تُدمج في التقرير تلقائيًا.",
+        };
+      }),
+
+    // Fetch the dynamic findings the agent has posted for a session.
+    getDynamicResults: appBuilderProcedure
+      .input(z.object({ sessionId: z.string().min(3).max(200) }))
+      .query(async ({ input }) => {
+        const { getDynamicFindings } = await import("./pentest/dynamic.js");
+        const { summarizeThreat } = await import("./pentest/types.js");
+        const findings = getDynamicFindings(input.sessionId);
+        return { findings, summary: summarizeThreat(findings) };
+      }),
+  }),
+
+  // ==================== App Builds (EAS) ====================
+  builds: router({
+    // Create a new APK build
+    create: appBuilderProcedure
+      .input(z.object({
+        appName: z.string().min(2).max(60),
+        description: z.string().min(10).max(3000),
+        generatedCode: z.string().min(50),
+        iconUrl: z.string().url().optional(),
+        embeddedData: z.array(z.object({ filename: z.string(), content: z.string() })).optional(),
+        supabaseUrl: z.string().url().optional(),
+        supabaseKey: z.string().optional(),
+        customKeystoreBase64: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        // Charge build credits up front (admins bypass). Throws if out of credits.
+        await assertCredits(ctx.user, "app_build");
+        const { db } = await import("@workspace/db");
+        const { appBuilds } = await import("@workspace/db/schema");
+
+        // Insert record as pending
+        const [build] = await db.insert(appBuilds).values({
+          userId: ctx.user.id,
+          appName: input.appName,
+          description: input.description,
+          generatedCode: input.generatedCode,
+          status: "pending",
+          platform: "android",
+        }).returning();
+
+        // Kick off the EAS build asynchronously with AI review + retry
+        (async () => {
+          const { eq } = await import("drizzle-orm");
+          try {
+            await db.update(appBuilds).set({ status: "submitting", updatedAt: new Date() }).where(eq(appBuilds.id, build.id));
+
+            // Step 1: AI review code before submitting
+            const { createExpoProject, submitEASBuildWithRetry, aiReviewAndFix } = await import("./services/eas-builder.js");
+
+            // AI review and fix the code
+            const review = await aiReviewAndFix(input.generatedCode);
+            const fixedCode = review.fixedCode;
+
+            const { projectDir, slug } = await createExpoProject(input.appName, fixedCode, input.iconUrl, {
+              embeddedData: input.embeddedData,
+              supabaseUrl: input.supabaseUrl,
+              supabaseKey: input.supabaseKey,
+              customKeystoreBase64: input.customKeystoreBase64,
+            });
+
+            // Step 2: Submit with retry (up to 2 retries with AI fixes)
+            const result = await submitEASBuildWithRetry(projectDir, slug, fixedCode, 2);
+
+            await db.update(appBuilds).set({
+              status: "building",
+              expoJobId: result.expoJobId,
+              expoSlug: result.expoSlug,
+              buildLogsUrl: result.buildLogsUrl,
+              generatedCode: fs.existsSync(path.join(projectDir, "App.tsx"))
+                ? fs.readFileSync(path.join(projectDir, "App.tsx"), "utf-8")
+                : fixedCode,
+              updatedAt: new Date(),
+            }).where(eq(appBuilds.id, build.id));
+          } catch (err: any) {
+            await db.update(appBuilds).set({
+              status: "errored",
+              errorMessage: err?.message?.slice(0, 1000) || "خطأ غير معروف",
+              updatedAt: new Date(),
+            }).where(eq(appBuilds.id, build.id));
+          }
+        })();
+
+        return { buildId: build.id };
+      }),
+
+    // Check & sync build status from EAS
+    sync: protectedProcedure
+      .input(z.object({ buildId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const { db } = await import("@workspace/db");
+        const { appBuilds } = await import("@workspace/db/schema");
+        const { eq, and } = await import("drizzle-orm");
+
+        const [build] = await db.select().from(appBuilds)
+          .where(and(eq(appBuilds.id, input.buildId), eq(appBuilds.userId, ctx.user.id)))
+          .limit(1);
+
+        if (!build) throw new Error("البناء غير موجود");
+        if (!build.expoJobId) return build;
+        if (build.status === "finished" || build.status === "errored" || build.status === "cancelled") return build;
+
+        try {
+          const { checkEASBuildStatus } = await import("./services/eas-builder.js");
+          const status = await checkEASBuildStatus(build.expoJobId, build.expoSlug ?? undefined);
+          console.log(`[builds.sync] Build #${input.buildId} EAS status:`, JSON.stringify(status));
+
+          await db.update(appBuilds).set({
+            status: status.status,
+            downloadUrl: status.downloadUrl,
+            errorMessage: status.errorMessage,
+            updatedAt: new Date(),
+          }).where(eq(appBuilds.id, input.buildId));
+
+          const [updated] = await db.select().from(appBuilds).where(eq(appBuilds.id, input.buildId)).limit(1);
+          return updated;
+        } catch (syncErr: any) {
+          console.error(`[builds.sync] Error syncing build #${input.buildId}:`, syncErr?.message);
+          return build;
+        }
+      }),
+
+    // Get single build
+    get: protectedProcedure
+      .input(z.object({ buildId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const { db } = await import("@workspace/db");
+        const { appBuilds } = await import("@workspace/db/schema");
+        const { eq, and } = await import("drizzle-orm");
+
+        const [build] = await db.select().from(appBuilds)
+          .where(and(eq(appBuilds.id, input.buildId), eq(appBuilds.userId, ctx.user.id)))
+          .limit(1);
+        return build || null;
+      }),
+
+    // List user builds
+    list: protectedProcedure.query(async ({ ctx }) => {
+      const { db } = await import("@workspace/db");
+      const { appBuilds } = await import("@workspace/db/schema");
+      const { eq, desc } = await import("drizzle-orm");
+
+      return db.select().from(appBuilds)
+        .where(eq(appBuilds.userId, ctx.user.id))
+        .orderBy(desc(appBuilds.createdAt))
+        .limit(50);
+    }),
+
+    // Delete a build record (user can only delete their own)
+    delete: protectedProcedure
+      .input(z.object({ buildId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const { db } = await import("@workspace/db");
+        const { appBuilds } = await import("@workspace/db/schema");
+        const { eq, and } = await import("drizzle-orm");
+        await db.delete(appBuilds)
+          .where(and(eq(appBuilds.id, input.buildId), eq(appBuilds.userId, ctx.user.id)));
+        return { success: true };
+      }),
+
+    // Generate React Native code via AI
+    generateCode: protectedProcedure
+      .input(z.object({
+        appName: z.string(),
+        description: z.string(),
+        model: z.enum(["claude", "deepseek"]).default("claude"),
+      }))
+      .mutation(async ({ input }) => {
+        const systemPrompt = `أنت مطور React Native/Expo محترف من المستوى العالمي. مهمتك توليد كود تطبيق أندرويد كامل وقابل للتشغيل باستخدام Expo SDK 52.
+
+القواعد الصارمة — التزم بها 100%:
+1. أعد ملف App.tsx فقط — لا شرح، لا markdown، لا backticks، الكود مباشرة
+2. الحزم المتاحة المثبّتة فعلاً — استخدم أي منها حسب الحاجة:
+   - react-native: View, Text, StyleSheet, TouchableOpacity, FlatList, ScrollView, TextInput, Image, Modal, Switch, Animated, Alert, Dimensions, Platform, SafeAreaView, KeyboardAvoidingView, ActivityIndicator, Linking
+   - expo-status-bar: import { StatusBar } from 'expo-status-bar'
+   - @expo/vector-icons: Ionicons, MaterialIcons, FontAwesome, MaterialCommunityIcons, Feather
+   - expo-clipboard: import * as Clipboard from 'expo-clipboard'
+   - expo-linear-gradient: import { LinearGradient } from 'expo-linear-gradient'
+   - expo-haptics: import * as Haptics from 'expo-haptics'
+   - expo-blur: import { BlurView } from 'expo-blur'
+   - @react-native-async-storage/async-storage: import AsyncStorage from '@react-native-async-storage/async-storage'
+   - expo-file-system: import * as FileSystem from 'expo-file-system' ← لقراءة/كتابة ملفات
+   - expo-sharing: import * as Sharing from 'expo-sharing' ← لمشاركة ملفات
+   - expo-image-picker: import * as ImagePicker from 'expo-image-picker' ← لاختيار صور
+   - expo-camera: import { CameraView, useCameraPermissions } from 'expo-camera' ← للكاميرا
+   - expo-location: import * as Location from 'expo-location' ← للموقع GPS
+   - expo-notifications: import * as Notifications from 'expo-notifications' ← للإشعارات
+   - expo-device: import * as Device from 'expo-device'
+   - expo-sensors: import { Accelerometer, Gyroscope } from 'expo-sensors'
+   - expo-web-browser: import * as WebBrowser from 'expo-web-browser' ← لفتح روابط
+   - expo-linking: import * as Linking from 'expo-linking'
+   - React hooks: useState, useEffect, useRef, useCallback, useMemo
+   - fetch() API: لجلب بيانات من الإنترنت (أخبار، طقس، API خارجية)
+3. ممنوع: react-navigation, expo-router, أو حزم غير مذكورة أعلاه
+4. كل شيء في ملف واحد App.tsx — النافذات المختلفة عبر useState وليس navigation
+5. الكود TypeScript صحيح تماماً
+6. تصميم احترافي فاخر: ألوان متناسقة، تدرجات، ظلال، انتقالات سلسة، RTL support
+7. ابدأ بـ: import React, { ... } from 'react';
+8. أضف تفاعلية حقيقية وكاملة — ليس واجهة ثابتة
+9. إذا التطبيق يحتاج بيانات من الإنترنت: استخدم fetch() مع try/catch و loading state
+10. إذا التطبيق يحتاج حفظ بيانات محلياً: استخدم AsyncStorage
+11. قواعد لتجنب الـ Crash:
+   - لا تستخدم setInterval/setTimeout خارج useEffect — نظّف دائماً في cleanup
+   - لا تستخدم Animated.Value خارج useRef
+   - ممنوع expo-font أو useFonts
+   - خطوط آمنة فقط: 'sans-serif', 'serif', 'monospace'
+   - StatusBar من expo-status-bar وليس react-native
+   - Clipboard من expo-clipboard وليس react-native`;
+
+        const userPrompt = `اسم التطبيق: ${input.appName}
+الوصف التفصيلي: ${input.description}
+
+المطلوب: كود App.tsx كامل لتطبيق React Native/Expo. أعد الكود فقط بدون أي شرح أو markdown.`;
+
+        let code = "";
+
+        if (input.model === "deepseek") {
+          // DeepSeek via direct API (OpenAI-compatible)
+          const deepseekKey = process.env.DEEPSEEK_API_KEY;
+          if (!deepseekKey) throw new Error("DEEPSEEK_API_KEY غير مضبوط");
+          const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
             method: "POST",
             headers: {
               "Authorization": `Bearer ${deepseekKey}`,
@@ -3758,4 +4772,3 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
 });
 
 export type AppRouter = typeof appRouter;
-
