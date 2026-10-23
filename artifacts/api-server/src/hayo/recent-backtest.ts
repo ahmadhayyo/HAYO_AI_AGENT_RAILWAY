@@ -80,7 +80,7 @@ function replayPair(
   const traps = new Map<number, "BUY" | "SELL">();
   // Candidates from one whole-series pass, each confirmed with the exact live
   // call (lastBarTrap on the 600 closed bars the bot holds) — no lookahead.
-  if (modelId === "fast") for (const e of detectLiquidityTraps(low)) {
+  if (modelId === "fast") for (const e of detectLiquidityTraps(low).filter(e => e.kind === "trap")) {
     const live = lastBarTrap(low.slice(Math.max(0, e.index - 599), e.index + 1));
     if (live) traps.set(e.index, live.dir);
   }
@@ -186,4 +186,5 @@ export function margin95(t: Tally): number | null {
   const r = t.win / d;
   return 196 * Math.sqrt((r * (1 - r)) / d);
 }
+
 

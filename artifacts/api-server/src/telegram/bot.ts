@@ -11,7 +11,8 @@ import { renderChartSnapshot } from "../hayo/services/chart-snapshot";
 import { getTwelveDataKey, markKeyExhausted, isRateLimitError, rotateToNextKey, checkAndMarkIfDailyExhausted, getKeyStats } from "../lib/twelvedata-keys";
 import { fetchOhlcFallback, dropFormingCandle, assessData, fetchRealtimePrice } from "../hayo/market-data";
 import { weightedVerdict, WEIGHT_MODELS, type WeightedVerdict } from "../hayo/weights-model";
-import { lastBarTrap } from "../hayo/liquidity-trap";
+import { lastBarBoxOrTrap, lastBarTrap } from "../hayo/liquidity-trap";
+import { lastBarTmaSrSignal, type TmaSrBar } from "../hayo/tma-sr-strategy";
 import { decideSignal, trapAgreement, TRAP_POLICY, WEIGHTS_MIN_GRADE, minGradeFor, setFastGradeOverride, type MinGrade } from "../hayo/signal-policy";
 import { runRecentBacktest, winRate, netStakes, margin95, type BacktestResult } from "../hayo/recent-backtest";
 import { enqueueEaSignal, enqueueEaMark, getEaSettings, updateEaSettings, regenerateEaToken, setEaNotifier, TP_R } from "../hayo/ea-bridge";
@@ -59,9 +60,9 @@ const PAIRS: Record<string, PairInfo> = {
 // TwelveData interval config per bot timeframe key
 interface TfConfig { interval: string; outputsize: number; label: string }
 const TIMEFRAMES: Record<string, TfConfig> = {
-  "1m":  { interval: "1min",  outputsize: 600, label: "1 دقيقة"  }, // 600: liquidity-trap engine warm-up
-  "5m":  { interval: "5min",  outputsize: 250, label: "5 دقائق"  },
-  "15m": { interval: "15min", outputsize: 250, label: "15 دقيقة" },
+  "1m":  { interval: "1min",  outputsize: 900, label: "1 دقيقة"  }, // MTF TMA/SR history + liquidity-trap warm-up
+  "5m":  { interval: "5min",  outputsize: 450, label: "5 دقائق"  },
+  "15m": { interval: "15min", outputsize: 300, label: "15 دقيقة" },
   "30m": { interval: "30min", outputsize: 250, label: "30 دقيقة" },
   "1h":  { interval: "1h",    outputsize: 250, label: "ساعة"     },
   "4h":  { interval: "4h",    outputsize: 250, label: "4 ساعات"  },
@@ -79,6 +80,7 @@ interface AutoConfig {
   useAI: boolean;             // true: AI plurality decides; false: technical-only signals
   binary: boolean;            // binary-options mode: CALL/PUT + expiry, no SL/TP, no spread gate
   binaryExpiry: number;       // expiry in candles (3/5/7/10); 0 = auto (decided by the analysis)
+  binaryUseWeights: boolean;   // optionally add the legacy weighting strategy to the two indicator engines
 }
 
 const defaultAutoConfig: AutoConfig = {
@@ -87,13 +89,17 @@ const defaultAutoConfig: AutoConfig = {
   minAIConfidence: 70,
   pairs: Object.keys(PAIRS),
   timeframes: ["15m", "1h"],
-  intervalMinutes: 30,
+  intervalMinutes: 1,
   useAI: true,
   binary: false,
   binaryExpiry: 0,
+  binaryUseWeights: false,
 };
 /** Binary trade still running per pair:tf (a new one opens only after it expires). */
 const binaryBusyUntil = new Map<string, number>();
+// Fusion breaker-box/trap signals are deduplicated per strategy and closed bar;
+// each strategy has its own expiry lock so one engine never masks another.
+const fusionSignalSeenAt = new Map<string, number>();
 // A weights signal claims its pair+model until the trade expires, so two scans
 // running at once (manual + automatic, or convergence + auto) never send it twice.
 const weightedClaims = new Map<string, number>();
@@ -245,24 +251,28 @@ function autoMenuKeyboard(): TelegramBot.InlineKeyboardMarkup {
           { text: `${c.binaryExpiry===7?"✅ ":""}7`, callback_data: "auto:exp:7" },
           { text: `${c.binaryExpiry===10?"✅ ":""}10 شموع`, callback_data: "auto:exp:10" },
         ],
+        [{ text: "📡 محركا المؤشر: TMA/SR + الصناديق/الفخ (مستقلان)", callback_data: "auto:noop" }],
+        [{ text: `${c.binaryUseWeights ? "✅ الأوزان مضافة" : "➕ إضافة نظام الأوزان"}`, callback_data: "auto:binweights:toggle" }],
       ] : []),
-      [{ text: "━━ نوع التحليل ━━", callback_data: "auto:noop" }],
-      [
-        { text: `${c.useAI ? "✅ " : ""}🤖 مع AI`, callback_data: "auto:ai:on" },
-        { text: `${!c.useAI ? "✅ " : ""}⚡ بدون AI (فني)`, callback_data: "auto:ai:off" },
-      ],
-      [{ text: `━━ الحد الأدنى للتوافق الفني: ${c.minConsensus}% ━━`, callback_data: "auto:noop" }],
-      [
-        { text: `${c.minConsensus===65?"✅ ":""}65%`, callback_data: "auto:cons:65" },
-        { text: `${c.minConsensus===75?"✅ ":""}75%`, callback_data: "auto:cons:75" },
-        { text: `${c.minConsensus===85?"✅ ":""}85%`, callback_data: "auto:cons:85" },
-      ],
-      [{ text: `━━ ثقة AI الأدنى: ${c.minAIConfidence}% ━━`, callback_data: "auto:noop" }],
-      [
-        { text: `${c.minAIConfidence===60?"✅ ":""}60%`, callback_data: "auto:aiconf:60" },
-        { text: `${c.minAIConfidence===70?"✅ ":""}70%`, callback_data: "auto:aiconf:70" },
-        { text: `${c.minAIConfidence===80?"✅ ":""}80%`, callback_data: "auto:aiconf:80" },
-      ],
+      ...(c.binary ? [] : [
+        [{ text: "━━ نوع التحليل ━━", callback_data: "auto:noop" }],
+        [
+          { text: `${c.useAI ? "✅ " : ""}🤖 مع AI`, callback_data: "auto:ai:on" },
+          { text: `${!c.useAI ? "✅ " : ""}⚡ بدون AI (فني)`, callback_data: "auto:ai:off" },
+        ],
+        [{ text: `━━ الحد الأدنى للتوافق الفني: ${c.minConsensus}% ━━`, callback_data: "auto:noop" }],
+        [
+          { text: `${c.minConsensus===65?"✅ ":""}65%`, callback_data: "auto:cons:65" },
+          { text: `${c.minConsensus===75?"✅ ":""}75%`, callback_data: "auto:cons:75" },
+          { text: `${c.minConsensus===85?"✅ ":""}85%`, callback_data: "auto:cons:85" },
+        ],
+        [{ text: `━━ ثقة AI الأدنى: ${c.minAIConfidence}% ━━`, callback_data: "auto:noop" }],
+        [
+          { text: `${c.minAIConfidence===60?"✅ ":""}60%`, callback_data: "auto:aiconf:60" },
+          { text: `${c.minAIConfidence===70?"✅ ":""}70%`, callback_data: "auto:aiconf:70" },
+          { text: `${c.minAIConfidence===80?"✅ ":""}80%`, callback_data: "auto:aiconf:80" },
+        ],
+      ]),
       [{ text: `━━ الأزواج المراقَبة (${allPairsCount}/${totalPairs}) ━━`, callback_data: "auto:noop" }],
       [{ text: `${allPairsCount===totalPairs?"✅ ":""}تحديد/إلغاء الكل`, callback_data: "auto:pair:ALL" }],
       [pb("EURUSD"), pb("USDJPY"), pb("GBPUSD")],
@@ -1096,7 +1106,7 @@ function localAndUtc(ms: number): string {
 // the full analysis + chart stay one tap away behind "📋 التحليل الكامل".
 interface CompactSignal {
   title: string; pair: string; tf: string; dir: "BUY" | "SELL";
-  entry: number; fmt: (n: number) => string; strengthPct: number; strengthNote?: string; at: number;
+  entry: number; fmt: (n: number) => string; strengthPct?: number; strengthNote?: string; at: number;
   binary?: { candles: number; tfMin: number };
   forex?: { sl: number };
 }
@@ -1115,7 +1125,7 @@ function compactSignalText(o: CompactSignal): string {
     lines.push(`🛑 وقف الخسارة: <code>${o.fmt(o.forex.sl)}</code>`);
     TP_R.forEach((m, i) => lines.push(`🎯 الهدف ${i + 1}: <code>${o.fmt(o.entry + s * m * r)}</code>`));
   }
-  lines.push(`💪 قوة الإشارة: <b>${o.strengthPct}%</b>${o.strengthNote ? ` <i>${o.strengthNote}</i>` : ""}`);
+  if (Number.isFinite(o.strengthPct)) lines.push(`💪 قوة الإشارة: <b>${o.strengthPct}%</b>${o.strengthNote ? ` <i>${o.strengthNote}</i>` : ""}`);
   lines.push(`⏱ ${localAndUtc(o.at)}`);
   return lines.join("\n");
 }
@@ -1249,7 +1259,7 @@ async function ownerUserId(): Promise<number | null> {
 
 const journalDedup = new Map<string, number>();
 async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string, convergenceProfile?: string, extraNote?: string): Promise<number | null> {
-  const isBinary = source === "tg-bin" || source === "tg-wgt" || source === "tg-trap" || source === "tg-conv-bin" || source === "tg-conv-shadow";
+  const isBinary = source === "tg-bin" || source === "tg-wgt" || source === "tg-trap" || source === "tg-box" || source === "tg-tmasr" || source === "tg-conv-bin" || source === "tg-conv-shadow";
   if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return null;
   const key = `${pair}|${interval}|${rec.dir}|${source}`;
   const dedupMs = isBinary ? 60 * 1000 : 30 * 60 * 1000;
@@ -1443,16 +1453,98 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
         const label = `${PAIRS[pair].label} ${tf}`;
         // Binary: a new trade may open once the previous one expired.
         const tfMin = TF_MINUTES[tf] ?? 1;
-        const busy = autoConfig.binary
-          ? Date.now() < (binaryBusyUntil.get(key) ?? 0)
-          : Date.now() - (lastSignalTimeLocal.get(key) || 0) < SIGNAL_COOLDOWN_MS;
+        const busy = !autoConfig.binary
+          ? Date.now() - (lastSignalTimeLocal.get(key) || 0) < SIGNAL_COOLDOWN_MS
+          : false; // binary strategy locks are isolated below per engine
         if (busy) {
           summary.lines.push(`⏸️ ${label}: ${autoConfig.binary ? "الصفقة الثنائية السابقة لم تنتهِ بعد" : "أُرسلت إشارة خلال آخر 4 ساعات"}`);
           continue;
         }
         try {
           if (autoConfig.binary) {
-            // Binary options run on the validated weighting model (1m / 5m).
+            // Independent port of the indicator's breaker-box engine. A stretched
+            // entry is classified as the opposite liquidity-trap signal by the
+            // source rule (Trap_Hide_Original=true); otherwise it is the box entry.
+            // Both are evaluated on the latest fully closed candle and never wait
+            // for the weighted model or its AI gate.
+            const fusionData = await fetchMarket(pair, TIMEFRAMES[tf]);
+            summary.checked++;
+            const bars = Array.isArray(fusionData.candles) ? fusionData.candles : [];
+            if (!(fusionData as any).poorData && bars.length >= 150) {
+              const event = lastBarBoxOrTrap(bars, { useHz: true, point: Math.pow(10, -PAIRS[pair].decimals) });
+              if (event) {
+                const stratKey = `${key}:fusion-${event.kind}`;
+                const candleTime = Number(bars[bars.length - 1]?.time) * 1000;
+                if (candleTime > 0 && fusionSignalSeenAt.get(stratKey) !== candleTime && Date.now() >= (binaryBusyUntil.get(stratKey) ?? 0)) {
+                  const expiry = autoConfig.binaryExpiry || (event.kind === "trap" ? 1 : 5);
+                  const strategyName = event.kind === "trap" ? "فخ تجميع السيولة" : "صناديق كاسر الاتجاه";
+                  const at = typeof (fusionData as any).liveAt === "number" ? (fusionData as any).liveAt : Date.now();
+                  const rec: any = { dir: event.dir, entry: fusionData.price, sl: fusionData.price, tp: fusionData.price, conf: Math.round(event.boxScore), expiry };
+                  await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, event.kind === "trap" ? "tg-trap" : "tg-box", undefined,
+                    `${strategyName};boxScore:${Math.round(event.boxScore)};vc:${event.vc.toFixed(2)}`);
+                  const chart = await renderPairChart(pair, tf, fusionData);
+                  const fullText = [
+                    `<b>🎰 ${strategyName} — المحرك الثاني</b>`,
+                    `${PAIRS[pair].label} | ${TIMEFRAMES[tf].label}`,
+                    `الإشارة من آخر شمعة مكتملة.`,
+                    `نوع الإشارة: ${event.kind === "trap" ? "انعكاس الفخ عن اتجاه الصندوق" : "دخول الصندوق مع اتجاهه"}.`,
+                    `درجة شروط الصندوق: ${Math.round(event.boxScore)} من 100 | قيمة VC: ${event.vc.toFixed(2)}`,
+                    `مدة الصفقة: ${expiry} شموع.`,
+                  ].join("\n");
+                  await sendCompactSignal(bot, ownerChatId, {
+                    title: `🎰 ${strategyName} — المحرك الثاني`, pair, tf, dir: event.dir,
+                    entry: fusionData.price, fmt: fusionData.fmt, strengthPct: Math.round(event.boxScore),
+                    strengthNote: `درجة شروط ${event.kind === "trap" ? "الفخ" : "الصندوق"}`, at,
+                    binary: { candles: expiry, tfMin },
+                  }, fullText, chart, `📸 ${PAIRS[pair].label} | ${tf} — ${strategyName}`);
+                  fusionSignalSeenAt.set(stratKey, candleTime);
+                  binaryBusyUntil.set(stratKey, Date.now() + expiry * tfMin * 60_000);
+                  summary.sent++;
+                  summary.lines.push(`🚨 ${label}: ${strategyName} — ${event.dir === "BUY" ? "شراء" : "بيع"} — أُرسلت`);
+                }
+              }
+            }
+            // Engine 1: TMA band excursion + active MTF horizontal/trend S/R.
+            // It is scanned and throttled independently from the SMC engine.
+            const srKeys = ["1m", "5m", "15m"] as const;
+            const srData = await Promise.all(srKeys.map(k => tf === k ? Promise.resolve(fusionData) : fetchMarket(pair, TIMEFRAMES[k])));
+            if (!(fusionData as any).poorData && srData.every(d => !(d as any).poorData)) {
+              const asTmaBars = (d: any): TmaSrBar[] => (d.candles || []).map((c: any) => ({
+                open: c.open, high: c.high, low: c.low, close: c.close, time: Number(c.time) * 1000,
+              }));
+              const event = lastBarTmaSrSignal(asTmaBars(fusionData), asTmaBars(srData[0]), asTmaBars(srData[1]), asTmaBars(srData[2]));
+              if (event) {
+                const stratKey = `${key}:fusion-tma-sr`;
+                const candleTime = Number(bars[bars.length - 1]?.time) * 1000;
+                if (candleTime > 0 && fusionSignalSeenAt.get(stratKey) !== candleTime && Date.now() >= (binaryBusyUntil.get(stratKey) ?? 0)) {
+                  const expiry = autoConfig.binaryExpiry || 5;
+                  const at = typeof (fusionData as any).liveAt === "number" ? (fusionData as any).liveAt : Date.now();
+                  const rec: any = { dir: event.dir, entry: fusionData.price, sl: fusionData.price, tp: fusionData.price, conf: 0, expiry };
+                  await journalRecommendation(pair, TIMEFRAMES[tf].interval, rec, "tg-tmasr", undefined,
+                    `TMA/SR;level:${event.level};levelType:${event.levelType};adx:${event.adx.toFixed(1)}`);
+                  const chart = await renderPairChart(pair, tf, fusionData);
+                  const fullText = [
+                    `<b>🎰 TMA + S/R Confluence — المحرك الأول</b>`,
+                    `${PAIRS[pair].label} | ${TIMEFRAMES[tf].label}`,
+                    `إشارة من آخر شمعة مكتملة بعد امتداد قناة TMA وملامسة ${event.levelType === "horizontal" ? "مستوى أفقي" : "خط اتجاه"}.`,
+                    `مستوى التوافق: <code>${fusionData.fmt(event.level)}</code> | حد TMA: <code>${fusionData.fmt(event.band)}</code>`,
+                    `ADX(${10}): ${event.adx.toFixed(1)} | EMA(50) يحدد اتجاه الإشارة عند تجاوز ADX مستوى 20.`,
+                    `مدة الصفقة: ${expiry} شموع.`,
+                  ].join("\n");
+                  await sendCompactSignal(bot, ownerChatId, {
+                    title: "🎰 TMA + S/R Confluence — المحرك الأول", pair, tf, dir: event.dir,
+                    entry: fusionData.price, fmt: fusionData.fmt, at,
+                    binary: { candles: expiry, tfMin },
+                  }, fullText, chart, `📸 ${PAIRS[pair].label} | ${tf} — TMA/S-R Confluence`);
+                  fusionSignalSeenAt.set(stratKey, candleTime);
+                  binaryBusyUntil.set(stratKey, Date.now() + Math.max(expiry, 20) * tfMin * 60_000);
+                  summary.sent++;
+                  summary.lines.push(`🚨 ${label}: TMA + S/R — ${event.dir === "BUY" ? "شراء" : "بيع"} — أُرسلت`);
+                }
+              }
+            }
+            if (!autoConfig.binaryUseWeights) continue;
+            // Binary options can optionally include the legacy weighting model.
             const modelId = BINARY_MODEL_BY_TF[tf];
             if (!modelId || !WEIGHT_MODELS[modelId]) {
               summary.lines.push(`➖ ${label}: الخيارات الثنائية تعمل بنظام الأوزان على فريم 1م و5م فقط`);
@@ -1462,13 +1554,14 @@ async function runAutoScan(bot: TelegramBot, ownerChatId: number, lastSignalTime
               summary.lines.push(`➖ ${label}: ⚖️ نموذج الأوزان مدرَّب على العملات والذهب فقط`);
               continue;
             }
+            if (Date.now() < (binaryBusyUntil.get(`${key}:weights`) ?? 0)) continue;
             // the three timeframes in parallel (mostly cache hits) so a full
             // scan fits in about a minute and every 1m candle gets checked
             const datas: any[] = await Promise.all(WEIGHT_MODELS[modelId].tfs.map(k => fetchMarket(pair, TIMEFRAMES[k])));
             summary.checked++;
             const r = await weightedSignal(bot, ownerChatId, pair, modelId, datas, WEIGHT_MODELS[modelId].tfs,
               { useAI, summary, title: "🎰 خيار ثنائي — نظام الأوزان", expiryOverride: autoConfig.binaryExpiry || undefined, origin: "auto" });
-            if (r.sent) binaryBusyUntil.set(key, Date.now() + r.expiryMs);
+            if (r.sent) binaryBusyUntil.set(`${key}:weights`, Date.now() + r.expiryMs);
             continue;
           }
           await new Promise(r => setTimeout(r, 1500)); // rate limit between requests
@@ -1536,8 +1629,9 @@ function restartAutoScanner(bot: TelegramBot, ownerChatId: number, lastSignalTim
     autoScanTimer = null;
   }
   if (!autoConfig.enabled) return;
-  const ms = autoConfig.intervalMinutes * 60 * 1000;
-  console.log(`[AutoScan] Started — interval ${autoConfig.intervalMinutes}min, pairs: ${autoConfig.pairs.join(",")}, TFs: ${autoConfig.timeframes.join(",")}`);
+  const interval = autoConfig.binary ? 1 : autoConfig.intervalMinutes;
+  const ms = interval * 60 * 1000;
+  console.log(`[AutoScan] Started — interval ${interval}min, pairs: ${autoConfig.pairs.join(",")}, TFs: ${autoConfig.timeframes.join(",")}`);
   // Run once immediately
   setTimeout(() => runAutoScan(bot, ownerChatId, lastSignalTimeLocal), 2000);
   autoScanTimer = setInterval(() => runAutoScan(bot, ownerChatId, lastSignalTimeLocal), ms);
@@ -2869,12 +2963,18 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
     if (data === "auto:mode:forex" || data === "auto:mode:binary") {
       autoConfig.binary = data === "auto:mode:binary";
+      if (autoConfig.binary) autoConfig.intervalMinutes = 1;
       await sendAutoMenu(chatId, msgId);
       return;
     }
     if (data.startsWith("auto:exp:")) {
       const n = parseInt(data.split(":")[2]);
       if ([0, 3, 5, 7, 10].includes(n)) autoConfig.binaryExpiry = n;
+      await sendAutoMenu(chatId, msgId);
+      return;
+    }
+    if (data === "auto:binweights:toggle") {
+      autoConfig.binaryUseWeights = !autoConfig.binaryUseWeights;
       await sendAutoMenu(chatId, msgId);
       return;
     }
@@ -2915,7 +3015,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     }
 
     if (data.startsWith("auto:interval:")) {
-      autoConfig.intervalMinutes = parseInt(data.split(":")[2]);
+      autoConfig.intervalMinutes = autoConfig.binary ? 1 : parseInt(data.split(":")[2]);
       if (autoConfig.enabled) restartAutoScanner(bot, ownerChatId, lastSignalTimeLocal);
       await sendAutoMenu(chatId, msgId);
       return;
@@ -3564,4 +3664,5 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
   return bot;
 }
+
 
