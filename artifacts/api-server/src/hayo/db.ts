@@ -443,10 +443,10 @@ export async function getJournalList(limit = 50, userId?: number | null): Promis
  */
 export async function getJournalStats(userId?: number | null, kind: "forex" | "binary" | "weights" | "trap" | "all" = "forex"): Promise<any> {
   if (!db) return null;
-  const kindSql = kind === "binary" ? sql`"source" = 'tg-bin'`
+  const kindSql = kind === "binary" ? sql`"source" IN ('tg-bin', 'tg-conv-bin')`
     : kind === "weights" ? sql`"source" = 'tg-wgt'`
     : kind === "trap" ? sql`"source" = 'tg-trap'`
-    : kind === "forex" ? sql`"source" NOT IN ('tg-bin', 'tg-wgt', 'tg-trap')`
+    : kind === "forex" ? sql`"source" NOT IN ('tg-bin', 'tg-wgt', 'tg-trap', 'tg-conv-bin', 'tg-conv-shadow')`
     : sql`TRUE`;
   const whereClause = userId != null ? sql`WHERE "userId" = ${userId} AND ${kindSql}` : sql`WHERE ${kindSql}`;
   const res: any = await db.execute(sql`
@@ -482,6 +482,24 @@ export async function getJournalStats(userId?: number | null, kind: "forex" | "b
     totalR: Number((grossWin - grossLoss).toFixed(2)),
     byPair,
   };
+}
+
+/** Latest closed live outcomes for one versioned convergence profile. */
+export async function getConvergenceGateStats(userId: number | null | undefined, profile: string): Promise<{ wins: number; losses: number } | null> {
+  if (!db) return null;
+  const ownerClause = userId != null ? sql`AND "userId" = ${userId}` : sql``;
+  const marker = `%convergence:${profile}`;
+  const res: any = await db.execute(sql`
+    SELECT count(*) FILTER (WHERE "status" = 'win') AS wins,
+           count(*) FILTER (WHERE "status" = 'loss') AS losses
+    FROM (
+      SELECT "status" FROM "signalJournal"
+      WHERE "source" IN ('tg-conv-bin', 'tg-conv-shadow') AND "note" LIKE ${marker}
+        AND "status" IN ('win','loss') ${ownerClause}
+      ORDER BY "closedAt" DESC LIMIT 30
+    ) recent`);
+  const row = (res.rows ?? res ?? [])[0] || {};
+  return { wins: Number(row.wins ?? 0), losses: Number(row.losses ?? 0) };
 }
 
 export async function seedDefaultPlans(): Promise<void> {
