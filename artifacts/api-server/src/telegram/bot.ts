@@ -98,8 +98,8 @@ const binaryBusyUntil = new Map<string, number>();
 // running at once (manual + automatic, or convergence + auto) never send it twice.
 const weightedClaims = new Map<string, number>();
 
-/** Binary payout assumed for the journal's R and break-even (override: HAYO_BINARY_PAYOUT=0.8). */
-const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.85);
+/** Binary payout used for simulated journal R and break-even; defaults to the stated 83%. */
+const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.83);
 const TF_MINUTES: Record<string, number> = { "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440 };
 
 let autoConfig: AutoConfig = { ...defaultAutoConfig };
@@ -512,52 +512,6 @@ function calcConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; 
   const pct = directional ? Math.round(dom / directional * 100) : 0;
   if (buys === sells || dom < MIN_AGREEING) return { direction:"NEUTRAL", pct, buys, sells };
   return { direction: buys > sells ? "BUY" : "SELL", pct, buys, sells };
-}
-
-/**
- * Convergence uses independent evidence families rather than treating every
- * indicator as an independent vote. Require broad agreement plus matching
- * trend and momentum families; price-action signals can veto a crowded setup.
- */
-function calcConvergenceConsensus(strategies: Sig[]): { direction: "BUY"|"SELL"|"NEUTRAL"; pct: number; buys: number; sells: number } {
-  const base = calcConsensus(strategies);
-  const active = strategies.filter(s => s.signal !== "NEUTRAL").length;
-  if (base.direction === "NEUTRAL" || active < 6 || base.pct < 70) {
-    return { ...base, direction: "NEUTRAL" };
-  }
-  const directionOf = (ids: string[], minVotes: number): "BUY" | "SELL" | "NEUTRAL" => {
-    const group = strategies.filter(s => ids.includes(s.id) && s.signal !== "NEUTRAL");
-    const buy = group.filter(s => s.signal === "BUY").length;
-    const sell = group.length - buy;
-    const dominant = Math.max(buy, sell);
-    if (group.length < minVotes || dominant / group.length < 0.67 || buy === sell) return "NEUTRAL";
-    return buy > sell ? "BUY" : "SELL";
-  };
-  const trend = directionOf(["trend_following", "adx_trend", "market_structure"], 2);
-  const momentum = directionOf(["macd_crossover", "stochastic", "momentum_roc", "rsi_divergence"], 2);
-  const priceAction = directionOf(["breakout", "support_resistance", "pivot_bounce", "fibonacci", "candlestick"], 2);
-  if (trend === "NEUTRAL" || momentum === "NEUTRAL" || trend !== momentum || trend !== base.direction) {
-    return { ...base, direction: "NEUTRAL" };
-  }
-  if (priceAction !== "NEUTRAL" && priceAction !== trend) return { ...base, direction: "NEUTRAL" };
-  return { ...base, direction: trend };
-}
-
-/** Do not enter directly into the nearest prior-session pivot against the trade. */
-function nearOpposingPivot(data: any, dir: "BUY" | "SELL"): number | null {
-  const atr = Number(data?.ATR), price = Number(data?.price), pivots = data?.PIVOTS;
-  if (!(atr > 0) || !Number.isFinite(price) || !pivots) return null;
-  const candidates = dir === "BUY" ? [pivots.r1, pivots.r2, pivots.r3] : [pivots.s1, pivots.s2, pivots.s3];
-  const ahead = candidates.map(Number).filter(x => Number.isFinite(x) && (dir === "BUY" ? x > price : x < price));
-  if (!ahead.length) return null;
-  const distance = Math.min(...ahead.map(x => Math.abs(x - price)));
-  return distance <= atr * 0.45 ? distance / atr : null;
-}
-
-function closedBarAgeMs(data: any, tfMin: number): number {
-  const last = data?.candles?.[data.candles.length - 1];
-  if (!last || !Number.isFinite(Number(last.time))) return Infinity;
-  return Date.now() - (Number(last.time) * 1000 + tfMin * 60_000);
 }
 
 // ─── Economic News Fetcher (cached 30 min) ───────────────────────────
@@ -1248,24 +1202,23 @@ async function ownerUserId(): Promise<number | null> {
 }
 
 const journalDedup = new Map<string, number>();
-async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string, convergenceProfile?: string): Promise<void> {
+async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string, extraNote?: string): Promise<number | null> {
   const isBinary = source === "tg-bin" || source === "tg-wgt" || source === "tg-trap" || source === "tg-conv-bin" || source === "tg-conv-shadow";
-  if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return;
+  if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return null;
   const key = `${pair}|${interval}|${rec.dir}|${source}`;
   const dedupMs = isBinary ? 60 * 1000 : 30 * 60 * 1000;
-  if (Date.now() - (journalDedup.get(key) ?? 0) < dedupMs) return; // same setup re-sent
+  if (Date.now() - (journalDedup.get(key) ?? 0) < dedupMs) return null; // same setup re-sent
   journalDedup.set(key, Date.now());
   try {
     const { insertSignalJournal, ensureSignalJournalSchema } = await import("../hayo/db.js");
     await ensureSignalJournalSchema();
-    await insertSignalJournal({
+    const journalId = await insertSignalJournal({
       userId: await ownerUserId(), pair, timeframe: interval, direction: rec.dir,
       entry: rec.entry, stopLoss: isBinary ? rec.entry : rec.sl, takeProfit: isBinary ? null : rec.tp, confidence: rec.conf, source,
-      note: source === "tg-conv-bin" || source === "tg-conv-shadow"
-        ? `binary:${rec.expiry ?? 5};convergence:${convergenceProfile ?? `${convergenceConfig.preset}-${convergenceConfig.useAI ? "ai" : "tech"}:v1:${rec.expiry ?? 5}`}`
-        : isBinary ? `binary:${rec.expiry ?? 5}` : rec.levelsFrom === "AI" ? "levels: AI (validated)" : "levels: ATR",
+      note: extraNote ? `${extraNote};binary:${rec.expiry ?? 5}` : isBinary ? `binary:${rec.expiry ?? 5}` : rec.levelsFrom === "AI" ? "levels: AI (validated)" : "levels: ATR",
     });
-  } catch (err: any) { console.error("[Journal] insert failed:", err.message); }
+    return journalId || null;
+  } catch (err: any) { console.error("[Journal] insert failed:", err.message); return null; }
 }
 
 /** One-line live track record of the bot's own recommendations. */
@@ -1417,7 +1370,7 @@ function backtestReport(results: BacktestResult[]): string {
   }
   if (r0.skipped.length) out.push(``, `⚠️ بلا بيانات كافية: ${r0.skipped.join(", ")}`);
   out.push(``,
-    `<i>القواعد مطابقة للبوت الحي: صفقة واحدة مفتوحة لكل زوج، الدخول عند افتتاح الشمعة التالية، التعادل يُسترد. لا يشمل فلتر الأخبار ولا فيتو AI (كلاهما يحذف إشارات فقط)، والمسح الحي كل بضع دقائق يرسل عدداً أقل.</i>`,
+    `<i>يشمل مرشحات القمة/القاع، اتجاه 15m، وثقة النموذج الثانوي، مع صفقة واحدة مفتوحة لكل زوج والدخول عند الشمعة التالية. لا يشمل الأخبار وفيتو AI أو تأخر دورة المسح؛ لذلك عدد الفرص الحي أقل.</i>`,
     `<i>±: هامش الخطأ 95% — كلما زادت الصفقات صار الحكم أدق.</i>`);
   return out.join("\n");
 }
@@ -1599,6 +1552,10 @@ const CONVERGENCE_PRESETS: Record<ConvergencePreset, { keys: [string, string, st
   long: { keys: ["1h", "4h", "1d"],  label: "طويل: 1س + 4س + يومي" },
 };
 /** Presets decided by the learned weighting model (hayo/weights-model.ts). */
+const CONVERGENCE_MODEL: Partial<Record<ConvergencePreset, string>> = { fast: "fast", scalp: "scalp" };
+/** Liquidity trap: weights-model agreement needed, and its test hit rates (10 bars, 1m) — see hayo/signal-policy.ts. */
+const TRAP_MIN_P = TRAP_POLICY[WEIGHTS_MIN_GRADE].minP;
+const TRAP_OOS = TRAP_POLICY[WEIGHTS_MIN_GRADE].oos2019;
 /** Auto-signal binary mode: which weighting model serves each low timeframe. */
 const BINARY_MODEL_BY_TF: Record<string, string> = { "1m": "fast", "5m": "scalp" };
 const WEIGHTED_ASSETS = new Set(["EURUSD", "USDJPY", "GBPUSD", "GBPJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "EURCHF", "AUDCAD", "XAUUSD", "XAGUSD"]);
@@ -1623,7 +1580,6 @@ export interface ConvergenceSignal {
 
 const convergenceSignals: ConvergenceSignal[] = [];
 const MAX_CONVERGENCE_SIGNALS = 50;
-const convergenceSignalBars = new Map<string, number>();
 
 export function getConvergenceConfig() { return { ...convergenceConfig }; }
 let _botRef: TelegramBot | null = null;
@@ -1734,7 +1690,7 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
   try {
 
   for (const pair of pairsToScan) {
-    const coolKey = `conv:${pair}:${convergenceConfig.preset}`;
+    const coolKey = `conv:${pair}`;
     const lastSent = convergenceCooldown.get(coolKey) || 0;
     if (!manual && Date.now() - lastSent < CONVERGENCE_COOLDOWN_MS) continue;
     const plabel = PAIRS[pair].label;
@@ -1752,17 +1708,16 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
       tfs.forEach(({ key, cfg }, i) => {
         const d = fetched[i];
         if ((d as any).poorData) throw new Error(`POOR_DATA ${cfg.interval} (${(d as any).dataSource})`);
-        const cons = calcConvergenceConsensus(d.strategies);
+        const cons = calcConsensus(d.strategies);
         results.push({ tf: key, direction: cons.direction, pct: cons.pct, data: d });
       });
 
       summary.checked++;
       const dirs = results.map(r => r.direction);
       const icons = results.map(r => `${r.tf}${r.direction === "BUY" ? "🟢" : r.direction === "SELL" ? "🔴" : "🟡"}`).join(" ");
-      const entryBars = results[0].data.candles as any[];
-      const signalBarTime = Number(entryBars[entryBars.length - 1]?.time);
-      if (Number.isFinite(signalBarTime) && convergenceSignalBars.get(coolKey) === signalBarTime) {
-        summary.lines.push(`⏸️ ${plabel}: إشارة هذه الشمعة سبق إرسالها`);
+      const modelId = CONVERGENCE_MODEL[convergenceConfig.preset];
+      if (modelId && WEIGHT_MODELS[modelId]) {
+        await weightedConvergence(bot, ownerChatId, pair, modelId, results, tfs, icons, useAI, summary, coolKey);
         continue;
       }
       const allBuy  = dirs.every(d => d === "BUY");
@@ -1776,42 +1731,11 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
       const avgPct = Math.round(results.reduce((a, r) => a + r.pct, 0) / results.length);
       console.log(`[Convergence] 🎯 ${pair} MATCH ${convergenceDir} on ${tfs.map(t => t.key).join("/")} — deciding (${useAI ? "AI" : "technical"})...`);
 
-      const lowTf = tfs[0];
-      const entryData = results[0].data;
       const topData = results[2].data;
-      const tfMin = TF_MINUTES[lowTf.key] ?? 1;
-      const barAge = closedBarAgeMs(entryData, tfMin);
-      if (barAge > tfMin * 120_000) {
-        summary.lines.push(`⏱️ ${plabel}: آخر شمعة دخول قديمة (${Math.round(barAge / 60_000)} دقيقة) — تم التخطي`);
-        continue;
-      }
-      const topTrend = topData.filters.find((f: any) => f.id === "trend_filter");
-      if (topTrend && !(convergenceDir === "BUY" ? topTrend.allowsBuy : topTrend.allowsSell)) {
-        summary.lines.push(`🧭 ${plabel}: إشارة ${convergenceDir === "BUY" ? "شراء" : "بيع"} عكس اتجاه ${topTf.key} — أُلغيت`);
-        continue;
-      }
-      const lowRsiFilter = entryData.filters.find((f: any) => f.id === "rsi_filter");
-      if (lowRsiFilter && !(convergenceDir === "BUY" ? lowRsiFilter.allowsBuy : lowRsiFilter.allowsSell)) {
-        summary.lines.push(`📡 ${plabel}: زخم ${lowTf.key} ممتد عكس الدخول — أُلغيت`);
-        continue;
-      }
-      const volatilityFilter = entryData.filters.find((f: any) => f.id === "volatility_filter");
-      if (volatilityFilter && !volatilityFilter.passed) {
-        summary.lines.push(`🌪️ ${plabel}: تقلب ${lowTf.key} مفرط — أُلغيت`);
-        continue;
-      }
-      const opposingLevel = nearOpposingPivot(topData, convergenceDir);
-      if (opposingLevel !== null) {
-        summary.lines.push(`⛔ ${plabel}: ${convergenceDir === "BUY" ? "مقاومة" : "دعم"} قريب على ${topTf.key} (${(opposingLevel * 100).toFixed(0)}% من ATR) — أُلغيت`);
-        continue;
-      }
-      // Binary entry is the first low-timeframe bar after the completed signal bar.
-      (entryData as any).binary = { expiry: 0, tfMin };
-      const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, lowTf.key, entryData), computeHtfBias(pair, topTf.key)]);
+      const [news, chart, htfBias] = await Promise.all([fetchEconomicNews(pair), renderPairChart(pair, topTf.key, topData), computeHtfBias(pair, topTf.key)]);
       (topData as any).htfBias = htfBias;
-      (entryData as any).htfBias = htfBias;
       const aiResults: any[] = useAI
-        ? await runAI(pair, `${lowTf.key} دخول ثنائي (تطابق ${tfs.map(t => t.key).join(" + ")})`, entryData, news, chart, htfBias)
+        ? await runAI(pair, `${topTf.key} (تطابق ${tfs.map(t => t.key).join(" + ")})`, topData, news, chart, htfBias)
         : [];
       const ai = aiConsensus(aiResults);
       const validAI = aiResults.filter((r: any) => r.signal === convergenceDir);
@@ -1819,37 +1743,17 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
 
       // The final decision (AI plurality, or technical without AI) + safety
       // gates must agree with the 3-timeframe match.
-      const rec = computeRecommendation(pair, entryData, aiResults, news);
+      const rec = computeRecommendation(pair, topData, aiResults, news);
       if (rec.dir !== convergenceDir) {
         summary.lines.push(`🎯 ${plabel}: تطابق ${convergenceDir === "BUY" ? "شراء" : "بيع"} (${icons}) لكن القرار النهائي ${rec.dir === "HOLD" ? "انتظار" : rec.dir === "BUY" ? "شراء" : "بيع"}${rec.blockers.length ? " — " + rec.blockers[0] : ""}`);
         continue;
       }
-      // A numerical consensus score is not a realized win rate. Let each exact
-      // preset/mode/expiry profile run in shadow until 30 closed outcomes prove
-      // >=70%; if that live record later falls below 70%, signals are blocked.
-      const convergenceProfile = `${convergenceConfig.preset}-${useAI ? "ai" : "tech"}:v1:${rec.expiry ?? 5}`;
-      const gate = await import("../hayo/db.js").then(async db => {
-        await db.ensureSignalJournalSchema();
-        return db.getConvergenceGateStats(await ownerUserId(), convergenceProfile);
-      }).catch(() => null);
-      const closed = gate ? gate.wins + gate.losses : 0;
-      const accuracy = closed ? gate!.wins / closed * 100 : 0;
-      const qualified = !!gate && closed >= 30 && accuracy >= 70;
-      if (!qualified) {
-        await journalRecommendation(pair, lowTf.cfg.interval, rec, "tg-conv-shadow", convergenceProfile);
-        if (Number.isFinite(signalBarTime)) convergenceSignalBars.set(coolKey, signalBarTime);
-        const reason = !gate ? "تعذر التحقق من سجل النتائج" : closed < 30
-          ? `العينة ${closed}/30` : `الدقة الحالية ${accuracy.toFixed(1)}%`;
-        summary.lines.push(`🧪 ${plabel}: مرشح تطابق ${convergenceDir === "BUY" ? "شراء" : "بيع"} — لم يُرسل (${reason})`);
-        continue;
-      }
       summary.sent++;
-      summary.lines.push(`🚨 ${plabel}: تطابق ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} (${icons}) — سجل ${accuracy.toFixed(1)}% من ${closed} صفقة، أُرسلت إشارة`);
+      summary.lines.push(`🚨 ${plabel}: تطابق ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} (${icons}) — أُرسلت إشارة`);
 
-      const expiryMs = (rec.expiry ?? 5) * tfMin * 60_000;
-      convergenceCooldown.set(coolKey, Date.now() - CONVERGENCE_COOLDOWN_MS + expiryMs);
-      await journalRecommendation(pair, lowTf.cfg.interval, rec, "tg-conv-bin", convergenceProfile);
-      const journalLine = await journalStatsLine("binary");
+      convergenceCooldown.set(coolKey, Date.now());
+      await journalRecommendation(pair, topTf.cfg.interval, rec, useAI ? "tg-conv" : "tg-conv-tech");
+      const journalLine = await journalStatsLine();
 
       const p = PAIRS[pair];
       const d15 = results[2].data;
@@ -1928,18 +1832,17 @@ async function runConvergenceScanInner(bot: TelegramBot, ownerChatId: number, ma
         `│  🎯 التطابق: ${convergenceDir === "BUY" ? "🟢 شراء" : "🔴 بيع"}${useAI ? `  ثقة AI: ${avgConf}%` : "  (فني)"}  │`,
         `│  3/3 فريمات متطابقة             │`,
         `└──────────────────────────────────┘`,
-        ...buildRecommendation(pair, entryData, aiResults, news),
+        ...buildRecommendation(pair, d15, aiResults, news),
         journalLine,
         ``,
         `<i>⚠️ للأغراض التعليمية فقط — ليس توصية مالية</i>`,
       ].join("\n");
 
       await sendCompactSignal(bot, ownerChatId, {
-        title: `🎯 تطابق ${tfs.map(t => t.key).join("+")}${useAI ? " + AI" : ""}`, pair, tf: lowTf.key, dir: convergenceDir,
-        entry: rec.entry, fmt: entryData.fmt, strengthPct: rec.conf, at: typeof entryData.liveAt === "number" ? entryData.liveAt : Date.now(),
-        binary: { candles: rec.expiry ?? 5, tfMin },
+        title: `🎯 تطابق 3 فريمات${useAI ? " + AI" : ""}`, pair, tf: tfs.map(t => t.key).join("/"), dir: convergenceDir,
+        entry: rec.entry, fmt: d15.fmt, strengthPct: rec.conf, at: typeof d15.liveAt === "number" ? d15.liveAt : Date.now(),
+        forex: { sl: rec.sl },
       }, msg, chart, `📸 ${p.label} | ${topTf.key} — الشارت الحي${useAI ? " الذي قرأته نماذج AI" : ""}`);
-      if (Number.isFinite(signalBarTime)) convergenceSignalBars.set(coolKey, signalBarTime);
 
     } catch (err: any) {
       summary.lines.push(String(err?.message || "").startsWith("POOR_DATA")
@@ -2078,21 +1981,44 @@ async function weightedSignal(
   const tfMin = TF_MINUTES[tfKeys[0]] ?? 1;
   const candles = opts.expiryOverride && opts.expiryOverride > 0 ? opts.expiryOverride : v.horizon;
   weightedClaims.set(claimKey, Date.now() + candles * tfMin * 60_000);
-  // All gates passed: execute on Deriv NOW (fire-and-forget) — entry timing is the edge.
-  executeDerivSignal({ pair, dir: sigDir, minutes: candles * tfMin, origin: opts.origin ?? "auto", label: `${p.label} ${tfKeys[0]}` })
-    .catch(err => console.warn("[Deriv] dispatch failed:", err?.message));
-  summary.sent++;
-  summary.lines.push(isTrap
-    ? `🚨 ${label}: 🪤 فخ سيولة ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} + أوزان ${(trapP * 100).toFixed(1)}% — أُرسلت إشارة`
-    : `🚨 ${label}: ⚖️ ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
-
   const entry = tradePrice(lowData);
   const at = typeof lowData.liveAt === "number" ? lowData.liveAt : Date.now();
   const rec: Recommendation = {
     dir: sigDir, conf: v.edgePct, entry, sl: NaN, tp: NaN, rr: NaN, levelsFrom: "",
     reasons: [], blockers: [], costPct: null, expiry: candles, expiryFrom: candles === v.horizon ? "model" : "fixed",
   };
-  await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, rec, isTrap ? "tg-trap" : "tg-wgt");
+  const lowBars = lowData.candles as Array<{ time?: number }>;
+  const lastBarTime = lowBars?.length ? Number(lowBars[lowBars.length - 1].time) : NaN;
+  const signalBarCloseAt = Number.isFinite(lastBarTime) ? lastBarTime * 1000 + tfMin * 60_000 : null;
+  const entryDeadlineMs = signalBarCloseAt === null ? undefined : signalBarCloseAt + 12_000;
+  if (entryDeadlineMs != null && Date.now() > entryDeadlineMs) {
+    weightedClaims.set(claimKey, Date.now() + tfMin * 60_000);
+    summary.lines.push(`⏱️ ${label}: انتهت نافذة افتتاح الشمعة التالية أثناء التحليل؛ لم تُرسل إشارة متأخرة`);
+    return none;
+  }
+  let journaledExecution = false;
+  const execution = await executeDerivSignal(
+    { pair, dir: sigDir, minutes: candles * tfMin, origin: opts.origin ?? "auto", label: `${p.label} ${tfKeys[0]}`, entryDeadlineMs },
+    async ex => {
+      const actualRec = { ...rec, entry: ex.entrySpot ?? rec.entry, expiry: ex.minutes / tfMin };
+      const lag = signalBarCloseAt === null ? "unknown" : Math.max(0, ex.purchaseTime * 1000 - signalBarCloseAt) / 1000;
+      const id = await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, actualRec, isTrap ? "tg-trap" : "tg-wgt",
+        `deriv-contract:${ex.contractId};deriv-minutes:${ex.minutes};deriv-purchase:${ex.purchaseTime};deriv-stake:${ex.stake};deriv-payout:${ex.payout};deriv-entry-lag:${lag}`);
+      journaledExecution = id !== null;
+      return id;
+    },
+  ).catch(err => { console.warn("[Deriv] dispatch failed:", err?.message); return null; });
+  if (entryDeadlineMs != null && Date.now() > entryDeadlineMs && !execution) {
+    weightedClaims.set(claimKey, Date.now() + tfMin * 60_000);
+    summary.lines.push(`⏱️ ${label}: تعذّر التنفيذ ضمن نافذة الشمعة التالية؛ أُسقطت الإشارة المتأخرة`);
+    return none;
+  }
+  summary.sent++;
+  summary.lines.push(isTrap
+    ? `🚨 ${label}: 🪤 فخ سيولة ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} + أوزان ${(trapP * 100).toFixed(1)}% — أُرسلت إشارة`
+    : `🚨 ${label}: ⚖️ ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
+  if (!journaledExecution) await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, rec, isTrap ? "tg-trap" : "tg-wgt");
+  const journalLine = await journalStatsLine(isTrap ? "trap" : "weights");
   const journalLine = await journalStatsLine(isTrap ? "trap" : "weights");
 
   const dirProb = Math.round((sigDir === "BUY" ? v.p : 1 - v.p) * 1000) / 10;
@@ -2144,6 +2070,16 @@ async function weightedSignal(
   }, full, chart, `📸 ${p.label} | ${tfKeys[0]} — الشارت الحي`);
   console.log(`[Weights] ${isTrap ? "🪤 trap" : "⚖️"} ${pair} ${tfKeys[0]} ${sigDir} p=${v.p.toFixed(3)} grade ${v.grade} (${modelId})`);
   return { sent: true, expiryMs: candles * tfMin * 60_000 };
+}
+
+async function weightedConvergence(
+  bot: TelegramBot, ownerChatId: number, pair: string, modelId: string,
+  results: { tf: string; direction: "BUY" | "SELL" | "NEUTRAL"; pct: number; data: any }[],
+  tfs: { key: string; cfg: TfConfig }[], icons: string, useAI: boolean, summary: ScanSummary, coolKey: string,
+): Promise<void> {
+  const r = await weightedSignal(bot, ownerChatId, pair, modelId, results.map(x => x.data), tfs.map(t => t.key),
+    { useAI, summary, title: "⚖️ تطابق — نظام الأوزان", icons, origin: "convergence" });
+  if (r.sent) convergenceCooldown.set(coolKey, Date.now() - CONVERGENCE_COOLDOWN_MS + r.expiryMs);
 }
 
 function restartConvergenceScanner(bot: TelegramBot, ownerChatId: number) {
@@ -2447,7 +2383,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     } catch (e: any) { console.warn("[TelegramBot] /menu error:", e?.message); }
   });
 
-  // /backtest [days] [fast|scalp] [PAIR ...] — replay the live binary signals on recent data
+  // /backtest [days] [fast|scalp] [Hn] [PAIR ...] — optionally compare another expiry
   bot.onText(/^\/backtest\b(.*)$/, async (msg, match) => {
     const chatId = msg.chat.id;
     if (!isOwner(chatId)) return;
@@ -2455,20 +2391,21 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     backtestRunning = true;
     try {
       const args = (match?.[1] ?? "").trim().split(/\s+/).filter(Boolean);
-      let days = 14, modelId = "fast";
+      let days = 14, modelId = "fast", expiryOverride: number | undefined;
       const pairCodes: string[] = [];
       for (const a of args) {
         if (/^\d+$/.test(a)) days = Math.max(1, Math.min(60, Number(a)));
         else if (/^(fast|scalp)$/i.test(a)) modelId = a.toLowerCase();
+        else if (/^h\d+$/i.test(a)) expiryOverride = Math.max(1, Math.min(30, Number(a.slice(1))));
         else { const c = a.toUpperCase().replace("/", ""); if (WEIGHTED_ASSETS.has(c)) pairCodes.push(c); }
       }
       const codes = pairCodes.length ? pairCodes : [...WEIGHTED_ASSETS];
       const pairs = codes.map(code => ({ code, symbol: PAIRS[code].tdSymbol }));
-      const head = `🧪 اختبار آخر ${days} يوماً — نموذج ${modelId} — ${pairs.length} زوج`;
+      const head = `🧪 اختبار آخر ${days} يوماً — نموذج ${modelId}${expiryOverride ? ` — مدة ${expiryOverride} شموع` : ""} — ${pairs.length} زوج`;
       const status = await bot.sendMessage(chatId, `${head}\n⏳ تحميل البيانات التاريخية من Dukascopy…`);
       let lastEdit = 0;
       const results = await runRecentBacktest({
-        pairs, modelId, days, minGrades: WEIGHTS_MIN_GRADE === "A" ? ["A", "B"] : ["B", "A"],
+        pairs, modelId, days, expiryOverride, minGrades: WEIGHTS_MIN_GRADE === "A" ? ["A", "B"] : ["B", "A"],
         onProgress: async (done, total, pair) => {
           if (Date.now() - lastEdit < 4000) return;
           lastEdit = Date.now();
@@ -3540,3 +3477,4 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
   return bot;
 }
+

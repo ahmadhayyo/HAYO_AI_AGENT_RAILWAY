@@ -21,7 +21,7 @@ const LEGACY_APP_ID = process.env.DERIV_APP_ID || "1089";
 const LEGACY_WS_URL = process.env.DERIV_WS_URL || `wss://ws.derivws.com/websockets/v3?app_id=${LEGACY_APP_ID}`;
 const REST_BASE = (process.env.DERIV_REST_URL || "https://api.derivws.com").replace(/\/$/, "");
 
-export interface DerivStats { n: number; win: number; loss: number; pnl: number }
+export interface DerivStats { n: number; win: number; loss: number; tie: number; pnl: number }
 export interface DerivSettings {
   tokenEnc: string | null;
   enabled: boolean;
@@ -43,7 +43,7 @@ export async function getDerivSettings(): Promise<DerivSettings> {
   settings = {
     tokenEnc: saved?.tokenEnc ?? null, enabled: saved?.enabled ?? false, stake: saved?.stake ?? 10,
     allowReal: saved?.allowReal ?? false, source: saved?.source ?? "convergence",
-    stats: saved?.stats ?? { n: 0, win: 0, loss: 0, pnl: 0 },
+    stats: { n: 0, win: 0, loss: 0, tie: 0, pnl: 0, ...(saved?.stats ?? {}) },
     appId: saved?.appId ?? null,
   };
   return settings;
@@ -184,15 +184,29 @@ const fmtMoney = (x: number, cur: string) => `${x >= 0 ? "+" : ""}${x.toFixed(2)
  * Execute one binary signal on Deriv (fire-and-forget from the bot).
  * `minutes` = the signal's expiry (candles × timeframe).
  */
-export async function executeDerivSignal(sig: { pair: string; dir: "BUY" | "SELL"; minutes: number; origin: "convergence" | "auto"; label: string }): Promise<void> {
+export interface DerivExecution {
+  contractId: number;
+  minutes: number;
+  stake: number;
+  payout: number;
+  purchaseTime: number;
+  entrySpot: number | null;
+  currency: string;
+  isVirtual: boolean;
+}
+
+export async function executeDerivSignal(
+  sig: { pair: string; dir: "BUY" | "SELL"; minutes: number; origin: "convergence" | "auto"; label: string; entryDeadlineMs?: number },
+  onExecuted?: (execution: DerivExecution) => Promise<number | null>,
+): Promise<DerivExecution | null> {
   const s = await getDerivSettings();
-  if (!s.enabled) return;
-  if (s.source === "convergence" && sig.origin !== "convergence") return;
+  if (!s.enabled) return null;
+  if (s.source === "convergence" && sig.origin !== "convergence") return null;
   const t = decryptCred(s.tokenEnc);
-  if (!t) { notifier?.("⚠️ <b>Deriv</b>: التنفيذ مفعّل لكن لا يوجد توكن — أرسل <code>/deriv التوكن</code>"); return; }
+  if (!t) { notifier?.("⚠️ <b>Deriv</b>: التنفيذ مفعّل لكن لا يوجد توكن — أرسل <code>/deriv التوكن</code>"); return null; }
   const symbol = derivSymbol(sig.pair);
   const side = sig.dir === "BUY" ? "🟢 CALL" : "🔴 PUT";
-  if (!symbol) { notifier?.(`⚠️ <b>Deriv — لم تُنفذ</b>\n${sig.label}: الزوج غير متاح في Deriv`); return; }
+  if (!symbol) { notifier?.(`⚠️ <b>Deriv — لم تُنفذ</b>\n${sig.label}: الزوج غير متاح في Deriv`); return null; }
   const t0 = Date.now();
   try {
     const res = await withDeriv(t, async (call, acct) => {
@@ -215,6 +229,9 @@ export async function executeDerivSignal(sig: { pair: string; dir: "BUY" | "SELL
       });
       let minutes = range ? Math.min(range.max, Math.max(range.min, want)) : want;
       let buy: any;
+      if (sig.entryDeadlineMs != null && Date.now() > sig.entryDeadlineMs) {
+        throw new Error("انتهت نافذة دخول الشمعة التالية؛ تم تخطي العقد المتأخر");
+      }
       try { buy = (await buyWith(minutes)).buy; }
       catch (e: any) {
         // unknown limits: a too-short duration is the usual refusal → retry at 15 minutes
@@ -224,29 +241,56 @@ export async function executeDerivSignal(sig: { pair: string; dir: "BUY" | "SELL
       }
       return { acct, minutes, stake, buy };
     });
-    const adj = res.minutes !== Math.round(sig.minutes) ? ` <i>(أقل مدة مسموحة في Deriv: ${res.minutes} د بدل ${Math.round(sig.minutes)})</i>` : "";
+    const execution: DerivExecution = {
+      contractId: Number(res.buy.contract_id), minutes: res.minutes, stake: res.stake,
+      payout: Number(res.buy.payout), purchaseTime: Number(res.buy.purchase_time ?? Math.floor(Date.now() / 1000)),
+      entrySpot: res.buy.spot != null && Number.isFinite(Number(res.buy.spot)) ? Number(res.buy.spot) : null,
+      currency: res.acct.currency, isVirtual: res.acct.isVirtual,
+    };
+    let journalId: number | null = null;
+    try { journalId = await onExecuted?.(execution) ?? null; }
+    catch (err: any) { console.warn("[Deriv] journal insert failed:", err?.message); }
+    const adj = res.minutes !== Math.round(sig.minutes) ? ` <i>(مدة Deriv الفعلية ${res.minutes} د بدل ${Math.round(sig.minutes)})</i>` : "";
     notifier?.(`🎰 <b>Deriv — نُفذت الصفقة</b> ${res.acct.isVirtual ? "(تجريبي)" : "(<b>حقيقي</b>)"}\n${sig.label} ${side}\n💵 ${res.stake} ${res.acct.currency} → عائد محتمل ${Number(res.buy.payout).toFixed(2)}\n⌛ ${res.minutes} دقيقة${adj}\n⚡ التنفيذ خلال ${((Date.now() - t0) / 1000).toFixed(1)} ث — عقد ${res.buy.contract_id}`);
-    setTimeout(() => settle(res.buy.contract_id, sig.label, side, 0), (res.minutes * 60 + 20) * 1000);
+    setTimeout(() => settle(res.buy.contract_id, sig.label, side, 0, journalId, res.stake), (res.minutes * 60 + 20) * 1000);
+    return execution;
   } catch (err: any) {
     console.warn("[Deriv] execute failed:", err?.message);
     notifier?.(`⚠️ <b>Deriv — لم تُنفذ</b>\n${sig.label} ${side}\nالسبب: ${String(err?.message || err).replace(/[<>&]/g, " ")}`);
+    return null;
   }
 }
 
-export async function settle(contractId: number, label: string, side: string, attempt: number): Promise<void> {
-  const t = await token();
-  if (!t) return;
+const settlingContracts = new Set<number>();
+const settledContracts = new Set<number>();
+export async function settle(contractId: number, label: string, side: string, attempt: number, journalId: number | null = null, stake = 0): Promise<void> {
+  if (settledContracts.has(contractId) || settlingContracts.has(contractId)) return;
+  settlingContracts.add(contractId);
   try {
+    const t = await token();
+    if (!t) return;
     const poc = await withDeriv(t, async (call) => (await call({ proposal_open_contract: 1, contract_id: contractId })).proposal_open_contract);
-    if (!poc?.is_sold && attempt < 6) { setTimeout(() => settle(contractId, label, side, attempt + 1), 30_000); return; }
+    if (!poc?.is_sold) {
+      if (attempt < 6) setTimeout(() => settle(contractId, label, side, attempt + 1, journalId, stake), 30_000);
+      else console.warn(`[Deriv] contract ${contractId} is not settled yet`);
+      return;
+    }
     const profit = Number(poc?.profit ?? 0), cur = poc?.currency || "USD";
     const won = poc?.status === "won" || profit > 0;
+    const tied = profit === 0 && !won;
+    if (journalId !== null) {
+      const { closeSignalJournal } = await import("./db");
+      const outcome = won ? "win" : profit === 0 ? "expired" : "loss";
+      await closeSignalJournal(journalId, outcome, Number.isFinite(Number(poc?.exit_tick)) ? Number(poc.exit_tick) : null, stake > 0 ? Number((profit / stake).toFixed(4)) : null).catch(() => {});
+    }
     const s = await getDerivSettings();
-    const stats = { ...s.stats, n: s.stats.n + 1, win: s.stats.win + (won ? 1 : 0), loss: s.stats.loss + (won ? 0 : 1), pnl: Math.round((s.stats.pnl + profit) * 100) / 100 };
+    const stats = { ...s.stats, n: s.stats.n + 1, win: s.stats.win + (won ? 1 : 0), loss: s.stats.loss + (won || tied ? 0 : 1), tie: (s.stats.tie ?? 0) + (tied ? 1 : 0), pnl: Math.round((s.stats.pnl + profit) * 100) / 100 };
     await updateDerivSettings({ stats });
-    notifier?.(`${won ? "✅ <b>Deriv — ربح</b>" : "❌ <b>Deriv — خسارة</b>"}\n${label} ${side}  ${fmtMoney(profit, cur)}\n📊 السجل: ${stats.win} ربح / ${stats.loss} خسارة (${stats.n ? Math.round(stats.win / stats.n * 100) : 0}%) — الصافي ${fmtMoney(stats.pnl, cur)}`);
+    settledContracts.add(contractId);
+    notifier?.(`${won ? "✅ <b>Deriv — ربح</b>" : tied ? "➖ <b>Deriv — تعادل مسترد</b>" : "❌ <b>Deriv — خسارة</b>"}\n${label} ${side}  ${fmtMoney(profit, cur)}\n📊 السجل: ${stats.win} ربح / ${stats.loss} خسارة / ${stats.tie} تعادل (${stats.win + stats.loss ? Math.round(stats.win / (stats.win + stats.loss) * 100) : 0}% من الصفقات الحاسمة) — الصافي ${fmtMoney(stats.pnl, cur)}`);
   } catch (err: any) {
-    if (attempt < 6) setTimeout(() => settle(contractId, label, side, attempt + 1), 30_000);
+    if (attempt < 6) setTimeout(() => settle(contractId, label, side, attempt + 1, journalId, stake), 30_000);
     else console.warn("[Deriv] settle failed:", err?.message);
-  }
+  } finally { settlingContracts.delete(contractId); }
 }
+
