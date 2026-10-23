@@ -17,16 +17,80 @@
 export interface TrapBar { open: number; high: number; low: number; close: number }
 export interface TrapEvent {
   index: number;                 // oldest-first index of the signal bar
-  dir: "BUY" | "SELL";           // trade direction (the reverse of the box entry)
+  dir: "BUY" | "SELL";           // trade direction (opposite for trap, aligned for box)
+  kind: "trap" | "box";          // Trap_Hide_Original=true suppresses the box arrow
   vc: number;                    // Value Chart of the entry candle
   boxTop: number; boxBot: number; boxScore: number;
 }
+export interface TrapDetectOptions { useHz?: boolean; point?: number }
 
 const VC_Period = 5, VC_Extreme = 8, SwingWindow = 10, AdaptSmooth = 100;
 const W_Sweep = 0.30, W_Speed = 0.20, W_Disp = 0.25, W_VC = 0.25, FVG_Bonus = 15;
 const Min_Draw = 25, Min_Signal = 60, ATR_Expiry = 3.0, Trap_VC_Min = 8.0;
 
-export function detectLiquidityTraps(bars: TrapBar[]): TrapEvent[] {
+function hzAllows(O: Float64Array, H: Float64Array, L: Float64Array, C: Float64Array, i: number, buy: boolean, point: number): boolean {
+  // SMC Fusion v27 defaults: 8-bar prominent swings, 300-bar lookback,
+  // tier-2 confluence, 0.7 ATR prominence, and rejection required.
+  const n = H.length, swing = 8, lookback = 300, maxAge = 500;
+  if (i + swing * 4 + 30 >= n) return false;
+  const atrAt = (at: number, p = 14) => {
+    let sum = 0, count = 0;
+    for (let k = at; k < Math.min(n, at + p); k++) {
+      const prev = k + 1 < n ? C[k + 1] : C[k];
+      sum += Math.max(H[k] - L[k], Math.abs(H[k] - prev), Math.abs(L[k] - prev)); count++;
+    }
+    return count ? sum / count : 10 * point;
+  };
+  const prominence = atrAt(i) * 0.7, supports: { p: number; touches: number; age: number }[] = [], resistances: { p: number; touches: number; age: number }[] = [];
+  const start = i + swing, end = Math.min(start + lookback, n - swing - 1);
+  const isLow = (k: number) => {
+    for (let j = 1; j <= swing; j++) if (L[k + j] < L[k] || L[k - j] < L[k]) return false;
+    let leftPeak = L[k], rightPeak = L[k], scan = Math.max(swing * 4, 20);
+    for (let j = 1; j <= scan && k + j < n; j++) { if (L[k + j] < L[k]) break; leftPeak = Math.max(leftPeak, H[k + j]); }
+    for (let j = 1; j <= scan && k - j >= i; j++) { if (L[k - j] < L[k]) break; rightPeak = Math.max(rightPeak, H[k - j]); }
+    return Math.min(leftPeak, rightPeak) - L[k] >= prominence;
+  };
+  const isHigh = (k: number) => {
+    for (let j = 1; j <= swing; j++) if (H[k + j] > H[k] || H[k - j] > H[k]) return false;
+    let leftValley = H[k], rightValley = H[k], scan = Math.max(swing * 4, 20);
+    for (let j = 1; j <= scan && k + j < n; j++) { if (H[k + j] > H[k]) break; leftValley = Math.min(leftValley, L[k + j]); }
+    for (let j = 1; j <= scan && k - j >= i; j++) { if (H[k - j] > H[k]) break; rightValley = Math.min(rightValley, L[k - j]); }
+    return H[k] - Math.max(leftValley, rightValley) >= prominence;
+  };
+  const merge = (arr: { p: number; touches: number; age: number }[], price: number, age: number) => {
+    const tol = point * 10; // source merges at 2*HZ_Tol_Base_Pts (base = 5 points)
+    const found = arr.find(x => Math.abs(x.p - price) <= tol);
+    if (found) { found.p = (found.p * found.touches + price) / (found.touches + 1); found.touches++; found.age = Math.min(found.age, age); }
+    else if (arr.length < 80) arr.push({ p: price, touches: 1, age });
+  };
+  for (let k = start; k <= end; k++) {
+    const age = k - i;
+    if (age <= maxAge && isLow(k)) merge(supports, L[k], age);
+    if (age <= maxAge && isHigh(k)) merge(resistances, H[k], age);
+  }
+  const trim = (arr: { p: number; touches: number; age: number }[]) => {
+    arr.sort((a, b) => a.p - b.p);
+    const out: typeof arr = [];
+    for (const x of arr) {
+      const last = out[out.length - 1];
+      if (last && x.p - last.p < 15 * point) { if (x.touches > last.touches) out[out.length - 1] = x; }
+      else out.push(x);
+    }
+    return out.slice(0, 20);
+  };
+  const baseTol = 5 * point, tol = Math.max(baseTol, atrAt(i) * 0.25);
+  const candle = { o: O[i], h: H[i], l: L[i], c: C[i] };
+  if (buy) return trim(supports).some(x => {
+    const d = candle.l - x.p;
+    return (Math.abs(d) <= tol && candle.c > x.p) || (candle.l < x.p && candle.c > x.p + tol * 0.3);
+  });
+  return trim(resistances).some(x => {
+    const d = candle.h - x.p;
+    return (Math.abs(d) <= tol && candle.c < x.p) || (candle.h > x.p && candle.c < x.p - tol * 0.3);
+  });
+}
+
+export function detectLiquidityTraps(bars: TrapBar[], options: TrapDetectOptions = {}): TrapEvent[] {
   const n = bars.length;
   if (n < 150) return [];
   const O = new Float64Array(n), H = new Float64Array(n), L = new Float64Array(n), C = new Float64Array(n);
@@ -117,20 +181,23 @@ export function detectLiquidityTraps(bars: TrapBar[]): TrapEvent[] {
     // invalidation
     if (bull && (C[i] < bull.bot || C[i] - bull.top > ATR_Expiry * atr)) bull = null;
     if (bear && (C[i] > bear.top || bear.bot - C[i] > ATR_Expiry * atr)) bear = null;
-    // breaker entries → liquidity trap
+  // Breaker entries → ordinary box signal, or reversed liquidity trap when
+  // the entry candle is extremely stretched (Trap_Hide_Original=true).
     if (bull && bias > 0 && bull.score >= Min_Signal) {
       const key = Math.max(bull.open, (bull.top + bull.bot) / 2);
-      if (L[i] <= bull.top && L[i] <= key && C[i] > O[i] && C[i] > H[i + 1]) {
+      if (L[i] <= bull.top && L[i] <= key && C[i] > O[i] && C[i] > H[i + 1] && (!options.useHz || hzAllows(O, H, L, C, i, true, options.point ?? 1e-5))) {
         const v = vc(i, true);
-        if (v >= Trap_VC_Min) out.push({ index: n - 1 - i, dir: "SELL", vc: v, boxTop: bull.top, boxBot: bull.bot, boxScore: bull.score });
+        if (v >= Trap_VC_Min) out.push({ index: n - 1 - i, dir: "SELL", kind: "trap", vc: v, boxTop: bull.top, boxBot: bull.bot, boxScore: bull.score });
+        else out.push({ index: n - 1 - i, dir: "BUY", kind: "box", vc: v, boxTop: bull.top, boxBot: bull.bot, boxScore: bull.score });
         bull = null;
       }
     }
     if (bear && bias < 0 && bear.score >= Min_Signal) {
       const key = Math.min(bear.open, (bear.top + bear.bot) / 2);
-      if (H[i] >= bear.bot && H[i] >= key && C[i] < O[i] && C[i] < L[i + 1]) {
+      if (H[i] >= bear.bot && H[i] >= key && C[i] < O[i] && C[i] < L[i + 1] && (!options.useHz || hzAllows(O, H, L, C, i, false, options.point ?? 1e-5))) {
         const v = vc(i, false);
-        if (v <= -Trap_VC_Min) out.push({ index: n - 1 - i, dir: "BUY", vc: v, boxTop: bear.top, boxBot: bear.bot, boxScore: bear.score });
+        if (v <= -Trap_VC_Min) out.push({ index: n - 1 - i, dir: "BUY", kind: "trap", vc: v, boxTop: bear.top, boxBot: bear.bot, boxScore: bear.score });
+        else out.push({ index: n - 1 - i, dir: "SELL", kind: "box", vc: v, boxTop: bear.top, boxBot: bear.bot, boxScore: bear.score });
         bear = null;
       }
     }
@@ -139,8 +206,16 @@ export function detectLiquidityTraps(bars: TrapBar[]): TrapEvent[] {
 }
 
 /** Trap fired on the NEWEST closed bar, or null. */
-export function lastBarTrap(bars: TrapBar[]): TrapEvent | null {
-  const ev = detectLiquidityTraps(bars);
-  const last = ev[ev.length - 1];
-  return last && last.index === bars.length - 1 ? last : null;
+export function lastBarTrap(bars: TrapBar[], options: TrapDetectOptions = {}): TrapEvent | null {
+  const ev = detectLiquidityTraps(bars, options);
+  for (let i = ev.length - 1; i >= 0; i--) if (ev[i].index === bars.length - 1 && ev[i].kind === "trap") return ev[i];
+  return null;
 }
+
+/** Breaker-box entry or its v27 trap reversal on the newest closed bar. */
+export function lastBarBoxOrTrap(bars: TrapBar[], options: TrapDetectOptions = {}): TrapEvent | null {
+  const ev = detectLiquidityTraps(bars, options);
+  for (let i = ev.length - 1; i >= 0; i--) if (ev[i].index === bars.length - 1) return ev[i];
+  return null;
+}
+
