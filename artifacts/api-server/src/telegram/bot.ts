@@ -2117,7 +2117,6 @@ async function weightedSignal(
     : `🚨 ${label}: ⚖️ ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
   if (!journaledExecution) await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, rec, isTrap ? "tg-trap" : "tg-wgt");
   const journalLine = await journalStatsLine(isTrap ? "trap" : "weights");
-  const journalLine = await journalStatsLine(isTrap ? "trap" : "weights");
 
   const dirProb = Math.round((sigDir === "BUY" ? v.p : 1 - v.p) * 1000) / 10;
   const pct = (x: number) => `${x >= 0 ? "+" : ""}${x.toFixed(2)}`;
