@@ -99,7 +99,7 @@ const binaryBusyUntil = new Map<string, number>();
 const weightedClaims = new Map<string, number>();
 
 /** Binary payout assumed for the journal's R and break-even (override: HAYO_BINARY_PAYOUT=0.8). */
-const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.85);
+const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.83);
 const TF_MINUTES: Record<string, number> = { "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440 };
 
 let autoConfig: AutoConfig = { ...defaultAutoConfig };
@@ -1248,24 +1248,25 @@ async function ownerUserId(): Promise<number | null> {
 }
 
 const journalDedup = new Map<string, number>();
-async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string, convergenceProfile?: string): Promise<void> {
+async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string, convergenceProfile?: string, extraNote?: string): Promise<number | null> {
   const isBinary = source === "tg-bin" || source === "tg-wgt" || source === "tg-trap" || source === "tg-conv-bin" || source === "tg-conv-shadow";
-  if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return;
+  if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return null;
   const key = `${pair}|${interval}|${rec.dir}|${source}`;
   const dedupMs = isBinary ? 60 * 1000 : 30 * 60 * 1000;
-  if (Date.now() - (journalDedup.get(key) ?? 0) < dedupMs) return; // same setup re-sent
+  if (Date.now() - (journalDedup.get(key) ?? 0) < dedupMs) return null; // same setup re-sent
   journalDedup.set(key, Date.now());
   try {
     const { insertSignalJournal, ensureSignalJournalSchema } = await import("../hayo/db.js");
     await ensureSignalJournalSchema();
-    await insertSignalJournal({
+    const journalId = await insertSignalJournal({
       userId: await ownerUserId(), pair, timeframe: interval, direction: rec.dir,
       entry: rec.entry, stopLoss: isBinary ? rec.entry : rec.sl, takeProfit: isBinary ? null : rec.tp, confidence: rec.conf, source,
-      note: source === "tg-conv-bin" || source === "tg-conv-shadow"
+      note: extraNote ? `${extraNote};binary:${rec.expiry ?? 5}` : source === "tg-conv-bin" || source === "tg-conv-shadow"
         ? `binary:${rec.expiry ?? 5};convergence:${convergenceProfile ?? `${convergenceConfig.preset}-${convergenceConfig.useAI ? "ai" : "tech"}:v1:${rec.expiry ?? 5}`}`
         : isBinary ? `binary:${rec.expiry ?? 5}` : rec.levelsFrom === "AI" ? "levels: AI (validated)" : "levels: ATR",
     });
-  } catch (err: any) { console.error("[Journal] insert failed:", err.message); }
+    return journalId || null;
+  } catch (err: any) { console.error("[Journal] insert failed:", err.message); return null; }
 }
 
 /** One-line live track record of the bot's own recommendations. */
@@ -1417,7 +1418,7 @@ function backtestReport(results: BacktestResult[]): string {
   }
   if (r0.skipped.length) out.push(``, `⚠️ بلا بيانات كافية: ${r0.skipped.join(", ")}`);
   out.push(``,
-    `<i>القواعد مطابقة للبوت الحي: صفقة واحدة مفتوحة لكل زوج، الدخول عند افتتاح الشمعة التالية، التعادل يُسترد. لا يشمل فلتر الأخبار ولا فيتو AI (كلاهما يحذف إشارات فقط)، والمسح الحي كل بضع دقائق يرسل عدداً أقل.</i>`,
+    `<i>يشمل مرشحات القمة/القاع، اتجاه 15m، وثقة النموذج الثانوي، مع صفقة واحدة مفتوحة لكل زوج والدخول عند الشمعة التالية. لا يشمل الأخبار وفيتو AI أو تأخر دورة المسح؛ لذلك عدد الفرص الحي أقل.</i>`,
     `<i>±: هامش الخطأ 95% — كلما زادت الصفقات صار الحكم أدق.</i>`);
   return out.join("\n");
 }
@@ -2078,21 +2079,44 @@ async function weightedSignal(
   const tfMin = TF_MINUTES[tfKeys[0]] ?? 1;
   const candles = opts.expiryOverride && opts.expiryOverride > 0 ? opts.expiryOverride : v.horizon;
   weightedClaims.set(claimKey, Date.now() + candles * tfMin * 60_000);
-  // All gates passed: execute on Deriv NOW (fire-and-forget) — entry timing is the edge.
-  executeDerivSignal({ pair, dir: sigDir, minutes: candles * tfMin, origin: opts.origin ?? "auto", label: `${p.label} ${tfKeys[0]}` })
-    .catch(err => console.warn("[Deriv] dispatch failed:", err?.message));
-  summary.sent++;
-  summary.lines.push(isTrap
-    ? `🚨 ${label}: 🪤 فخ سيولة ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} + أوزان ${(trapP * 100).toFixed(1)}% — أُرسلت إشارة`
-    : `🚨 ${label}: ⚖️ ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
-
   const entry = tradePrice(lowData);
   const at = typeof lowData.liveAt === "number" ? lowData.liveAt : Date.now();
   const rec: Recommendation = {
     dir: sigDir, conf: v.edgePct, entry, sl: NaN, tp: NaN, rr: NaN, levelsFrom: "",
     reasons: [], blockers: [], costPct: null, expiry: candles, expiryFrom: candles === v.horizon ? "model" : "fixed",
   };
-  await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, rec, isTrap ? "tg-trap" : "tg-wgt");
+  const lowBars = lowData.candles as Array<{ time?: number }>;
+  const lastBarTime = lowBars?.length ? Number(lowBars[lowBars.length - 1].time) : NaN;
+  const signalBarCloseAt = Number.isFinite(lastBarTime) ? lastBarTime * 1000 + tfMin * 60_000 : null;
+  const entryDeadlineMs = signalBarCloseAt === null ? undefined : signalBarCloseAt + 12_000;
+  if (entryDeadlineMs != null && Date.now() > entryDeadlineMs) {
+    weightedClaims.set(claimKey, Date.now() + tfMin * 60_000);
+    summary.lines.push(`⏱️ ${label}: انتهت نافذة افتتاح الشمعة التالية أثناء التحليل؛ لم تُرسل إشارة متأخرة`);
+    return none;
+  }
+  let journaledExecution = false;
+  const execution = await executeDerivSignal(
+    { pair, dir: sigDir, minutes: candles * tfMin, origin: opts.origin ?? "auto", label: `${p.label} ${tfKeys[0]}`, entryDeadlineMs },
+    async ex => {
+      const actualRec = { ...rec, entry: ex.entrySpot ?? rec.entry, expiry: ex.minutes / tfMin };
+      const lag = signalBarCloseAt === null ? "unknown" : Math.max(0, ex.purchaseTime * 1000 - signalBarCloseAt) / 1000;
+      const id = await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, actualRec, isTrap ? "tg-trap" : "tg-wgt", undefined,
+        `deriv-contract:${ex.contractId};deriv-minutes:${ex.minutes};deriv-purchase:${ex.purchaseTime};deriv-stake:${ex.stake};deriv-payout:${ex.payout};deriv-entry-lag:${lag}`);
+      journaledExecution = id !== null;
+      return id;
+    },
+  ).catch(err => { console.warn("[Deriv] dispatch failed:", err?.message); return null; });
+  if (entryDeadlineMs != null && Date.now() > entryDeadlineMs && !execution) {
+    weightedClaims.set(claimKey, Date.now() + tfMin * 60_000);
+    summary.lines.push(`⏱️ ${label}: تعذّر التنفيذ ضمن نافذة الشمعة التالية؛ أُسقطت الإشارة المتأخرة`);
+    return none;
+  }
+  summary.sent++;
+  summary.lines.push(isTrap
+    ? `🚨 ${label}: 🪤 فخ سيولة ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} + أوزان ${(trapP * 100).toFixed(1)}% — أُرسلت إشارة`
+    : `🚨 ${label}: ⚖️ ${sigDir === "BUY" ? "🟢 شراء" : "🔴 بيع"} ${pTxt} (درجة ${v.grade}) — أُرسلت إشارة`);
+  if (!journaledExecution) await journalRecommendation(pair, TIMEFRAMES[tfKeys[0]].interval, rec, isTrap ? "tg-trap" : "tg-wgt");
+  const journalLine = await journalStatsLine(isTrap ? "trap" : "weights");
   const journalLine = await journalStatsLine(isTrap ? "trap" : "weights");
 
   const dirProb = Math.round((sigDir === "BUY" ? v.p : 1 - v.p) * 1000) / 10;
@@ -2447,7 +2471,7 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     } catch (e: any) { console.warn("[TelegramBot] /menu error:", e?.message); }
   });
 
-  // /backtest [days] [fast|scalp] [PAIR ...] — replay the live binary signals on recent data
+  // /backtest [days] [fast|scalp] [Hn] [PAIR ...] — optionally compare another expiry
   bot.onText(/^\/backtest\b(.*)$/, async (msg, match) => {
     const chatId = msg.chat.id;
     if (!isOwner(chatId)) return;
@@ -2455,20 +2479,21 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
     backtestRunning = true;
     try {
       const args = (match?.[1] ?? "").trim().split(/\s+/).filter(Boolean);
-      let days = 14, modelId = "fast";
+      let days = 14, modelId = "fast", expiryOverride: number | undefined;
       const pairCodes: string[] = [];
       for (const a of args) {
         if (/^\d+$/.test(a)) days = Math.max(1, Math.min(60, Number(a)));
         else if (/^(fast|scalp)$/i.test(a)) modelId = a.toLowerCase();
+        else if (/^h\d+$/i.test(a)) expiryOverride = Math.max(1, Math.min(30, Number(a.slice(1))));
         else { const c = a.toUpperCase().replace("/", ""); if (WEIGHTED_ASSETS.has(c)) pairCodes.push(c); }
       }
       const codes = pairCodes.length ? pairCodes : [...WEIGHTED_ASSETS];
       const pairs = codes.map(code => ({ code, symbol: PAIRS[code].tdSymbol }));
-      const head = `🧪 اختبار آخر ${days} يوماً — نموذج ${modelId} — ${pairs.length} زوج`;
+      const head = `🧪 اختبار آخر ${days} يوماً — نموذج ${modelId}${expiryOverride ? ` — مدة ${expiryOverride} شموع` : ""} — ${pairs.length} زوج`;
       const status = await bot.sendMessage(chatId, `${head}\n⏳ تحميل البيانات التاريخية من Dukascopy…`);
       let lastEdit = 0;
       const results = await runRecentBacktest({
-        pairs, modelId, days, minGrades: WEIGHTS_MIN_GRADE === "A" ? ["A", "B"] : ["B", "A"],
+        pairs, modelId, days, expiryOverride, minGrades: WEIGHTS_MIN_GRADE === "A" ? ["A", "B"] : ["B", "A"],
         onProgress: async (done, total, pair) => {
           if (Date.now() - lastEdit < 4000) return;
           lastEdit = Date.now();
@@ -3540,3 +3565,4 @@ export function startTelegramBot(webhookUrl?: string, tokenOverride?: string, bo
 
   return bot;
 }
+

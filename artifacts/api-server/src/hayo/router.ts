@@ -141,7 +141,7 @@ setTimeout(async () => {
 // timeframe and check whether price hit the stop-loss or take-profit (SL checked
 // first per candle = pessimistic). Marks win/loss with the realized R multiple,
 // or expires signals still open after 5 days. Independent of the UI.
-const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.85);
+const BINARY_PAYOUT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.83);
 async function evaluateSignalJournal(): Promise<void> {
   let open: any[] = [];
   try { open = await getOpenSignals(); } catch { return; }
@@ -180,6 +180,16 @@ async function evaluateSignalJournal(): Promise<void> {
       // Binary option: graded ONLY by where price is at expiry vs. entry.
       // Win pays BINARY_PAYOUT (R = +payout), loss costs the stake (R = -1).
       if (s.source === "tg-bin" || s.source === "tg-wgt" || s.source === "tg-trap" || s.source === "tg-conv-bin" || s.source === "tg-conv-shadow") {
+        const derivContract = String(s.note ?? "").match(/deriv-contract:(\d+);deriv-minutes:(\d+);deriv-purchase:(\d+);deriv-stake:([\d.]+)/);
+        if (derivContract) {
+          const [, contractId, durationMin, purchaseTime, stake] = derivContract;
+          if (now >= (Number(purchaseTime) + Number(durationMin) * 60 + 20) * 1000) {
+            const { settle } = await import("./deriv-bridge");
+            const side = s.direction === "BUY" ? "🟢 CALL" : "🔴 PUT";
+            void settle(Number(contractId), `${pair} ${timeframe}`, side, 0, Number(s.id), Number(stake));
+          }
+          continue; // Deriv contract settlement is the source of truth for executed trades.
+        }
         const n = Number(String(s.note ?? "").match(/binary:(\d+)/)?.[1] ?? 5);
         const tfMs = TF_MS[timeframe] ?? 6e4;
         const expiryTs = created + n * tfMs;
@@ -4772,3 +4782,4 @@ ${technicalVerdict.reasons.map(r => `  - ${r}`).join("\n")}
 });
 
 export type AppRouter = typeof appRouter;
+

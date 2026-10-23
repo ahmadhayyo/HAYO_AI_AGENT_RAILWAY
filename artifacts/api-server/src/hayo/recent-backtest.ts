@@ -8,21 +8,23 @@
  *   - one open trade per pair: a new signal only after the previous expired;
  *   - entry = next bar open (≈ live price when the signal is sent);
  *   - win if the close `horizon` bars later is beyond entry (binary rules),
- *     a tie is refunded; payout +0.85 / −1.
- * Not replayed: the high-impact-news pause and the optional AI veto (both only
- * remove signals), and the scan interval (live checks every few minutes, so
- * it sends at most as many signals as this counts).
+ *     a tie is refunded; payout defaults to +0.83 / −1 (configurable).
+ * Replays the fresh-extreme, 15m trend and meta-confidence gates. Does not
+ * replay high-impact news, optional AI veto (both remove signals), or scan
+ * cadence (live sends at most as many signals as this counts).
  */
 import { fetchFromDukascopy } from "./market-data";
 import { tfFeatureSeries, WEIGHT_MODELS, ALL_FEATURES, FEATURE_NAMES, type FeatureName, type OhlcBar } from "./weights-model";
 import { detectLiquidityTraps, lastBarTrap } from "./liquidity-trap";
 import { decideSignal, type MinGrade } from "./signal-policy";
+import { freshExtremeNoLine, trendMisaligned, type TrendGateMode } from "./extreme-filter";
+import { metaFeatures, metaConfidence, META_MIN_CONF, META_ENABLED } from "./meta-model";
 
 type Bar = OhlcBar & { t: number };
 const TF_MS: Record<string, number> = { "1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000 };
 const TF_IV: Record<string, string> = { "1m": "1min", "5m": "5min", "15m": "15min", "1h": "1h" };
 const WARM_BARS = 300;           // indicator warm-up fetched before the test window
-export const BINARY_PAYOUT_BT = 0.85;
+export const BINARY_PAYOUT_BT = Number(process.env.HAYO_BINARY_PAYOUT ?? 0.83);
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** Closed bars in [fromMs, toMs), oldest first, paging Dukascopy backwards 1000 bars at a time. */
@@ -66,7 +68,7 @@ const add = (t: Tally, r: "win" | "loss" | "tie") => { t.n++; t[r]++; };
 
 /** Replay one pair; `sink` receives every graded trade. */
 function replayPair(
-  modelId: string, bars: Bar[][], evalFrom: number, minGrade: MinGrade,
+  modelId: string, bars: Bar[][], evalFrom: number, minGrade: MinGrade, expiryOverride: number | undefined,
   sink: (mode: "weights" | "trap", r: "win" | "loss" | "tie", t: number) => void,
 ): void {
   const m = WEIGHT_MODELS[modelId];
@@ -74,7 +76,7 @@ function replayPair(
   const perTf: (readonly FeatureName[])[] = Array.isArray(raw[0]) ? (raw as FeatureName[][]) : [0, 1, 2].map(() => raw as readonly FeatureName[]);
   const idx = perTf.map(fs => fs.map(f => ALL_FEATURES.indexOf(f)));
   const feats = bars.map(b => tfFeatureSeries(b));
-  const low = bars[0], lowMs = TF_MS[m.tfs[0]], H = m.horizon;
+  const low = bars[0], lowMs = TF_MS[m.tfs[0]], H = expiryOverride ?? m.horizon;
   const traps = new Map<number, "BUY" | "SELL">();
   // Candidates from one whole-series pass, each confirmed with the exact live
   // call (lastBarTrap on the 600 closed bars the bot holds) — no lookahead.
@@ -104,6 +106,27 @@ function replayPair(
     const trapDir = traps.get(i);
     const d = decideSignal({ p, grade }, trapDir ? { dir: trapDir } : null, minGrade);
     if (!d) continue;
+    if (modelId === "fast" && d.mode !== "trap" && process.env.HAYO_EXTREME_FILTER !== "0") {
+      const check = freshExtremeNoLine(low.slice(Math.max(0, i - 599), i + 1), d.dir);
+      if (check.blocked) continue;
+    }
+    if (modelId === "fast" && d.mode !== "trap" && bars.length >= 3) {
+      const rawMode = (process.env.HAYO_TREND_GATE ?? "regime").trim().toLowerCase();
+      const mode: TrendGateMode = rawMode === "0" || rawMode === "off" ? "off" : rawMode === "strict" ? "strict" : "regime";
+      if (mode !== "off") {
+        const closes15 = bars[2].slice(0, ptr[2] + 1).map(b => b.close);
+        if (trendMisaligned(closes15, d.dir, mode, Number(process.env.HAYO_TREND_ER ?? 0.3)).blocked) continue;
+      }
+    }
+    if (modelId === "fast" && META_ENABLED && bars.length >= 3) {
+      const conf = metaConfidence(metaFeatures({
+        p, dir: d.dir, trapDir: trapDir ?? null,
+        c1: low.slice(Math.max(0, i - 599), i + 1),
+        c5: bars[1].slice(0, ptr[1] + 1),
+        c15: bars[2].slice(0, ptr[2] + 1),
+      }));
+      if (conf < META_MIN_CONF) continue;
+    }
     if (low[i + H].t - low[i + 1].t > (H + 5) * lowMs) continue;   // expiry spans a market gap
     const entry = low[i + 1].open, exit = low[i + H].close;
     const r = exit === entry ? "tie" : (d.dir === "BUY" ? exit > entry : exit < entry) ? "win" : "loss";
@@ -114,6 +137,8 @@ function replayPair(
 
 export async function runRecentBacktest(opts: {
   pairs: { code: string; symbol: string }[]; modelId: string; days: number; minGrades: MinGrade[];
+  /** Optional exploratory expiry in low-timeframe candles; the model signal itself is unchanged. */
+  expiryOverride?: number;
   onProgress?: (done: number, total: number, pair: string) => void | Promise<void>;
   /** test hooks: data source, clock, pause between pages */
   fetcher?: Fetcher; now?: number; pauseMs?: number;
@@ -123,7 +148,7 @@ export async function runRecentBacktest(opts: {
   const to = Math.floor((opts.now ?? Date.now()) / 60_000) * 60_000;
   const from = to - opts.days * 86_400_000;
   const results = opts.minGrades.map((g): BacktestResult => ({
-    modelId: opts.modelId, horizon: m.horizon, lowTf: m.tfs[0], days: opts.days, minGrade: g, from, to,
+    modelId: opts.modelId, horizon: opts.expiryOverride ?? m.horizon, lowTf: m.tfs[0], days: opts.days, minGrade: g, from, to,
     total: tally(), byMode: { weights: tally(), trap: tally() }, byPair: {}, byDay: {}, coveredFrom: {}, skipped: [],
   }));
   let done = 0;
@@ -135,7 +160,7 @@ export async function runRecentBacktest(opts: {
     if (bars.some(b => b.length < WARM_BARS / 2)) { results.forEach(r => r.skipped.push(code)); continue; }
     for (const res of results) {
       res.coveredFrom[code] = bars[0][0].t;
-      replayPair(opts.modelId, bars, from, res.minGrade, (mode, r, t) => {
+      replayPair(opts.modelId, bars, from, res.minGrade, opts.expiryOverride, (mode, r, t) => {
         add(res.total, r); add(res.byMode[mode], r);
         add(res.byPair[code] ??= tally(), r);
         add(res.byDay[new Date(t).toISOString().slice(0, 10)] ??= tally(), r);
@@ -161,3 +186,4 @@ export function margin95(t: Tally): number | null {
   const r = t.win / d;
   return 196 * Math.sqrt((r * (1 - r)) / d);
 }
+
