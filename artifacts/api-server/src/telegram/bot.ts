@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 54042)
-Total output lines: 3542
+Warning: truncated output (original token count: 54106)
+Total output lines: 3543
 
 /**
  * HAYO Trading Bot — Button-driven + Auto-Signals (owner-only)
@@ -1251,8 +1251,8 @@ async function ownerUserId(): Promise<number | null> {
 }
 
 const journalDedup = new Map<string, number>();
-async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string): Promise<void> {
-  const isBinary = source === "tg-bin" || source === "tg-wgt" || source === "tg-trap" || source === "tg-conv-bin";
+async function journalRecommendation(pair: string, interval: string, rec: Recommendation, source: string, convergenceProfile?: string): Promise<void> {
+  const isBinary = source === "tg-bin" || source === "tg-wgt" || source === "tg-trap" || source === "tg-conv-bin" || source === "tg-conv-shadow";
   if (rec.dir === "HOLD" || !isFinite(rec.entry) || (!isBinary && !isFinite(rec.sl))) return;
   const key = `${pair}|${interval}|${rec.dir}|${source}`;
   const dedupMs = isBinary ? 60 * 1000 : 30 * 60 * 1000;
@@ -1264,8 +1264,8 @@ async function journalRecommendation(pair: string, interval: string, rec: Recomm
     await insertSignalJournal({
       userId: await ownerUserId(), pair, timeframe: interval, direction: rec.dir,
       entry: rec.entry, stopLoss: isBinary ? rec.entry : rec.sl, takeProfit: isBinary ? null : rec.tp, confidence: rec.conf, source,
-      note: source === "tg-conv-bin"
-        ? `binary:${rec.expiry ?? 5};convergence:${convergenceConfig.preset}-${convergenceConfig.useAI ? "ai" : "tech"}:v1:${rec.expiry ?? 5}`
+      note: source === "tg-conv-bin" || source === "tg-conv-shadow"
+        ? `binary:${rec.expiry ?? 5};convergence:${convergenceProfile ?? `${convergenceConfig.preset}-${convergenceConfig.useAI ? "ai" : "tech"}:v1:${rec.expiry ?? 5}`}`
         : isBinary ? `binary:${rec.expiry ?? 5}` : rec.levelsFrom === "AI" ? "levels: AI (validated)" : "levels: ATR",
     });
   } catch (err: any) { console.error("[Journal] insert failed:", err.message); }
@@ -1583,9 +1583,7 @@ async function loadPersistedBotSettings(): Promise<void> {
     const c = await loadBotSetting<Partial<ConvergenceConfig>>("convergenceConfig");
     if (c && typeof c === "object") {
       convergenceConfig = {
-        ...convergenceConfig, ...c,
-        preset: c.preset && CONVERGENCE_PRESETS[c.preset] ? c.preset : convergenceConfig.preset,
-        pairs: …4042 tokens truncated….signal === "SELL").length;
+        ...convergenceConfig, ..…4106 tokens truncated….signal === "SELL").length;
         return { tf: r.tf, direction: r.direction, pct: r.pct, buys, sells };
       });
       const tfDetails = tfDetailsArr.map(t =>
