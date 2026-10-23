@@ -940,4 +940,3 @@ export async function disconnectIntegration(userId: number, provider: string): P
     .set({ isActive: false, updatedAt: new Date() })
     .where(and(eq(integrations.userId, userId), eq(integrations.provider, provider)));
 }
-
