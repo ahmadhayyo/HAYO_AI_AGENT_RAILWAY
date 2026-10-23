@@ -443,10 +443,10 @@ export async function getJournalList(limit = 50, userId?: number | null): Promis
  */
 export async function getJournalStats(userId?: number | null, kind: "forex" | "binary" | "weights" | "trap" | "all" = "forex"): Promise<any> {
   if (!db) return null;
-  const kindSql = kind === "binary" ? sql`"source" IN ('tg-bin', 'tg-conv-bin')`
+  const kindSql = kind === "binary" ? sql`"source" IN ('tg-bin', 'tg-wgt', 'tg-box', 'tg-trap', 'tg-tmasr', 'tg-conv-bin', 'tg-conv-shadow')`
     : kind === "weights" ? sql`"source" = 'tg-wgt'`
     : kind === "trap" ? sql`"source" = 'tg-trap'`
-    : kind === "forex" ? sql`"source" NOT IN ('tg-bin', 'tg-wgt', 'tg-trap', 'tg-conv-bin', 'tg-conv-shadow')`
+    : kind === "forex" ? sql`"source" NOT IN ('tg-bin', 'tg-wgt', 'tg-box', 'tg-trap', 'tg-tmasr', 'tg-conv-bin', 'tg-conv-shadow')`
     : sql`TRUE`;
   const whereClause = userId != null ? sql`WHERE "userId" = ${userId} AND ${kindSql}` : sql`WHERE ${kindSql}`;
   const res: any = await db.execute(sql`
@@ -940,3 +940,4 @@ export async function disconnectIntegration(userId: number, provider: string): P
     .set({ isActive: false, updatedAt: new Date() })
     .where(and(eq(integrations.userId, userId), eq(integrations.provider, provider)));
 }
+
