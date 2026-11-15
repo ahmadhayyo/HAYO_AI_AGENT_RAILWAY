@@ -106,7 +106,7 @@ RUN wget -q --timeout=60 \
 # NOTE: The correct URL format is build-tools_r34-linux.zip (NOT r34.0.0)
 # zipalign requires libc++.so from lib64/ — we copy it to /usr/local/lib for reliable resolution
 RUN mkdir -p /opt/android-sdk/build-tools && \
-    wget -q --timeout=180 \
+    wget -q --timeout=180 --tries=4 --waitretry=10 --retry-connrefused \
     "https://dl.google.com/android/repository/build-tools_r34-linux.zip" \
     -O /tmp/build-tools.zip \
     && unzip -q /tmp/build-tools.zip -d /tmp/build-tools-extract \
