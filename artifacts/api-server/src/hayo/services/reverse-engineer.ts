@@ -1746,7 +1746,35 @@ export async function applyPatchTemplate(
 // ═══════════════════════════════════════════════════════════════
 // SIGN APK — standalone (kept for backward compat with cloneApp)
 // ═══════════════════════════════════════════════════════════════
-async function signAPKFile(apkPath: string, workDir: string): Promise<string | null> {
+// Resolve an Android build-tool (apksigner / zipalign / aapt2). Checks PATH
+// first, then known SDK locations — so a silently-missing PATH symlink in the
+// container does NOT force the broken jarsigner fallback.
+export function resolveAndroidTool(name: string): string {
+  try {
+    execSync(`command -v ${name}`, { stdio: "pipe", timeout: 5_000 });
+    return name; // found on PATH
+  } catch { /* not on PATH — probe known SDK dirs */ }
+  const base = "/opt/android-sdk/build-tools";
+  const candidates: string[] = [];
+  try {
+    if (fs.existsSync(base)) {
+      for (const v of fs.readdirSync(base).sort().reverse()) candidates.push(path.join(base, v, name));
+    }
+  } catch { /* ignore */ }
+  candidates.push(`/opt/android-sdk/build-tools/34.0.0/${name}`);
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  return name; // last resort — let the caller handle failure
+}
+
+// Outcome of signing — lets callers report the exact scheme achieved.
+export interface SignOutcome { path: string | null; scheme: "v1+v2+v3" | "v1-only" | "none"; aligned: boolean; }
+
+// Sign + align an APK so it installs on Android 7–14+.
+// CORRECT ORDER:
+//   • apksigner path: zipalign FIRST, then apksigner (apksigner preserves alignment).
+//   • jarsigner fallback: jarsigner FIRST, then zipalign (jarsigner rewrites the
+//     zip and breaks any prior alignment — aligning afterwards is mandatory).
+export async function signAPKWithOutcome(apkPath: string, workDir: string): Promise<SignOutcome> {
   try {
     const keystorePaths = [
       "/home/runner/debug.keystore",
@@ -1755,7 +1783,6 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
       path.join(os.homedir(), ".android", "debug.keystore"),
     ];
     let keystorePath = keystorePaths.find(p => fs.existsSync(p)) ?? null;
-
     if (!keystorePath) {
       const newKeystore = path.join(workDir, "qa_debug.keystore");
       runCmd("keytool", [
@@ -1766,9 +1793,12 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
       ], workDir, 30_000);
       keystorePath = fs.existsSync(newKeystore) ? newKeystore : null;
     }
-    if (!keystorePath) return null;
+    if (!keystorePath) return { path: null, scheme: "none", aligned: false };
 
-    // Strip old signatures from APK (only actual sig files, not .version etc.)
+    const apksigner = resolveAndroidTool("apksigner");
+    const zipalign = resolveAndroidTool("zipalign");
+
+    // Strip old signatures (only real sig files) so re-signing is clean.
     const listResult = runCmd("unzip", ["-l", apkPath], workDir, 10_000);
     const sigExts = [".RSA", ".SF", ".DSA", ".EC"];
     const metaEntries = (listResult.stdout || "").split("\n")
@@ -1776,37 +1806,51 @@ async function signAPKFile(apkPath: string, workDir: string): Promise<string | n
       .filter(e => e.startsWith("META-INF/") && (sigExts.some(x => e.toUpperCase().endsWith(x)) || e === "META-INF/MANIFEST.MF"));
     if (metaEntries.length > 0) runCmd("zip", ["-d", apkPath, ...metaEntries], workDir, 15_000);
 
-    // zipalign
+    // ── Primary: zipalign → apksigner (v1+v2+v3) ──
     const alignedPath = apkPath.replace(/\.apk$/, "-aligned.apk");
-    const alignResult = runCmd("zipalign", ["-f", "-v", "4", apkPath, alignedPath], workDir, 60_000);
-    const useAligned = alignResult.code === 0 && fs.existsSync(alignedPath);
+    // -p page-aligns stored .so files (required for extractNativeLibs=false on modern Android)
+    const alignRes = runCmd(zipalign, ["-f", "-p", "4", apkPath, alignedPath], workDir, 60_000);
+    const useAligned = alignRes.code === 0 && fs.existsSync(alignedPath);
     const targetForSigning = useAligned ? alignedPath : apkPath;
 
-    // apksigner V1+V2+V3
     const signedPath = apkPath.replace(/\.apk$/, "-signed.apk");
-    const r = runCmd("apksigner", [
+    const r = runCmd(apksigner, [
       "sign", "--ks", keystorePath, "--ks-pass", "pass:android",
       "--ks-key-alias", "androiddebugkey", "--key-pass", "pass:android",
+      "--min-sdk-version", "21",
       "--out", signedPath,
       "--v1-signing-enabled", "true", "--v2-signing-enabled", "true",
       "--v3-signing-enabled", "true", "--v4-signing-enabled", "false",
       targetForSigning,
-    ], workDir, 60_000);
+    ], workDir, 90_000);
+    if (r.code === 0 && fs.existsSync(signedPath)) {
+      // apksigner preserves alignment; confirm so we never ship a misaligned APK.
+      const aligned = runCmd(zipalign, ["-c", "4", signedPath], workDir, 30_000).code === 0;
+      return { path: signedPath, scheme: "v1+v2+v3", aligned };
+    }
 
-    if (r.code === 0 && fs.existsSync(signedPath)) return signedPath;
-
-    // Fallback: jarsigner
+    // ── Fallback: jarsigner (v1 only) → zipalign AFTER (correct order) ──
     const jarPath = apkPath.replace(/\.apk$/, "-jarsigned.apk");
-    fs.copyFileSync(targetForSigning, jarPath);
+    fs.copyFileSync(apkPath, jarPath); // sign the UN-aligned apk; align afterwards
     const jr = runCmd("jarsigner", [
       "-verbose", "-sigalg", "SHA256withRSA", "-digestalg", "SHA-256",
       "-keystore", keystorePath, "-storepass", "android", "-keypass", "android",
       jarPath, "androiddebugkey",
     ], workDir, 60_000);
-    if (jr.code === 0) return jarPath;
+    if (jr.code === 0) {
+      const finalAligned = apkPath.replace(/\.apk$/, "-final-aligned.apk");
+      const ra = runCmd(zipalign, ["-f", "4", jarPath, finalAligned], workDir, 30_000);
+      if (ra.code === 0 && fs.existsSync(finalAligned)) return { path: finalAligned, scheme: "v1-only", aligned: true };
+      return { path: jarPath, scheme: "v1-only", aligned: false };
+    }
 
-    return null;
-  } catch { return null; }
+    return { path: null, scheme: "none", aligned: false };
+  } catch { return { path: null, scheme: "none", aligned: false }; }
+}
+
+// Back-compat wrapper (existing callers expect a path or null).
+async function signAPKFile(apkPath: string, workDir: string): Promise<string | null> {
+  return (await signAPKWithOutcome(apkPath, workDir)).path;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2028,27 +2072,43 @@ export async function cloneApp(
     }
     modifications.push("✅ تم إعادة بناء APK بنجاح");
 
-    // ── PHASE 4: Sign (zipalign → apksigner → jarsigner fallback) ──
-    const signedPath = await signAPKFile(outputApk, workDir);
+    // ── PHASE 4: Sign + align (install-critical) ──
+    const signOutcome = await signAPKWithOutcome(outputApk, workDir);
+    const signedPath = signOutcome.path;
     if (signedPath) {
-      modifications.push("✅ تم توقيع APK بـ zipalign + apksigner (متوافق مع Android 7–14+)");
-    } else {
-      modifications.push("⚠️ التوقيع تخطى — يمكن تثبيته يدوياً");
-    }
-
-    // ── PHASE 5: Quality Gate — Signature Verify + Zip Integrity ──
-    const finalApk = signedPath || outputApk;
-
-    // Test A: Signature Verification
-    if (signedPath) {
-      const verifyResult = runCmd("apksigner", ["verify", "--verbose", signedPath], workDir, 30_000);
-      signatureVerified = verifyResult.code === 0;
-      if (signatureVerified) {
-        modifications.push("✅ التحقق من التوقيع: APK موقّع بشكل صحيح (V1+V2+V3)");
+      if (signOutcome.scheme === "v1+v2+v3") {
+        modifications.push("✅ تم التوقيع بـ apksigner (V1+V2+V3) + محاذاة 4-byte — متوافق مع Android 7–14+");
       } else {
-        modifications.push("⚠️ التحقق من التوقيع فشل: " + verifyResult.stderr.slice(0, 100));
+        modifications.push("⚠️ تم التوقيع بـ jarsigner (V1 فقط) — قد لا يُثبَّت على Android 11+. يُنصح بتثبيت apksigner/build-tools في الخادم.");
       }
+      if (!signOutcome.aligned) modifications.push("⚠️ المحاذاة النهائية غير مؤكدة بعد التوقيع");
+    } else {
+      modifications.push("❌ فشل التوقيع — APK غير موقّع ولن يُثبَّت (خطأ الحزمة). تحقّق من apksigner/keytool في الخادم.");
     }
+
+    // ── PHASE 5: Quality Gate — Verify signature + alignment + zip integrity ──
+    const finalApk = signedPath || outputApk;
+    const apksignerBin = resolveAndroidTool("apksigner");
+    const zipalignBin = resolveAndroidTool("zipalign");
+
+    // Test A: Signature scheme verification (min-sdk 21 so v1-only is judged correctly)
+    if (signedPath) {
+      const verifyResult = runCmd(apksignerBin, ["verify", "--min-sdk-version", "21", "--verbose", signedPath], workDir, 30_000);
+      signatureVerified = verifyResult.code === 0;
+      const vout = verifyResult.stdout || "";
+      const schemes = [
+        /v1 scheme.*true/i.test(vout) ? "V1" : "",
+        /v2 scheme.*true/i.test(vout) ? "V2" : "",
+        /v3 scheme.*true/i.test(vout) ? "V3" : "",
+      ].filter(Boolean).join("+");
+      modifications.push(signatureVerified
+        ? `✅ التحقق من التوقيع: صالح (${schemes || signOutcome.scheme})`
+        : "⚠️ التحقق من التوقيع فشل: " + (verifyResult.stderr || "").slice(0, 100));
+    }
+
+    // Test A2: Final 4-byte alignment — a misaligned APK triggers "package error" on install.
+    const finalIsAligned = runCmd(zipalignBin, ["-c", "4", finalApk], workDir, 30_000).code === 0;
+    modifications.push(finalIsAligned ? "✅ المحاذاة النهائية صحيحة (4-byte)" : "⚠️ المحاذاة النهائية غير مثالية");
 
     // Test B: Zip Integrity
     const zipCheckResult = runCmd("unzip", ["-t", finalApk], workDir, 30_000);
